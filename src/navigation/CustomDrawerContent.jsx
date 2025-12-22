@@ -5,10 +5,12 @@ import { DrawerContentScrollView } from '@react-navigation/drawer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo } from 'react';
-import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../constants/theme';
-import { useAuth } from '../context/AuthContext';
+import { useGetProfileQuery, useLogoutMutation } from '../store/api';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { logout as logoutAction } from '../store/slices/authSlice';
 
 const NAV_ITEMS = [
   { label: 'Dashboard', route: 'dashboard', icon: 'bar-chart-2' },
@@ -38,7 +40,17 @@ const getIcon = (name, size, color) => {
 
 export const CustomDrawerContent = (props) => {
   const { state, navigation } = props;
-  const { logout } = useAuth();
+  const dispatch = useAppDispatch();
+  const [logoutMutation] = useLogoutMutation();
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+
+  // Fetch profile data
+  const { data: profileData } = useGetProfileQuery();
+  const profile = useMemo(() => {
+    return profileData?.data || profileData || null;
+  }, [profileData]);
 
   const activeRouteName = state.routeNames[state.index];
 
@@ -60,6 +72,15 @@ export const CustomDrawerContent = (props) => {
     };
   }, [state]);
 
+  const navItems = useMemo(() => {
+    if (!isDelegate) return NAV_ITEMS;
+    return NAV_ITEMS.map((item) =>
+      item.route === 'sponsors'
+        ? { ...item, label: 'Delegate' }
+        : item
+    );
+  }, [isDelegate]);
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left']}>
       <LinearGradient
@@ -70,11 +91,23 @@ export const CustomDrawerContent = (props) => {
       >
         <View style={styles.profileRow}>
           <View style={[styles.avatar, { width: sizes.avatar, height: sizes.avatar, borderRadius: sizes.avatar / 2 }]}>
-            <Icon name="user" size={sizes.icon + 10} color="#FFFFFF" />
+            {profile?.image ? (
+              <Image
+                source={{ uri: profile.image }}
+                style={[styles.avatarImage, { width: sizes.avatar, height: sizes.avatar, borderRadius: sizes.avatar / 2 }]}
+                resizeMode="cover"
+              />
+            ) : (
+              <Icon name="user" size={sizes.icon + 10} color="#FFFFFF" />
+            )}
           </View>
           <View style={styles.profileText}>
-            <Text style={styles.profileName}>Sarah Johnson</Text>
-            <Text style={styles.profileRole}>Event Organizer</Text>
+            <Text style={styles.profileName} numberOfLines={1}>
+              {profile?.full_name || `${profile?.fname || ''} ${profile?.lname || ''}`.trim() || 'User'}
+            </Text>
+            <Text style={styles.profileRole} numberOfLines={1}>
+              {profile?.job_title || 'Delegate'}
+            </Text>
           </View>
         </View>
       </LinearGradient>
@@ -84,7 +117,7 @@ export const CustomDrawerContent = (props) => {
         bounces={false}
         showsVerticalScrollIndicator={false}
       >
-        {NAV_ITEMS.map((item) => {
+        {navItems.map((item) => {
           const isActive = item.route ? activeRouteName === item.route : false;
           const isLogout = item.action === 'logout';
           const handlePress = async () => {
@@ -102,12 +135,13 @@ export const CustomDrawerContent = (props) => {
                     style: 'destructive',
                     onPress: async () => {
                       try {
-                        await logout();
-                        // Navigation will be handled by AuthContext and _layout.js
+                        await logoutMutation().unwrap();
+                        dispatch(logoutAction());
                         router.replace('/login');
                       } catch (error) {
                         console.error('Logout error:', error);
-                        // Even if API call fails, navigate to login
+                        // Even if API call fails, clear auth and navigate to login
+                        dispatch(logoutAction());
                         router.replace('/login');
                       }
                     },
@@ -178,6 +212,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   profileText: {
     flex: 1,

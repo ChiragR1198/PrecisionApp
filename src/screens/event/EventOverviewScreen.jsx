@@ -7,7 +7,7 @@ import { ActivityIndicator, ImageBackground, Modal, Platform, ScrollView, StyleS
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-import { eventService } from '../../services/api/eventService';
+import { useGetEventsQuery } from '../../store/api';
 
 const CalendarIcon = ({ color = colors.white, size = 20 }) => (
   <Icon name="calendar" size={size} color={color} />
@@ -135,103 +135,25 @@ export const EventOverviewScreen = () => {
   const params = useLocalSearchParams();
   const [isAboutExpanded, setIsAboutExpanded] = useState(false);
 
-  // State for events and event details
-  const [events, setEvents] = useState([]);
-  const [selectedEventDetails, setSelectedEventDetails] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
-  const [error, setError] = useState(null);
+  const { data: eventsData, isLoading, error, refetch } = useGetEventsQuery();
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load events.';
+  }, [error]);
   const [shouldAnimateStats, setShouldAnimateStats] = useState(false);
+  const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);
   
   const initialSelectedIndex = Number.isFinite(Number(params?.selectedEventIndex)) ? Number(params.selectedEventIndex) : 0;
   const [selectedEventIndex, setSelectedEventIndex] = useState(initialSelectedIndex);
-  const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);
 
-  // Fetch all events on mount
-  useEffect(() => {
-    fetchEvents();
-  }, []);
-
-  // Fetch event details when selection changes
-  useEffect(() => {
-    if (events.length > 0 && events[selectedEventIndex]) {
-      setShouldAnimateStats(false);
-      fetchEventDetails(events[selectedEventIndex].id);
-    }
-  }, [selectedEventIndex, events]);
-
-  // Start animation when event details are loaded
-  useEffect(() => {
-    if (selectedEventDetails && !isLoadingDetails) {
-      // Small delay to ensure UI is ready
-      const timer = setTimeout(() => {
-        setShouldAnimateStats(true);
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [selectedEventDetails, isLoadingDetails]);
-
-  // Reset and restart animation when screen comes into focus
-  useFocusEffect(
-    useCallback(() => {
-      // Reset animation state when screen comes into focus
-      setShouldAnimateStats(false);
-      
-      // Restart animation if event details are already loaded
-      if (selectedEventDetails && !isLoadingDetails) {
-        const timer = setTimeout(() => {
-          setShouldAnimateStats(true);
-        }, 300);
-        return () => clearTimeout(timer);
-      }
-    }, [selectedEventDetails, isLoadingDetails])
-  );
-
-  const fetchEvents = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      const result = await eventService.getAllEvents();
-      
-      if (result.success) {
-        setEvents(result.data || []);
-        if (result.data && result.data.length > 0) {
-          // Fetch details for the first/selected event
-          fetchEventDetails(result.data[selectedEventIndex]?.id || result.data[0].id);
-        }
-      } else {
-        setError(result.error || 'Failed to load events');
-      }
-    } catch (err) {
-      setError(err.message || 'An error occurred while loading events');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const fetchEventDetails = async (eventId) => {
-    if (!eventId) return;
-    
-    try {
-      setIsLoadingDetails(true);
-      const result = await eventService.getEventById(eventId);
-      
-      if (result.success) {
-        setSelectedEventDetails(result.data);
-      } else {
-        console.error('Failed to fetch event details:', result.error);
-      }
-    } catch (err) {
-      console.error('Error fetching event details:', err);
-    } finally {
-      setIsLoadingDetails(false);
-    }
-  };
-
-  const handleEventSelect = (index) => {
-    setSelectedEventIndex(index);
-    setIsEventDropdownOpen(false);
-  };
+  const events = useMemo(() => {
+    const data = eventsData?.data || eventsData || [];
+    return Array.isArray(data) ? data : [];
+  }, [eventsData]);
 
   // Transform API event data to display format
   const selectedEvent = useMemo(() => {
@@ -245,15 +167,58 @@ export const EventOverviewScreen = () => {
       location: event.location || event.venue || '',
       date_from: event.date_from,
       date_to: event.date_to,
+      description: event.description,
     };
   }, [events, selectedEventIndex]);
+  
+  // Trigger animation when selection changes
+  useEffect(() => {
+    if (events.length > 0 && events[selectedEventIndex]) {
+      setShouldAnimateStats(false);
+      setTimeout(() => setShouldAnimateStats(true), 100);
+    }
+  }, [selectedEventIndex, events]);
+
+  // Start animation when event details are loaded
+  useEffect(() => {
+    if (selectedEvent && !isLoading) {
+      // Small delay to ensure UI is ready
+      const timer = setTimeout(() => {
+        setShouldAnimateStats(true);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedEvent, isLoading]);
+
+  // Reset and restart animation when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      // Reset animation state when screen comes into focus
+      setShouldAnimateStats(false);
+      
+      // Restart animation if event details are already loaded
+      if (selectedEvent && !isLoading) {
+        const timer = setTimeout(() => {
+          setShouldAnimateStats(true);
+        }, 300);
+        return () => clearTimeout(timer);
+      }
+    }, [selectedEvent, isLoading])
+  );
+
+  const isLoadingDetails = isLoading;
+
+  const handleEventSelect = (index) => {
+    setSelectedEventIndex(index);
+    setIsEventDropdownOpen(false);
+  };
 
   // Get about paragraphs from event description
   const ABOUT_PARAGRAPHS = useMemo(() => {
-    if (!selectedEventDetails?.description) return [];
-    const cleanText = stripHtml(selectedEventDetails.description);
+    if (!selectedEvent?.description) return [];
+    const cleanText = stripHtml(selectedEvent.description);
     return splitIntoParagraphs(cleanText);
-  }, [selectedEventDetails]);
+  }, [selectedEvent]);
 
   // Get truncated text for preview (max 120 characters)
   const PREVIEW_TEXT = useMemo(() => {
@@ -325,8 +290,8 @@ export const EventOverviewScreen = () => {
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
         <View style={styles.errorContainer}>
           <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={fetchEvents}>
+          <Text style={styles.errorText}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={refetch}>
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>

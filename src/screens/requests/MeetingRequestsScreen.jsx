@@ -1,80 +1,83 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigation } from '@react-navigation/native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Animated,
-    FlatList,
-    Image,
-    Modal,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  Animated,
+  FlatList,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import UserAvatar from '../../assets/images/user.png';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
+import { useGetMeetingRequestsQuery, useUpdateMeetingRequestMutation } from '../../store/api';
 
-const FILTERS = ['All', 'Sponsors', 'Delegates'];
+// const FILTERS = ['All', 'Sponsors', 'Delegates']; // Filters disabled as per request
 
-const CONTACTS = [
-  {
-    id: '1',
-    name: 'Sarah Johnson',
-    company: 'Tech Solutions Inc.',
-    type: 'Sponsor',
-    avatar: UserAvatar,
-  },
-  {
-    id: '2',
-    name: 'Michael Chen',
-    company: 'Innovation Labs',
-    type: 'Delegate',
-    avatar: UserAvatar,
-  },
-  {
-    id: '3',
-    name: 'Emma Rodriguez',
-    company: 'Global Ventures',
-    type: 'Sponsor',
-    avatar: UserAvatar,
-  },
-  {
-    id: '4',
-    name: 'David Park',
-    company: 'StartupHub',
-    type: 'Delegate',
-    avatar: UserAvatar,
-  },
-  {
-    id: '5',
-    name: 'Lisa Thompson',
-    company: 'Future Corp',
-    type: 'Sponsor',
-    avatar: UserAvatar,
-  },
-  {
-    id: '6',
-    name: 'James Wilson',
-    company: 'Digital Dynamics',
-    type: 'Delegate',
-    avatar: UserAvatar,
-  },
-];
+// Static dummy contacts list (now unused; kept for reference only)
+// const CONTACTS = [
+//   {
+//     id: '1',
+//     name: 'Sarah Johnson',
+//     company: 'Tech Solutions Inc.',
+//     type: 'Sponsor',
+//     avatar: UserAvatar,
+//   },
+//   ...
+// ];
 
 export const MeetingRequestsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
+  const { data: requestsData, isLoading, error, refetch } = useGetMeetingRequestsQuery();
+  const [updateMeetingRequest] = useUpdateMeetingRequestMutation();
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load meeting requests.';
+  }, [error]);
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeFilter, setActiveFilter] = useState('All');
   const [selectedContact, setSelectedContact] = useState(null);
   const [selectedPriority, setSelectedPriority] = useState('Medium');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const modalAnim = useRef(new Animated.Value(0)).current;
+  
+  const requests = useMemo(() => {
+    let list = [];
+    const response = requestsData;
+    
+    // Handle different response formats
+    if (Array.isArray(response?.data)) {
+      list = response.data;
+    } else if (Array.isArray(response)) {
+      list = response;
+    } else if (Array.isArray(response?.data?.data)) {
+      list = response.data.data;
+    }
+    
+    // Transform to expected format
+    return list.map((item) => ({
+      id: String(item.id),
+      name: item.sponsor_name || 'Unknown',
+      company: item.sponsor_company || '',
+      type: item.from === 'sponsor' ? 'Sponsor' : 'Delegate',
+      avatar: UserAvatar,
+      currentAction: item.is_accepted ? Number(item.is_accepted) : null,
+      raw: item,
+    }));
+  }, [requestsData]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -104,30 +107,29 @@ export const MeetingRequestsScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+
   const filteredContacts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return CONTACTS.filter((contact) => {
-      const matchesFilter = activeFilter === 'All' || contact.type === activeFilter.slice(0, -1) || contact.type === activeFilter;
-      const matchesSearch =
-        !q ||
-        contact.name.toLowerCase().includes(q) ||
-        contact.company.toLowerCase().includes(q);
-      return matchesFilter && matchesSearch;
+    return requests.filter((contact) => {
+      const name = contact.name?.toLowerCase() || '';
+      const company = contact.company?.toLowerCase() || '';
+      const matchesSearch = !q || name.includes(q) || company.includes(q);
+      return matchesSearch;
     });
-  }, [activeFilter, searchQuery]);
+  }, [searchQuery, requests]);
 
-  const renderChip = (label) => {
-    const isActive = activeFilter === label;
-    return (
-      <TouchableOpacity
-        key={label}
-        style={[styles.filterChip, isActive && styles.filterChipActive]}
-        onPress={() => setActiveFilter(label)}
-        activeOpacity={0.8}
-      >
-        <Text style={[styles.filterChipText, isActive && styles.filterChipTextActive]}>{label}</Text>
-      </TouchableOpacity>
-    );
+  const handleAction = async (item, action) => {
+    try {
+      const meetingRequestId = Number(item?.raw?.id || item.id);
+      await updateMeetingRequest({
+        id: meetingRequestId,
+        status: action === 1 ? 'accepted' : 'rejected',
+      }).unwrap();
+      
+      refetch();
+    } catch (e) {
+      console.error('Error updating meeting request action:', e);
+    }
   };
 
   const openModal = (contact) => {
@@ -174,6 +176,7 @@ export const MeetingRequestsScreen = () => {
           </Text>
         </View>
       </View>
+      {/*
       <TouchableOpacity
         style={styles.requestButton}
         activeOpacity={0.85}
@@ -181,6 +184,62 @@ export const MeetingRequestsScreen = () => {
       >
         <Text style={styles.requestButtonText}>Request</Text>
       </TouchableOpacity>
+      */}
+
+      {/* New Accept / Decline buttons */}
+      {/** Default: dono outline. Press hone par jis pe action hua ho,
+       *  us button ka background fill ho jayega.
+       */}
+      {(() => {
+        const isAccepted = item.currentAction === 1;
+        const isDeclined = item.currentAction === 2;
+
+        const acceptLabel = isAccepted ? 'Accepted' : 'Accept';
+        const declineLabel = isDeclined ? 'Declined' : 'Decline';
+
+        return (
+      <View style={styles.actionButtons}>
+        <TouchableOpacity
+            style={[
+              styles.actionButton,
+              isDeclined && styles.declineButtonActive,
+            ]}
+          activeOpacity={0.85}
+          onPress={() => {
+              handleAction(item, 2);
+          }}
+        >
+            <Text
+              style={[
+                styles.actionButtonText,
+                isDeclined && styles.declineButtonTextActive,
+              ]}
+            >
+              {declineLabel}
+            </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+            style={[
+              styles.actionButton,
+              isAccepted && styles.acceptButtonActive,
+            ]}
+          activeOpacity={0.85}
+          onPress={() => {
+              handleAction(item, 1);
+          }}
+        >
+            <Text
+              style={[
+                styles.actionButtonText,
+                isAccepted && styles.acceptButtonTextActive,
+              ]}
+            >
+              {acceptLabel}
+            </Text>
+        </TouchableOpacity>
+      </View>
+        );
+      })()}
     </View>
   );
 
@@ -202,20 +261,31 @@ export const MeetingRequestsScreen = () => {
             onChangeText={setSearchQuery}
             style={styles.searchBar}
           />
-
-          <View style={styles.filtersRow}>
-            {FILTERS.map(renderChip)}
-          </View>
         </View>
-
-        <FlatList
-          data={filteredContacts}
-          keyExtractor={(item) => item.id}
-          renderItem={renderContact}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        />
+        {isLoading ? (
+          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center' }]}>
+            <Text style={styles.loadingText}>Loading meeting requests...</Text>
+          </View>
+        ) : error ? (
+          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center' }]}>
+            <Text style={styles.errorText}>{errorMessage}</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={filteredContacts}
+            keyExtractor={(item) => item.id}
+            renderItem={renderContact}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            contentContainerStyle={[
+              styles.listContent,
+              filteredContacts.length === 0 && { flex: 1, alignItems: 'center', justifyContent: 'center' },
+            ]}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No meeting requests found.</Text>
+            }
+            showsVerticalScrollIndicator={false}
+          />
+        )}
       </View>
 
       <Modal
@@ -290,8 +360,23 @@ export const MeetingRequestsScreen = () => {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.modalButton, styles.primaryButton]}
-                    onPress={() => {
-                      closeModal();
+                    onPress={async () => {
+                      if (!selectedContact) return;
+                      try {
+                        const payload = {
+                          contact_id: selectedContact.id,
+                          priority: selectedPriority.toLowerCase(),
+                        };
+                        console.log('Sending meeting request payload:', payload);
+                        await updateMeetingRequest({
+                          id: payload.contact_id,
+                          status: payload.priority,
+                        }).unwrap();
+                      } catch (error) {
+                        console.error('Error sending meeting request:', error);
+                      } finally {
+                        closeModal();
+                      }
                     }}
                   >
                     <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
@@ -324,28 +409,29 @@ const createStyles = (SIZES) => StyleSheet.create({
   searchBar: {
     marginTop: 12,
   },
-  filtersRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 12,
-  },
-  filterChip: {
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-    borderRadius: radius.pill,
-    backgroundColor: colors.gray100,
-  },
-  filterChipActive: {
-    backgroundColor: colors.primary,
-  },
-  filterChipText: {
-    fontSize: SIZES.body,
-    color: colors.text,
-    fontWeight: '600',
-  },
-  filterChipTextActive: {
-    color: colors.white,
-  },
+  // Filter styles commented out as per request
+  // filtersRow: {
+  //   flexDirection: 'row',
+  //   gap: 10,
+  //   marginBottom: 12,
+  // },
+  // filterChip: {
+  //   paddingHorizontal: 18,
+  //   paddingVertical: 8,
+  //   borderRadius: radius.pill,
+  //   backgroundColor: colors.gray100,
+  // },
+  // filterChipActive: {
+  //   backgroundColor: colors.primary,
+  // },
+  // filterChipText: {
+  //   fontSize: SIZES.body,
+  //   color: colors.text,
+  //   fontWeight: '600',
+  // },
+  // filterChipTextActive: {
+  //   color: colors.white,
+  // },
   listContent: {
     paddingBottom: 30,
   },
@@ -413,15 +499,48 @@ const createStyles = (SIZES) => StyleSheet.create({
     fontSize: SIZES.body - 1,
     fontWeight: '600',
   },
-  requestButton: {
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+  // Old single button styles (kept for reference)
+  // requestButton: {
+  //   backgroundColor: colors.primary,
+  //   borderRadius: radius.pill,
+  //   paddingHorizontal: 18,
+  //   paddingVertical: 10,
+  // },
+  // requestButtonText: {
+  //   color: colors.white,
+  //   fontWeight: '600',
+  // },
+  actionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  requestButtonText: {
-    color: colors.white,
+  actionButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    backgroundColor: colors.white,
+    borderColor: colors.border,
+  },
+  actionButtonText: {
+    fontSize: SIZES.body,
     fontWeight: '600',
+    color: colors.text,
+  },
+  acceptButtonActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  acceptButtonTextActive: {
+    color: colors.white,
+  },
+  declineButtonActive: {
+    backgroundColor: '#EF4444', // red
+    borderColor: '#EF4444',
+  },
+  declineButtonTextActive: {
+    color: colors.white,
   },
   modalBackdrop: {
     flex: 1,

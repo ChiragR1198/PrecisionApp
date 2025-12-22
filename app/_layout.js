@@ -1,9 +1,13 @@
-import { Stack, useRouter, useSegments } from 'expo-router';
+import * as NavigationBar from 'expo-navigation-bar';
+import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
-import { ActivityIndicator, Platform, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, Text, TextInput, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { AuthProvider, useAuth } from '../src/context/AuthContext';
+import { Provider } from 'react-redux';
+import { useAuth } from '../src/hooks/useAuth';
+import { store } from '../src/store';
 
 // Globally control font scaling to prevent oversized UI when system font/display size is large
 // This ensures the app looks consistent regardless of system accessibility settings
@@ -32,9 +36,21 @@ function RootLayoutNav() {
   const { isAuthenticated, isLoading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const navigationState = useRootNavigationState();
+
+  // Configure navigation bar and status bar visibility
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      // Ensure navigation bar is visible (works for both gesture and button navigation)
+      // This will show navigation bar on all Android devices regardless of navigation mode
+      NavigationBar.setVisibilityAsync('visible').catch(console.error);
+      NavigationBar.setButtonStyleAsync('dark').catch(console.error);
+    }
+  }, []);
 
   useEffect(() => {
     if (isLoading) return; // Don't redirect while checking auth status
+    if (!navigationState?.key) return; // Wait for root navigation to be ready
 
     const currentSegment = segments[0];
     const inAuthGroup = currentSegment === '(drawer)';
@@ -53,46 +69,75 @@ function RootLayoutNav() {
         router.replace('/(drawer)/dashboard');
       }
     }
-  }, [isAuthenticated, isLoading, segments]);
+  }, [isAuthenticated, isLoading, segments, navigationState?.key]);
 
   // Show loading screen while checking authentication
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
-        <ActivityIndicator size="large" color="#8A3490" />
-      </View>
+      <>
+        <StatusBar style="dark" translucent={false} />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
+          <ActivityIndicator size="large" color="#8A3490" />
+        </View>
+      </>
     );
   }
 
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-        animation: Platform.select({ ios: 'slide_from_right', android: 'slide_from_right', default: 'fade' }),
-        gestureEnabled: true,
-        presentation: 'card',
-        contentStyle: { backgroundColor: '#FFFFFF' },
-      }}
-    >
-      <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
-      <Stack.Screen name="login" options={{ headerShown: false }} />
-      <Stack.Screen name="register" options={{ headerShown: false }} />
-      <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
-      <Stack.Screen name="email-verification" options={{ headerShown: false }} />
-      <Stack.Screen name="reset-password" options={{ headerShown: false }} />
-    </Stack>
+    <>
+      <StatusBar style="dark" translucent={false} />
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          animation: Platform.select({ ios: 'slide_from_right', android: 'slide_from_right', default: 'fade' }),
+          gestureEnabled: true,
+          presentation: 'card',
+          contentStyle: { backgroundColor: '#FFFFFF' },
+        }}
+      >
+        <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
+        <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="register" options={{ headerShown: false }} />
+        <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
+        <Stack.Screen name="email-verification" options={{ headerShown: false }} />
+        <Stack.Screen name="reset-password" options={{ headerShown: false }} />
+      </Stack>
+    </>
   );
 }
 
 export default function RootLayout() {
+  // Configure navigation bar on app start
+  React.useEffect(() => {
+    if (Platform.OS === 'android') {
+      // Ensure navigation bar is visible (works for both gesture and button navigation)
+      // This will show navigation bar on all Android devices regardless of navigation mode
+      NavigationBar.setVisibilityAsync('visible').catch(console.error);
+      NavigationBar.setButtonStyleAsync('dark').catch(console.error);
+      
+      // Also configure on app state changes
+      const handleAppStateChange = (nextAppState) => {
+        if (nextAppState === 'active') {
+          NavigationBar.setVisibilityAsync('visible').catch(console.error);
+        }
+      };
+      
+      const subscription = AppState.addEventListener('change', handleAppStateChange);
+      
+      return () => {
+        subscription?.remove();
+      };
+    }
+  }, []);
+
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <AuthProvider>
+    <Provider store={store}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
           <RootLayoutNav />
-        </AuthProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </Provider>
   );
 }
 

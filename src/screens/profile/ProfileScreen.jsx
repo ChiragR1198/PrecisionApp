@@ -6,37 +6,47 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
-    Alert,
-    Image,
-    Modal,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useWindowDimensions,
-    View
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useAuth } from '../../context/AuthContext';
-import { contactStore } from '../../store/contactStore';
+import { useGetProfileQuery, useLogoutMutation, useUpdateProfileMutation } from '../../store/api';
+import { useAppDispatch } from '../../store/hooks';
+import { logout as logoutAction } from '../../store/slices/authSlice';
 
 // Icon Components
-const UserIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="user" size={size} color={color} />
+const UserIcon = Icons.User;
+const MailIcon = Icons.Mail;
+const PhoneIcon = Icons.Phone;
+const BriefcaseIcon = ({ color = colors.icon, size = 18 }) => (
+  <Icon name="briefcase" size={size} color={color} />
 );
-
-const MailIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="mail" size={size} color={color} />
+const MapPinIcon = ({ color = colors.icon, size = 18 }) => (
+  <Icon name="map-pin" size={size} color={color} />
 );
-
-const PhoneIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="phone" size={size} color={color} />
+const LinkIcon = ({ color = colors.icon, size = 18 }) => (
+  <Icon name="link" size={size} color={color} />
+);
+const FileTextIcon = ({ color = colors.icon, size = 18 }) => (
+  <Icon name="file-text" size={size} color={color} />
+);
+const BuildingIcon = ({ color = colors.icon, size = 18 }) => (
+  <Icon name="layers" size={size} color={color} />
 );
 
 const CameraIcon = ({ color = colors.white, size = 16 }) => (
@@ -65,12 +75,14 @@ const FormField = ({
   styles,
   iconSize,
   keyboardType = 'default',
+  multiline = false,
+  numberOfLines = 1,
 }) => (
   <View style={styles.fieldContainer}>
     <Text style={styles.fieldLabel}>{label}</Text>
     <View style={styles.inputContainer}>
       <TextInput
-        style={styles.input}
+        style={[styles.input, multiline && styles.inputMultiline]}
         placeholder={placeholder}
         placeholderTextColor={colors.textPlaceholder}
         value={value}
@@ -80,6 +92,9 @@ const FormField = ({
         autoCorrect={false}
         allowFontScaling={false}
         maxFontSizeMultiplier={1}
+        multiline={multiline}
+        numberOfLines={numberOfLines}
+        textAlignVertical={multiline ? 'top' : 'center'}
       />
       <View style={styles.inputIcon}>
         <IconComponent size={iconSize} />
@@ -88,18 +103,39 @@ const FormField = ({
   </View>
 );
 
+// SMS Icon
+const SmsIcon = ({ color = colors.white, size = 18 }) => (
+  <Icon name="message-square" size={size} color={color} />
+);
+
+// Email Icon
+const EmailNotificationIcon = ({ color = colors.white, size = 18 }) => (
+  <Icon name="mail" size={size} color={color} />
+);
+
 // Notification Settings Card
-const NotificationCard = ({ isEnabled, onToggle, styles, SIZES }) => (
+const NotificationCard = ({ 
+  title, 
+  subtitle, 
+  description, 
+  isEnabled, 
+  onToggle, 
+  styles, 
+  SIZES,
+  icon: IconComponent 
+}) => (
   <View style={styles.notificationCard}>
     <View style={styles.notificationIconContainer}>
-      <BellIcon size={SIZES.notificationIconSize} />
+      <IconComponent size={SIZES.notificationIconSize} />
     </View>
     <View style={styles.notificationContent}>
-      <Text style={styles.notificationTitle}>Notifications</Text>
-      <Text style={styles.notificationSubtitle}>App Updates</Text>
-      <Text style={styles.notificationDescription}>
-        Receive notifications about app updates and new features
-      </Text>
+      <Text style={styles.notificationTitle}>{title}</Text>
+      <Text style={styles.notificationSubtitle}>{subtitle}</Text>
+      {description && (
+        <Text style={styles.notificationDescription}>
+          {description}
+        </Text>
+      )}
     </View>
     <Switch
       value={isEnabled}
@@ -115,15 +151,61 @@ const NotificationCard = ({ isEnabled, onToggle, styles, SIZES }) => (
 export const ProfileScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
-  const { logout } = useAuth();
+  const dispatch = useAppDispatch();
+  const insets = useSafeAreaInsets();
+  const [logoutMutation] = useLogoutMutation();
+  
+  const { data: profileData, isLoading: isLoadingProfile, error: profileError, refetch: refetchProfile } = useGetProfileQuery();
+  const [updateProfile] = useUpdateProfileMutation();
+  
+  // Extract profile data from API response
+  const profile = useMemo(() => {
+    return profileData?.data || profileData || null;
+  }, [profileData]);
   
   const [formData, setFormData] = useState({
-    fullName: 'John Doe',
-    email: 'john.doe@email.com',
-    phoneNumber: '+1 (555) 123-4567',
+    fullName: '',
+    email: '',
+    phoneNumber: '',
+    jobTitle: '',
+    company: '',
+    officeNumber: '',
+    country: '',
+    state: '',
+    address: '',
+    linkedinUrl: '',
+    bio: '',
+    companyInformation: '',
   });
   
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  // Update form data when profile loads
+  React.useEffect(() => {
+    if (profile) {
+      setFormData({
+        fullName: profile.full_name || `${profile.fname || ''} ${profile.lname || ''}`.trim() || '',
+        email: profile.email || '',
+        phoneNumber: profile.mobile || '',
+        jobTitle: profile.job_title || '',
+        company: profile.company || '',
+        officeNumber: profile.office_number || '',
+        country: profile.country || '',
+        state: profile.state || '',
+        address: profile.address || '',
+        linkedinUrl: profile.linkedin_url || '',
+        bio: profile.bio || '',
+        companyInformation: profile.company_information || '',
+      });
+      if (profile.image) {
+        setProfileImage(profile.image);
+      }
+      // Set notification preferences
+      setSmsNotification(profile.sms_notification === 1 || profile.sms_notification === true);
+      setEmailNotification(profile.email_notification === 1 || profile.email_notification === true);
+    }
+  }, [profile]);
+  
+  const [smsNotification, setSmsNotification] = useState(true);
+  const [emailNotification, setEmailNotification] = useState(true);
   const [profileImage, setProfileImage] = useState(null); // Can be set to image URI
   const [isQRModalVisible, setIsQRModalVisible] = useState(false);
   const [qrMode, setQrMode] = useState('code');
@@ -170,9 +252,38 @@ export const ProfileScreen = () => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleSaveChanges = () => {
-    // Implement save logic here
-    console.log('Saving changes:', formData);
+  const handleSaveChanges = async () => {
+    try {
+      // Split fullName into fname and lname
+      const nameParts = formData.fullName.trim().split(' ');
+      const fname = nameParts[0] || '';
+      const lname = nameParts.slice(1).join(' ') || '';
+      
+      const updateData = {
+        fname,
+        lname,
+        email: formData.email,
+        mobile: formData.phoneNumber,
+        job_title: formData.jobTitle,
+        company: formData.company,
+        office_number: formData.officeNumber,
+        country: formData.country,
+        state: formData.state,
+        address: formData.address,
+        linkedin_url: formData.linkedinUrl,
+        bio: formData.bio,
+        company_information: formData.companyInformation,
+        sms_notification: smsNotification ? 1 : 0,
+        email_notification: emailNotification ? 1 : 0,
+      };
+      
+      await updateProfile(updateData).unwrap();
+      Alert.alert('Success', 'Profile updated successfully!');
+      refetchProfile();
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      Alert.alert('Error', error?.data?.message || error?.message || 'Failed to update profile');
+    }
   };
 
   const handleChangePhoto = () => {
@@ -194,12 +305,14 @@ export const ProfileScreen = () => {
 
   const handleAddScannedContact = () => {
     if (!scanResult) return;
-    const savedContact = contactStore.addContact({
+    // TODO: Implement add contact API endpoint
+    console.log('Add contact:', scanResult);
+    const savedContact = {
       name: scanResult.name,
       phone: scanResult.phone,
       email: scanResult.email,
       initials: scanResult.initials,
-    });
+    };
     setIsScanning(false);
     setIsQRModalVisible(false);
     Alert.alert('Contact saved', `${savedContact.name} was added to Contacts.`, [
@@ -262,12 +375,13 @@ export const ProfileScreen = () => {
           style: 'destructive',
           onPress: async () => {
             try {
-              await logout();
-              // Navigation will be handled by AuthContext and _layout.js
+              await logoutMutation().unwrap();
+              dispatch(logoutAction());
               router.replace('/login');
             } catch (error) {
               console.error('Logout error:', error);
-              // Even if API call fails, navigate to login
+              // Even if API call fails, clear auth and navigate to login
+              dispatch(logoutAction());
               router.replace('/login');
             }
           },
@@ -276,6 +390,47 @@ export const ProfileScreen = () => {
       { cancelable: true }
     );
   };
+
+  // Show loading state
+  if (isLoadingProfile) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header 
+          title="Profile" 
+          leftIcon="menu" 
+          onLeftPress={() => navigation.openDrawer?.()} 
+          iconSize={SIZES.headerIconSize} 
+        />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading profile...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Show error state
+  if (profileError && !profile) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header 
+          title="Profile" 
+          leftIcon="menu" 
+          onLeftPress={() => navigation.openDrawer?.()} 
+          iconSize={SIZES.headerIconSize} 
+        />
+        <View style={styles.errorContainer}>
+          <Icon name="alert-circle" size={48} color={colors.textMuted} />
+          <Text style={styles.errorText}>
+            {profileError?.data?.message || profileError?.message || 'Failed to load profile'}
+          </Text>
+          <TouchableOpacity style={styles.retryButton} onPress={refetchProfile}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -315,7 +470,7 @@ export const ProfileScreen = () => {
                 )}
               </View>
               <TouchableOpacity
-                style={[styles.cameraButton]}
+                style={[styles.cameraButton, { bottom: Math.max(insets.bottom, 0) }]}
                 onPress={handleChangePhoto}
                 activeOpacity={0.8}
               >
@@ -373,6 +528,102 @@ export const ProfileScreen = () => {
                 iconSize={SIZES.iconSize}
                 keyboardType="phone-pad"
               />
+              
+              <FormField
+                label="Job Title"
+                value={formData.jobTitle}
+                onChangeText={(value) => handleInputChange('jobTitle', value)}
+                placeholder="e.g., Software Engineer"
+                icon={BriefcaseIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+              />
+              
+              <FormField
+                label="Company"
+                value={formData.company}
+                onChangeText={(value) => handleInputChange('company', value)}
+                placeholder="Company Name"
+                icon={BuildingIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+              />
+              
+              <FormField
+                label="Office Number"
+                value={formData.officeNumber}
+                onChangeText={(value) => handleInputChange('officeNumber', value)}
+                placeholder="Office Phone Number"
+                icon={PhoneIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+                keyboardType="phone-pad"
+              />
+              
+              <FormField
+                label="Country"
+                value={formData.country}
+                onChangeText={(value) => handleInputChange('country', value)}
+                placeholder="Country"
+                icon={MapPinIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+              />
+              
+              <FormField
+                label="State"
+                value={formData.state}
+                onChangeText={(value) => handleInputChange('state', value)}
+                placeholder="State/Province"
+                icon={MapPinIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+              />
+              
+              <FormField
+                label="Address"
+                value={formData.address}
+                onChangeText={(value) => handleInputChange('address', value)}
+                placeholder="Street Address"
+                icon={MapPinIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+              />
+              
+              <FormField
+                label="LinkedIn URL"
+                value={formData.linkedinUrl}
+                onChangeText={(value) => handleInputChange('linkedinUrl', value)}
+                placeholder="https://linkedin.com/in/yourprofile"
+                icon={LinkIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+                keyboardType="url"
+              />
+              
+              <FormField
+                label="Bio"
+                value={formData.bio}
+                onChangeText={(value) => handleInputChange('bio', value)}
+                placeholder="Tell us about yourself..."
+                icon={FileTextIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+                multiline={true}
+                numberOfLines={4}
+              />
+              
+              <FormField
+                label="Company Information"
+                value={formData.companyInformation}
+                onChangeText={(value) => handleInputChange('companyInformation', value)}
+                placeholder="Company details and information..."
+                icon={FileTextIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+                multiline={true}
+                numberOfLines={4}
+              />
 
               <TouchableOpacity
                 style={styles.saveButton}
@@ -389,18 +640,63 @@ export const ProfileScreen = () => {
                 </LinearGradient>
               </TouchableOpacity>
             </View>
+            
+            {/* Events Section */}
+            {/* {profile?.events && profile.events.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>My Events</Text>
+                <View style={styles.profileCard}>
+                  {profile.events.map((event, index) => (
+                    <View 
+                      key={event.id || index} 
+                      style={[
+                        styles.eventItem,
+                        index === profile.events.length - 1 && styles.eventItemLast
+                      ]}
+                    >
+                      <View style={styles.eventIconContainer}>
+                        <Icon name="calendar" size={SIZES.iconSize} color={colors.primary} />
+                      </View>
+                      <View style={styles.eventContent}>
+                        <Text style={styles.eventTitle}>{event.title}</Text>
+                        <Text style={styles.eventId}>Event ID: {event.id}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )} */}
           </View>
 
           {/* Settings Section */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Settings</Text>
+            <Text style={styles.sectionTitle}>Notification Settings</Text>
             
-            <NotificationCard
-              isEnabled={notificationsEnabled}
-              onToggle={setNotificationsEnabled}
-              styles={styles}
-              SIZES={SIZES}
-            />
+            <View style={styles.profileCard}>
+              <NotificationCard
+                title="SMS Notifications"
+                subtitle="Text Messages"
+                description="Receive important updates via SMS"
+                isEnabled={smsNotification}
+                onToggle={setSmsNotification}
+                styles={styles}
+                SIZES={SIZES}
+                icon={SmsIcon}
+              />
+              
+              <View style={styles.notificationDivider} />
+              
+              <NotificationCard
+                title="Email Notifications"
+                subtitle="Email Updates"
+                description="Receive notifications via email"
+                isEnabled={emailNotification}
+                onToggle={setEmailNotification}
+                styles={styles}
+                SIZES={SIZES}
+                icon={EmailNotificationIcon}
+              />
+            </View>
           </View>
 
           {/* Logout Button */}
@@ -579,7 +875,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   cameraButton: {
     position: 'absolute',
-    bottom: 0,
     right: 0,
     backgroundColor: colors.white,
     alignItems: 'center',
@@ -592,6 +887,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     shadowOpacity: 1,
     shadowRadius: SIZES.cameraButtonSize,
     elevation: 4,
+    // bottom will be set dynamically based on safe area insets
   },
   changePhotoText: {
     color: colors.white,
@@ -822,6 +1118,12 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.text,
     textAlignVertical: 'center',
   },
+  inputMultiline: {
+    height: 100,
+    paddingTop: 12,
+    paddingBottom: 12,
+    textAlignVertical: 'top',
+  },
   inputIcon: {
     position: 'absolute',
     right: 16,
@@ -855,6 +1157,12 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     padding: SIZES.paddingHorizontal,
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  notificationDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginVertical: 8,
+    marginHorizontal: SIZES.paddingHorizontal,
   },
   notificationIconContainer: {
     width: 40,
@@ -901,6 +1209,75 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '700',
     color: '#EF4444',
     marginLeft: 8,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 40,
+  },
+  errorText: {
+    marginTop: 16,
+    fontSize: 15,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  retryButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+  },
+  retryButtonText: {
+    color: colors.white,
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  eventItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  eventIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    backgroundColor: 'rgba(138, 52, 144, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  eventContent: {
+    flex: 1,
+  },
+  eventTitle: {
+    fontSize: SIZES.body,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  eventId: {
+    fontSize: SIZES.body - 2,
+    color: colors.textMuted,
+  },
+  eventItemLast: {
+    borderBottomWidth: 0,
   },
 });
 

@@ -1,6 +1,6 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useNavigation } from '@react-navigation/native';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   SectionList,
   StatusBar,
@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
-import { contactStore } from '../../store/contactStore';
+import { useGetContactsQuery } from '../../store/api';
 
 const DeleteIcon = ({ size = 18, color = '#EF4444' }) => <FontAwesome name="trash" size={size} color={color} />;
 
@@ -22,7 +22,13 @@ export const ContactsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
-  const [contacts, setContacts] = useState(contactStore.getContacts());
+  
+  const { data: contactsData, isLoading, error, refetch } = useGetContactsQuery();
+  
+  const contacts = useMemo(() => {
+    const data = contactsData?.data || contactsData || [];
+    return Array.isArray(data) ? data : [];
+  }, [contactsData]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isTabletDevice = SCREEN_WIDTH >= 768;
@@ -40,13 +46,6 @@ export const ContactsScreen = () => {
   }, [SCREEN_WIDTH]);
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
-
-  useEffect(() => {
-    const unsubscribe = contactStore.subscribe((nextContacts) => {
-      setContacts(nextContacts);
-    });
-    return unsubscribe;
-  }, []);
 
   const filteredContacts = useMemo(() => {
     if (!searchQuery.trim()) return contacts;
@@ -73,7 +72,8 @@ export const ContactsScreen = () => {
   }, [filteredContacts]);
 
   const handleDelete = (id) => {
-    contactStore.removeContact(id);
+    // TODO: Implement delete contact API endpoint
+    console.log('Delete contact:', id);
   };
 
   const renderContact = ({ item }) => (

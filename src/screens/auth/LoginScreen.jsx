@@ -1,4 +1,3 @@
-import Icon from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo, useRef, useState } from 'react';
@@ -17,25 +16,15 @@ import {
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useAuth } from '../../context/AuthContext';
+import { useLoginMutation } from '../../store/api';
 
 // Icon Components
-const EyeIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="eye" size={size} color={color} />
-);
-
-const EyeOffIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="eye-off" size={size} color={color} />
-);
-
-const MailIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="mail" size={size} color={color} />
-);
-
-const LockIcon = ({ color = colors.icon, size = 18 }) => (
-  <Icon name="lock" size={size} color={color} />
-);
+const EyeIcon = Icons.Eye;
+const EyeOffIcon = Icons.EyeOff;
+const MailIcon = Icons.Mail;
+const LockIcon = Icons.Lock;
 
 // FormField reusable field
 const FormField = ({
@@ -160,17 +149,16 @@ const formFields = [
 // Main LoginScreen Component
 export const LoginScreen = () => {
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
-  const { login } = useAuth();
+  const [login, { isLoading }] = useLoginMutation();
 
   const scrollViewRef = useRef(null);
 
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    userType: 'sponsor', // Default to sponsor
+    userType: 'delegate', // Default to delegate
   });
   const [passwordVisibility, setPasswordVisibility] = useState({});
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
   React.useEffect(() => {
@@ -268,24 +256,19 @@ export const LoginScreen = () => {
       return;
     }
 
-    setIsLoading(true);
     setError('');
 
     try {
-      const result = await login(formData.email.trim(), formData.password, formData.userType);
+      await login({
+        email: formData.email.trim(),
+        password: formData.password,
+        userType: formData.userType,
+      }).unwrap();
       
-      if (result.success) {
-        // Navigation will be handled by AuthContext and _layout.js
-        // The auth state change will trigger redirect to dashboard
-        router.replace('/(drawer)/dashboard');
-      } else {
-        // Error message is already set by authService (includes user type validation)
-        setError(result.error || 'Login failed. Please try again.');
-      }
+      // Navigation will be handled by Redux auth state and _layout.js
+      router.replace('/(drawer)/dashboard');
     } catch (err) {
-      setError(err.message || 'An unexpected error occurred. Please try again.');
-    } finally {
-      setIsLoading(false);
+      setError(err?.data?.message || err?.message || 'Login failed. Please try again.');
     }
   };
 

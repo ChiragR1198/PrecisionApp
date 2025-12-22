@@ -1,23 +1,25 @@
 import Icon from '@expo/vector-icons/Feather';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
-    Alert,
-    Linking,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  Alert,
+  Image,
+  Linking,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
+import { useCreateMeetingRequestMutation } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 const UserIcon = ({ color = colors.white, size = 18 }) => (
   <Icon name="user" size={size} color={color} />
@@ -50,28 +52,30 @@ const ExternalLinkIcon = ({ color = colors.textMuted, size = 16 }) => (
 export const DelegateDetailsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
-  const navigation = useNavigation();
-  const [priority, setPriority] = useState('Medium');
+  const [priority, setPriority] = useState('1st');
+  const { user } = useAppSelector((state) => state.auth);
+  const [createMeetingRequest] = useCreateMeetingRequestMutation();
 
-  // Get delegate data from params or use default
+  // Get delegate data from params
   const delegate = useMemo(() => {
-    const defaultDelegate = {
-      id: '1',
-      name: 'Sarah Johnson',
-      role: 'Senior Product Manager',
-      company: 'TechCorp Solutions',
-      service: 'Product',
-      email: 'sarah.johnson@techcorp.com',
-      phone: '+1 (555) 123-4567',
-      linkedin: 'linkedin.com/in/sarahjohnson',
-      industry: 'Technology & Software',
-      yearsOfExperience: '8+ years',
-      location: 'San Francisco, CA',
-      joinedAt: '2025-03-10',
-    };
+    if (!params?.delegate) {
+      return {
+        id: '',
+        name: 'No Data',
+        role: '',
+        company: '',
+        service: '',
+        email: '',
+        phone: '',
+        linkedin: '',
+        address: '',
+        bio: '',
+        image: null,
+      };
+    }
 
-    // If params exist, merge with default
-    return params?.delegate ? { ...defaultDelegate, ...JSON.parse(params.delegate) } : defaultDelegate;
+    const parsedDelegate = JSON.parse(params.delegate);
+    return parsedDelegate;
   }, [params]);
 
   const { SIZES, isTablet } = useMemo(() => {
@@ -103,9 +107,29 @@ export const DelegateDetailsScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  const handleSendMeetingRequest = async () => {
+    try {
+      // Map priority text to number: 1st=1, 2nd=2
+      const priorityMap = { '1st': 1, '2nd': 2 };
+      const priorityValue = priorityMap[priority] || 1;
+
+      // Prepare payload
+      const payload = {
+        sponsor_id: Number(delegate.id),
+        priority: priorityValue,
+        event_id: Number(user?.event_id || 27),
+      };
+
+      await createMeetingRequest(payload).unwrap();
+
+      Alert.alert('Success', 'Meeting request sent successfully');
+    } catch (e) {
+      console.error('Error sending meeting request:', e);
+      Alert.alert('Error', e.message || 'Failed to send meeting request');
+    }
+  };
+
   const handleStartChat = () => {
-    // Implement chat functionality
-    console.log('Start chat with', delegate.name);
   };
 
   const handleCopyEmail = () => {
@@ -168,26 +192,34 @@ export const DelegateDetailsScreen = () => {
       <Header 
         title="Delegate Details" 
         leftIcon="arrow-left" 
-        onLeftPress={() => navigation.goBack?.()}
+        onLeftPress={() => router.push('/attendees')}
         iconSize={SIZES.headerIconSize} 
       />
 
-      <ScrollView 
-        style={styles.scrollView} 
-        contentContainerStyle={styles.scrollContent} 
-        showsVerticalScrollIndicator={false} 
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
         bounces={false}
       >
         <View style={styles.content}>
           {/* Profile Section */}
           <View style={styles.profileSection}>
             <View style={[styles.profilePicture, { width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }]}>
-              <UserIcon size={SIZES.profileSize * 0.5} />
+              {delegate.image ? (
+                <Image
+                  source={{ uri: delegate.image }}
+                  style={{ width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }}
+                  resizeMode="cover"
+                />
+              ) : (
+                <UserIcon size={SIZES.profileSize * 0.5} />
+              )}
             </View>
             <Text style={styles.delegateName}>{delegate.name}</Text>
             <Text style={styles.delegateRole}>{delegate.role}</Text>
             <Text style={styles.delegateCompany}>{delegate.company}</Text>
-            
+
             <TouchableOpacity style={styles.startChatButton} onPress={handleStartChat} activeOpacity={0.8}>
               <LinearGradient
                 colors={colors.gradient}
@@ -201,62 +233,120 @@ export const DelegateDetailsScreen = () => {
             </TouchableOpacity>
           </View>
 
-          {/* Contact Information Section */}
+          {delegate.name === 'No Data' ? (
+            <View style={styles.noDataContainer}>
+              <Text style={styles.noDataText}>No delegate information available</Text>
+            </View>
+          ) : (
+            <>
+              {/* Contact Information Section */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Contact Information</Text>
             <View style={styles.contactCard}>
-              <ContactItem
-                icon={MailIcon}
-                value={delegate.email}
-                actionIcon={CopyIcon}
-                onAction={handleCopyEmail}
-              />
-              <ContactItem
-                icon={PhoneIcon}
-                value={delegate.phone}
-                actionIcon={PhoneIcon}
-                onAction={handleCall}
-              />
-              <ContactItem
-                icon={LinkedinIcon}
-                value={delegate.linkedin}
-                actionIcon={ExternalLinkIcon}
-                onAction={handleOpenLinkedIn}
-              />
+              {delegate.email && (
+                <ContactItem
+                  icon={MailIcon}
+                  value={delegate.email}
+                  actionIcon={CopyIcon}
+                  onAction={handleCopyEmail}
+                />
+              )}
+              {delegate.phone && (
+                <ContactItem
+                  icon={PhoneIcon}
+                  value={delegate.phone}
+                  actionIcon={PhoneIcon}
+                  onAction={handleCall}
+                />
+              )}
+              {delegate.linkedin && (
+                <ContactItem
+                  icon={LinkedinIcon}
+                  value={delegate.linkedin}
+                  actionIcon={ExternalLinkIcon}
+                  onAction={handleOpenLinkedIn}
+                />
+              )}
             </View>
           </View>
+
+          {/* Bio Section */}
+          {(() => {
+            const cleanedBio = delegate.bio
+              ? delegate.bio
+                  .replace(/<br\s*\/?>/gi, '\n')
+                  .replace(/<\/p>/gi, '\n\n')
+                  .replace(/<[^>]*>/g, '')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+              : '';
+
+            return cleanedBio ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Bio</Text>
+                <View style={styles.bioCard}>
+                  <Text style={styles.bioText}>{cleanedBio}</Text>
+                </View>
+              </View>
+            ) : null;
+          })()}
+
+          {/* Address Section */}
+          {delegate.address && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Address</Text>
+              <View style={styles.addressCard}>
+                <DetailRow label="Location" value={delegate.address} />
+              </View>
+            </View>
+          )}
 
           {/* Select Priority Section */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Select Priority</Text>
             <View style={styles.priorityContainer}>
               <PriorityButton
-                label="Low"
-                isSelected={priority === 'Low'}
-                onPress={() => setPriority('Low')}
+                label="1st"
+                isSelected={priority === '1st'}
+                onPress={() => setPriority('1st')}
               />
               <PriorityButton
-                label="Medium"
-                isSelected={priority === 'Medium'}
-                onPress={() => setPriority('Medium')}
-              />
-              <PriorityButton
-                label="High"
-                isSelected={priority === 'High'}
-                onPress={() => setPriority('High')}
+                label="2nd"
+                isSelected={priority === '2nd'}
+                onPress={() => setPriority('2nd')}
               />
             </View>
           </View>
 
-          {/* Details Section */}
+          {/* Send Request Button */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Details</Text>
-            <View style={styles.detailsCard}>
-              <DetailRow label="Industry" value={delegate.industry} />
-              <DetailRow label="Years of Experience" value={delegate.yearsOfExperience} />
-              <DetailRow label="Location" value={delegate.location} />
-            </View>
+            <TouchableOpacity 
+              style={styles.sendRequestButton} 
+              onPress={handleSendMeetingRequest} 
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={colors.gradient}
+                style={styles.sendRequestGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.sendRequestText}>Send Request</Text>
+              </LinearGradient>
+            </TouchableOpacity>
           </View>
+
+              {/* Details Section */}
+              {/* <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Details</Text>
+                <View style={styles.detailsCard}>
+                  <DetailRow label="Industry" value={delegate.industry} />
+                  <DetailRow label="Years of Experience" value={delegate.yearsOfExperience} />
+                  <DetailRow label="Location" value={delegate.location} />
+                </View>
+              </View> */}
+            </>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -349,6 +439,28 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 14,
   },
+  bioCard: {
+    padding: SIZES.paddingHorizontal / 2,
+  },
+  bioText: {
+    fontSize: SIZES.body,
+    color: colors.text,
+    lineHeight: 20,
+  },
+  addressCard: {
+    padding: SIZES.paddingHorizontal / 2,
+  },
+  noDataContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  noDataText: {
+    fontSize: SIZES.body,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
   contactLeft: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -407,6 +519,23 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: SIZES.body,
     fontWeight: '600',
     color: colors.text,
+  },
+  sendRequestButton: {
+    width: '100%',
+    borderRadius: radius.md,
+    overflow: 'hidden',
+  },
+  sendRequestGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+  },
+  sendRequestText: {
+    fontSize: SIZES.body,
+    fontWeight: '600',
+    color: colors.white,
   },
 });
 

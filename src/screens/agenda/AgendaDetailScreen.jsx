@@ -4,9 +4,10 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Platform,
   ScrollView,
   StyleSheet,
@@ -17,7 +18,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
+import { useGetAgendaDetailsQuery } from '../../store/api';
 
 const ClockIcon = ({ color = colors.white, size = 20 }) => (
   <MaterialCommunityIcons name="clock" size={size} color={color} />
@@ -31,61 +34,89 @@ const MapPinIcon = ({ color = colors.white, size = 18 }) => (
     <FontAwesome6 name="map-location-dot" size={size} color={color} />
 );
 
-const UserIcon = ({ color = colors.white, size = 24 }) => (
-  <Icon name="user" size={size} color={color} />
-);
+const UserIcon = Icons.User;
+const ChevronRightIcon = Icons.ChevronRight;
 
-const ChevronRightIcon = ({ color = colors.primary, size = 18 }) => (
-  <Icon name="chevron-right" size={size} color={color} />
-);
+// Helper function to format time from "08:00:00" to "8:00 AM"
+const formatTime = (timeStr) => {
+  if (!timeStr) return '';
+  const [hours, minutes] = timeStr.split(':');
+  const hour = parseInt(hours, 10);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${minutes} ${ampm}`;
+};
+
+// Helper function to format date
+const formatDateDisplay = (dateStr) => {
+  if (!dateStr) return { date: '', dayName: '' };
+  const date = new Date(dateStr);
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  return {
+    date: `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`,
+    dayName: days[date.getDay()],
+  };
+};
 
 export const AgendaDetailScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const navigation = useNavigation();
+  
+  const { data: agendaData, isLoading, error, refetch } = useGetAgendaDetailsQuery(
+    params?.agendaId,
+    { skip: !params?.agendaId }
+  );
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load agenda details.';
+  }, [error]);
+  
+  const selectedAgendaItem = useMemo(() => {
+    return agendaData?.data || agendaData || null;
+  }, [agendaData]);
 
-  // Get agenda item data from params or use default
+  // Transform agenda item data for display
   const agendaItem = useMemo(() => {
-    const defaultItem = {
-      id: 1,
-      title: 'AI and Machine Learning in Modern Healthcare',
-      duration: '75 min',
-      time: '2:30 PM - 3:45 PM',
-      description: 'Explore the transformative impact of AI and machine learning in healthcare. This comprehensive session covers cutting-edge applications, real-world case studies, and future trends shaping the medical industry. Learn about diagnostic imaging enhancement, predictive analytics for patient outcomes, drug discovery acceleration, and personalized treatment recommendations. Perfect for healthcare professionals, researchers, and technology enthusiasts.',
-      location: 'Conference Hall A',
-      locationDetails: 'Building 2, Floor 3',
-      date: 'March 15, 2025',
-      dayName: 'Friday',
-      category: 'Conference',
-      speakers: [
-        {
-          id: 1,
-          name: 'Dr. Sarah Johnson',
-          title: 'AI Research Director, MedTech Labs',
-          avatar: true,
-        },
-        {
-          id: 2,
-          name: 'Prof. Michael Chen',
-          title: 'Machine Learning Expert, Stanford',
-          avatar: true,
-        },
-      ],
-      keyTopics: [
-        'Diagnostic Imaging',
-        'Predictive Analytics',
-        'Drug Discovery',
-        'Personalized Treatment',
-      ],
-    };
+    if (!selectedAgendaItem) {
+      return {
+        id: null,
+        title: 'Loading...',
+        time: '',
+        description: '',
+        location: '',
+        date: '',
+        dayName: '',
+        category: 'Session',
+        speakers: [],
+      };
+    }
 
-    // If params exist, merge with default
-    return params?.agendaItem ? { ...defaultItem, ...JSON.parse(params.agendaItem) } : defaultItem;
-  }, [params]);
+    const dateFormatted = formatDateDisplay(selectedAgendaItem.date);
+    return {
+      id: selectedAgendaItem.id,
+      title: selectedAgendaItem.title || 'Untitled Session',
+      time: formatTime(selectedAgendaItem.time),
+      description: selectedAgendaItem.description || '',
+      location: selectedAgendaItem.location || selectedAgendaItem.venue || '',
+      locationDetails: '',
+      date: dateFormatted.date,
+      dayName: dateFormatted.dayName,
+      category: 'Session',
+      speakers: [],
+    };
+  }, [selectedAgendaItem]);
+
+  const descriptionText = agendaItem.description || 'No description available.';
 
   // Description expand state and long-desc boolean.
   const [isDescExpanded, setIsDescExpanded] = useState(false);
-  const isLongDescription = (agendaItem?.description?.length || 0) > 220;
+  const isLongDescription = (descriptionText?.length || 0) > 220;
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -139,12 +170,46 @@ export const AgendaDetailScreen = () => {
     </View>
   );
 
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header 
+          title="Agenda Detail" 
+          leftIcon="arrow-left" 
+          onLeftPress={() => router.push('/agenda')} 
+          iconSize={SIZES.headerIconSize} 
+        />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading agenda details...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (error) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header 
+          title="Agenda Detail" 
+          leftIcon="arrow-left" 
+          onLeftPress={() => router.push('/agenda')} 
+          iconSize={SIZES.headerIconSize} 
+        />
+        <View style={styles.errorContainer}>
+          <Icon name="alert-circle" size={48} color={colors.textMuted} />
+          <Text style={styles.errorText}>{errorMessage}</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <Header 
         title="Agenda Detail" 
         leftIcon="arrow-left" 
-        onLeftPress={() => navigation.goBack?.()} 
+        onLeftPress={() => router.push('/agenda')} 
         iconSize={SIZES.headerIconSize} 
       />
 
@@ -199,19 +264,21 @@ export const AgendaDetailScreen = () => {
               </View>
             </View>
 
-            {/* Speakers Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Speakers</Text>
-              {agendaItem.speakers.map((speaker, index) => (
-                <SpeakerCard key={speaker.id} speaker={speaker} isLast={index === agendaItem.speakers.length - 1} />
-              ))}
-            </View>
+            {/* Speakers Section - Only show if speakers exist */}
+            {agendaItem.speakers && agendaItem.speakers.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Speakers</Text>
+                {agendaItem.speakers.map((speaker, index) => (
+                  <SpeakerCard key={speaker.id} speaker={speaker} isLast={index === agendaItem.speakers.length - 1} />
+                ))}
+              </View>
+            )}
 
             {/* Description Section */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Description</Text>
               <Text style={styles.descriptionText}>
-                {isDescExpanded ? agendaItem.description : agendaItem.description.substring(0, 200) + '...'}
+                {isDescExpanded ? descriptionText : descriptionText.substring(0, 200) + (descriptionText.length > 200 ? '...' : '')}
               </Text>
 
               {isLongDescription ? (
@@ -438,6 +505,30 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 40,
+  },
+  errorText: {
+    marginTop: 16,
+    fontSize: 15,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
 });
 

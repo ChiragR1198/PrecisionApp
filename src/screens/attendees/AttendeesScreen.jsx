@@ -1,45 +1,70 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Animated,
   Dimensions,
   FlatList,
+  Image,
   Modal,
   PixelRatio,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
+import { useCreateMeetingRequestMutation, useGetAttendeesQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 console.log('Platform:', Platform.OS);
 console.log('Screen:', Dimensions.get('window'));
 console.log('Pixel Ratio:', PixelRatio.get());
 
-const ChevronRightIcon = ({ color = colors.primary, size = 20 }) => (
-  <Icon name="chevron-right" size={size} color={color} />
-);
-
-const UserIcon = ({ color = colors.white, size = 18 }) => (
-  <Icon name="user" size={size} color={color} />
-);
+const ChevronRightIcon = Icons.ChevronRight;
+const UserIcon = Icons.User;
 
 export const AttendeesScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
+  const { data: attendeesData, isLoading, error, refetch } = useGetAttendeesQuery();
+  const [createMeetingRequest] = useCreateMeetingRequestMutation();
+  const { user } = useAppSelector((state) => state.auth);
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load attendees.';
+  }, [error]);
+
+  const attendees = useMemo(() => {
+    return attendeesData?.data || attendeesData || [];
+  }, [attendeesData]);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedService, setSelectedService] = useState(null);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
   const [sortBy, setSortBy] = useState('Name (A to Z)');
+  const [selectedAttendee, setSelectedAttendee] = useState(null);
+  const [selectedPriority, setSelectedPriority] = useState('1st');
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const modalAnim = useRef(new Animated.Value(0)).current;
+  
+
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -97,104 +122,44 @@ export const AttendeesScreen = () => {
     ]
   ), []);
 
-  const DATA = useMemo(() => ([
-    { 
-      id: '1', 
-      name: 'Sarah Johnson', 
-      role: 'Senior Product Manager', 
-      company: 'TechCorp Solutions', 
-      service: 'Product', 
-      joinedAt: '2025-03-10',
-      email: 'sarah.johnson@techcorp.com',
-      phone: '+1 (555) 123-4567',
-      linkedin: 'linkedin.com/in/sarahjohnson',
-      industry: 'Technology & Software',
-      yearsOfExperience: '8+ years',
-      location: 'San Francisco, CA',
-    },
-    { 
-      id: '2', 
-      name: 'Michael Chen', 
-      role: 'Lead Developer', 
-      company: 'InnovateLab', 
-      service: 'Development', 
-      joinedAt: '2025-03-14',
-      email: 'michael.chen@innovatelab.com',
-      phone: '+1 (555) 234-5678',
-      linkedin: 'linkedin.com/in/michaelchen',
-      industry: 'Technology & Software',
-      yearsOfExperience: '10+ years',
-      location: 'New York, NY',
-    },
-    { 
-      id: '3', 
-      name: 'Emily Rodriguez', 
-      role: 'Marketing Director', 
-      company: 'BrandForward Agency', 
-      service: 'Marketing', 
-      joinedAt: '2025-03-09',
-      email: 'emily.rodriguez@brandforward.com',
-      phone: '+1 (555) 345-6789',
-      linkedin: 'linkedin.com/in/emilyrodriguez',
-      industry: 'Marketing & Advertising',
-      yearsOfExperience: '7+ years',
-      location: 'Los Angeles, CA',
-    },
-    { 
-      id: '4', 
-      name: 'David Park', 
-      role: 'UX Designer', 
-      company: 'CreativeStudio', 
-      service: 'Design', 
-      joinedAt: '2025-03-12',
-      email: 'david.park@creativestudio.com',
-      phone: '+1 (555) 456-7890',
-      linkedin: 'linkedin.com/in/davidpark',
-      industry: 'Design & Creative',
-      yearsOfExperience: '6+ years',
-      location: 'Seattle, WA',
-    },
-    { 
-      id: '5', 
-      name: 'Lisa Thompson', 
-      role: 'Sales Manager', 
-      company: 'GlobalSales Co.', 
-      service: 'Sales', 
-      joinedAt: '2025-03-08',
-      email: 'lisa.thompson@globalsales.com',
-      phone: '+1 (555) 567-8901',
-      linkedin: 'linkedin.com/in/lisathompson',
-      industry: 'Sales & Business Development',
-      yearsOfExperience: '9+ years',
-      location: 'Chicago, IL',
-    },
-    { 
-      id: '6', 
-      name: 'Alex Kumar', 
-      role: 'Data Analyst', 
-      company: 'DataInsights Ltd.', 
-      service: 'Data', 
-      joinedAt: '2025-03-15',
-      email: 'alex.kumar@datainsights.com',
-      phone: '+1 (555) 678-9012',
-      linkedin: 'linkedin.com/in/alexkumar',
-      industry: 'Data & Analytics',
-      yearsOfExperience: '5+ years',
-      location: 'Austin, TX',
-    },
-  ]), []);
+  // Transform API data to UI format
+  // NOTE: We keep the full original attendee object (...attendee)
+  // so that ANY field coming from backend (present or future)
+  // is available in the app (e.g. address, bio, linkedin_url, etc.)
+  const DATA = useMemo(() => {
+    if (!attendees || attendees.length === 0) return [];
+    return attendees.map((attendee) => ({
+      // Full raw response per attendee from API
+      ...attendee,
+      // Normalized / UI-friendly fields (override or add)
+      id: attendee.id,
+      name: attendee.name || 'Unknown',
+      role: attendee.job_title || '',
+      company: attendee.company || '',
+      service: 'All Services', // API doesn't provide service, so default to 'All Services'
+      email: attendee.email || '',
+      phone: attendee.mobile || '',
+      image: attendee.image || null,
+      // If backend sends these, they will be preserved
+      address: attendee.address || attendee.Address || '',
+      bio: attendee.bio || '',
+      linkedin: attendee.linkedin_url || attendee.linkedin || '',
+      status: attendee.status,
+    }));
+  }, [attendees]);
 
   const filteredData = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     let base = DATA;
-    if (selectedService && selectedService !== 'All Services') {
-      base = base.filter((a) => a.service === selectedService);
-    }
+    // Service filter disabled - API doesn't provide service field
+    // if (selectedService && selectedService !== 'All Services') {
+    //   base = base.filter((a) => a.service === selectedService);
+    // }
     if (q) {
       base = base.filter((a) =>
-        a.name.toLowerCase().includes(q) ||
-        a.role.toLowerCase().includes(q) ||
-        a.company.toLowerCase().includes(q)
+        (a.name || '').toLowerCase().includes(q) ||
+        (a.role || '').toLowerCase().includes(q) ||
+        (a.company || '').toLowerCase().includes(q)
       );
     }
     // Apply sorting
@@ -216,10 +181,12 @@ export const AttendeesScreen = () => {
         sorted.sort((a, b) => String(b.role || '').localeCompare(String(a.role || '')));
         break;
       case 'Newest':
-        sorted.sort((a, b) => new Date(b.joinedAt) - new Date(a.joinedAt));
+        // API doesn't provide date field, so sort by ID (newest = higher ID)
+        sorted.sort((a, b) => parseInt(b.id) - parseInt(a.id));
         break;
       case 'Oldest':
-        sorted.sort((a, b) => new Date(a.joinedAt) - new Date(b.joinedAt));
+        // API doesn't provide date field, so sort by ID (oldest = lower ID)
+        sorted.sort((a, b) => parseInt(a.id) - parseInt(b.id));
         break;
       case 'Name (A to Z)':
       default:
@@ -228,6 +195,55 @@ export const AttendeesScreen = () => {
     }
     return sorted;
   }, [searchQuery, selectedService, sortBy, DATA]);
+
+  const openModal = (attendee) => {
+    setSelectedPriority('1st');
+    setSelectedAttendee(attendee);
+    setIsModalVisible(true);
+  };
+
+  const closeModal = () => {
+    setIsModalVisible(false);
+  };
+
+  useEffect(() => {
+    if (isModalVisible) {
+      Animated.spring(modalAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 8,
+      }).start();
+    } else if (selectedAttendee) {
+      Animated.timing(modalAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setSelectedAttendee(null);
+        }
+      });
+    }
+  }, [isModalVisible, modalAnim, selectedAttendee]);
+
+  const handleSendMeetingRequest = async () => {
+    if (!selectedAttendee) return;
+
+    try {
+      const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
+      const priorityValue = priorityMap[selectedPriority] || 1;
+
+      await createMeetingRequest({
+        sponsor_id: Number(selectedAttendee.id),
+        priority: priorityValue,
+        event_id: Number(user?.event_id || 27),
+      }).unwrap();
+
+      closeModal();
+    } catch (e) {
+      console.error('Error sending meeting request:', e);
+    }
+  };
 
   const renderItem = ({ item }) => (
     <TouchableOpacity 
@@ -243,16 +259,72 @@ export const AttendeesScreen = () => {
       }}
     >
       <View style={[styles.avatar, { width: SIZES.avatarSize, height: SIZES.avatarSize, borderRadius: SIZES.avatarSize / 2 }]}>
-       <UserIcon size={SIZES.avatarSize * 0.5} />
+        {item.image ? (
+          <Image 
+            source={{ uri: item.image }} 
+            style={{ width: SIZES.avatarSize, height: SIZES.avatarSize, borderRadius: SIZES.avatarSize / 2 }}
+            resizeMode="cover"
+          />
+        ) : (
+          <UserIcon size={SIZES.avatarSize * 0.5} />
+        )}
       </View>
       <View style={styles.rowInfo}>
         <Text style={styles.rowName}>{item.name}</Text>
         <Text style={styles.rowMeta} numberOfLines={1}>{item.role}</Text>
         <Text style={[styles.rowMeta1]} numberOfLines={1}>{item.company}</Text>
       </View>
-      <ChevronRightIcon />
+      <TouchableOpacity 
+        style={styles.requestButton}
+        activeOpacity={0.85}
+        onPress={(e) => {
+          e.stopPropagation();
+          openModal(item);
+        }}
+      >
+        <Text style={styles.requestButtonText}>Request</Text>
+      </TouchableOpacity>
     </TouchableOpacity>
   );
+
+  // Show loading state
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header 
+          title="Attendees" 
+          leftIcon="menu" 
+          onLeftPress={() => navigation.openDrawer?.()} 
+          iconSize={SIZES.headerIconSize} 
+        />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading attendees...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header 
+          title="Attendees" 
+          leftIcon="menu" 
+          onLeftPress={() => navigation.openDrawer?.()} 
+          iconSize={SIZES.headerIconSize} 
+        />
+        <View style={styles.errorContainer}>
+          <Icon name="alert-circle" size={48} color={colors.textMuted} />
+          <Text style={styles.errorText}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={refetch}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -265,38 +337,73 @@ export const AttendeesScreen = () => {
 
       <View style={styles.contentWrap}>
         <View style={styles.content}>
-          <SearchBar
-            placeholder="Search attendees..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={styles.searchBar}
-          />
-
-          <View style={styles.filtersRow}>
-            <TouchableOpacity style={styles.selectServiceBtn} activeOpacity={0.8} onPress={() => setIsFilterOpen(true)}>
-              <View style={styles.selectServiceContent}>
-                <Text style={styles.selectServiceText}>{selectedService || 'Select Service'}</Text>
-                <Icon name="chevron-down" size={16} color={colors.text} />
+          {isDelegate ? (
+            <View style={styles.searchRow}>
+              <View style={styles.searchBarWrapper}>
+                <SearchBar
+                  placeholder="Search attendees..."
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  style={styles.searchBarInline}
+                />
               </View>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.filterIconBtn} activeOpacity={0.8} onPress={() => setIsSortOpen(true)}>
-              <Icon name="sliders" size={18} color={colors.white} />
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity
+                style={styles.filterIconBtn}
+                activeOpacity={0.8}
+                onPress={() => setIsSortOpen(true)}
+              >
+                <Icon name="sliders" size={18} color={colors.white} />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <SearchBar
+                placeholder="Search attendees..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                style={styles.searchBar}
+              />
+              <View style={styles.filtersRow}>
+                 {/* <TouchableOpacity style={styles.selectServiceBtn} activeOpacity={0.8} onPress={() => setIsFilterOpen(true)}>
+                    <View style={styles.selectServiceContent}>
+                      <Text style={styles.selectServiceText}>{selectedService || 'Select Service'}</Text>
+                      <Icon name="chevron-down" size={16} color={colors.text} />
+                    </View>
+                  </TouchableOpacity> */}
+                <TouchableOpacity style={styles.filterIconBtn} activeOpacity={0.8} onPress={() => setIsSortOpen(true)}>
+                  <Icon name="sliders" size={18} color={colors.white} />
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
 
           <View style={styles.countRow}>
             <View style={styles.countDot} />
             <Text style={styles.countText}>{String(filteredData.length)} ATTENDEES</Text>
           </View>
 
-          <FlatList
-            data={filteredData}
-            keyExtractor={(item) => item.id}
-            renderItem={renderItem}
-            ItemSeparatorComponent={() => <View style={styles.separator} />}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-          />
+          {filteredData.length > 0 ? (
+            <FlatList
+              data={filteredData}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={renderItem}
+              ItemSeparatorComponent={() => <View style={styles.separator} />}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+            />
+          ) : (
+            <View style={styles.emptyState}>
+              <Icon name="users" size={48} color={colors.textMuted} />
+              <Text style={styles.emptyText}>
+                {searchQuery ? 'No attendees found' : 'No attendees available'}
+              </Text>
+              <Text style={styles.emptySubtext}>
+                {searchQuery 
+                  ? 'Try a different search term or clear the search.'
+                  : 'Check back later for attendee information.'}
+              </Text>
+            </View>
+          )}
         </View>
       </View>
       {/* Filter modal */}
@@ -361,6 +468,94 @@ export const AttendeesScreen = () => {
           </View>
         </View>
       </Modal>
+
+      {/* Meeting Request Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isModalVisible || !!selectedAttendee}
+        onRequestClose={closeModal}
+      >
+        <View style={styles.modalBackdrop2}>
+          <Animated.View style={[styles.modalOverlay, { opacity: modalAnim }]}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
+          </Animated.View>
+          <Animated.View
+            style={[
+              styles.modalCard2,
+              {
+                transform: [
+                  {
+                    translateY: modalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.modalHeader2}>
+              <Text style={styles.modalTitle2}>Send Meeting Request</Text>
+              <TouchableOpacity onPress={closeModal}>
+                <Text style={styles.closeText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {selectedAttendee && (
+              <>
+                <View style={styles.modalContactRow}>
+                  <View style={styles.modalAvatar}>
+                    {selectedAttendee.image ? (
+                      <Image 
+                        source={{ uri: selectedAttendee.image }} 
+                        style={styles.avatarImage} 
+                      />
+                    ) : (
+                      <View style={[styles.avatarImage, { backgroundColor: colors.gray200, alignItems: 'center', justifyContent: 'center' }]}>
+                        <UserIcon size={24} color={colors.textMuted} />
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.modalContactInfo}>
+                    <Text style={styles.modalContactName}>{selectedAttendee.name}</Text>
+                    <Text style={styles.modalContactCompany}>{selectedAttendee.company}</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.priorityLabel}>Select Priority</Text>
+                <View style={styles.priorityRow}>
+                  {['1st', '2nd'].map((level) => {
+                    const isActive = selectedPriority === level;
+                    return (
+                      <TouchableOpacity
+                        key={level}
+                        style={[styles.priorityChip, isActive && styles.priorityChipActive]}
+                        onPress={() => setSelectedPriority(level)}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>{level}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <View style={styles.separator3}/>
+                <View style={styles.modalButtonRow}>
+                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeModal}>
+                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.primaryButton]}
+                    onPress={handleSendMeetingRequest}
+                  >
+                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </Animated.View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -382,6 +577,19 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   searchBar: {
     marginTop: 12,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  searchBarWrapper: {
+    flex: 1,
+    height: SIZES.filterHeight,
+  },
+  searchBarInline: {
+    height: SIZES.filterHeight,
   },
   filtersRow: {
     flexDirection: 'row',
@@ -469,6 +677,17 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 13,
     color: colors.primary,
   },
+  requestButton: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  requestButtonText: {
+    color: colors.white,
+    fontWeight: '600',
+    fontSize: SIZES.body,
+  },
   separator: {
     height: 1,
     backgroundColor: colors.border,
@@ -546,6 +765,189 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   modalCloseText: {
     color: colors.primary,
     fontWeight: '600',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 40,
+  },
+  errorText: {
+    marginTop: 16,
+    fontSize: 15,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+  },
+  retryButtonText: {
+    color: colors.white,
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
+  emptyText: {
+    marginTop: 16,
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  emptySubtext: {
+    marginTop: 8,
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  // Meeting Request Modal styles
+  modalBackdrop2: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'transparent',
+  },
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  modalCard2: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+  },
+  modalHeader2: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle2: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  closeText: {
+    fontSize: 20,
+    color: colors.textMuted,
+  },
+  modalContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: colors.gray50,
+    marginBottom: 16,
+  },
+  modalAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: 'hidden',
+    marginRight: 12,
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  modalContactInfo: {
+    flex: 1,
+  },
+  modalContactName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  modalContactCompany: {
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  priorityLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  priorityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  priorityChip: {
+    flex: 1,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    marginHorizontal: 4,
+    alignItems: 'center',
+  },
+  priorityChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  priorityChipText: {
+    color: colors.text,
+    fontWeight: '600',
+  },
+  priorityChipTextActive: {
+    color: colors.white,
+  },
+  separator3: {
+    backgroundColor: colors.gray100,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 20,
+    opacity: 0.5,
+  },
+  modalButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    borderRadius: radius.md,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  cancelButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  primaryButton: {
+    backgroundColor: colors.primary,
+  },
+  modalButtonText: {
+    fontWeight: '600',
+  },
+  cancelButtonText: {
+    color: colors.text,
+  },
+  primaryButtonText: {
+    color: colors.white,
   },
 });
 

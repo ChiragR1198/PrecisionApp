@@ -5,12 +5,13 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Octicons from '@expo/vector-icons/Octicons';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams } from 'expo-router';
 import { useNavigation } from '@react-navigation/native';
-import React, { useMemo, useState } from 'react';
+import { LinearGradient } from 'expo-linear-gradient';
+import { router, useLocalSearchParams } from 'expo-router';
+import React, { useMemo } from 'react';
 import {
   Alert,
+  Image,
   Linking,
   Platform,
   ScrollView,
@@ -20,9 +21,10 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
+import { useAppSelector } from '../../store/hooks';
 
 const MailIcon = ({ color = colors.primary, size = 22 }) => (
   <MaterialIcons name="email" size={size} color={color} />
@@ -68,14 +70,40 @@ const InfoIcon = ({ color = colors.primary, size = 24 }) => (
   <Ionicons name="information-circle" size={size} color={color} />
 );
 
+const BuildingIcon = ({ color = colors.white, size = 18 }) => (
+  <MaterialIcons name="business" size={size} color={color} />
+);
+
 const CpuIcon = ({ color = colors.white, size = 16 }) => (
   <MaterialCommunityIcons name="chip" size={size} color={color} />
 );
+
+// Color palettes for delegates (same as SponsorsScreen)
+const LOGO_COLORS = [
+  '#EEF2FF', '#E6FFFA', '#FFF7ED', '#F5F3FF', '#FDF2F8',
+  '#ECFEFF', '#F0FDFA', '#FEF3C7', '#E0E7FF', '#FCE7F3',
+  '#D1FAE5', '#DBEAFE', '#F3E8FF', '#FED7AA', '#FDE68A',
+  '#CFFAFE', '#E0F2FE', '#F5D0FE', '#FBCFE8', '#FECACA',
+];
+
+// Generate consistent color based on string hash
+const getColorFromString = (str, colorArray) => {
+  if (!str) return colorArray[0];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colorArray[Math.abs(hash) % colorArray.length];
+};
 
 export const SponsorDetailsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const navigation = useNavigation();
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  const insets = useSafeAreaInsets();
 
   // Get sponsor data from params or use default
   const sponsor = useMemo(() => {
@@ -94,7 +122,14 @@ export const SponsorDetailsScreen = () => {
     };
 
     // If params exist, merge with default
-    return params?.sponsor ? { ...defaultSponsor, ...JSON.parse(params.sponsor) } : defaultSponsor;
+    const parsed = params?.sponsor ? { ...defaultSponsor, ...JSON.parse(params.sponsor) } : defaultSponsor;
+    
+    // If logoBg is not set (for delegates), generate it from ID
+    if (!parsed.logoBg && parsed.id) {
+      parsed.logoBg = getColorFromString(String(parsed.id), LOGO_COLORS);
+    }
+    
+    return parsed;
   }, [params]);
 
   const { SIZES, isTablet } = useMemo(() => {
@@ -178,11 +213,11 @@ export const SponsorDetailsScreen = () => {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <Header 
-        title="Sponsors Details" 
+        title={isDelegate ? 'Delegate Details' : 'Sponsors Details'} 
         leftIcon="arrow-left" 
-        onLeftPress={() => navigation.goBack?.()} 
+        onLeftPress={() => router.push('/sponsors')} 
         iconSize={SIZES.headerIconSize} 
       />
 
@@ -200,16 +235,29 @@ export const SponsorDetailsScreen = () => {
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
           >
-            <View style={[styles.logoContainer, { width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md }]}>
-              <View style={[styles.logo, { backgroundColor: sponsor.logoBg, width: SIZES.logoSize - 8, height: SIZES.logoSize - 8, borderRadius: radius.md - 2 }]}>
-                <Text style={styles.logoText}>{sponsor.logoText}</Text>
+            <View style={[styles.logoContainer, { width: SIZES.logoSize + 8, height: SIZES.logoSize + 8, borderRadius: (SIZES.logoSize + 8) / 2 }]}>
+              <View style={[styles.logo, { backgroundColor: sponsor.logoBg, width: SIZES.logoSize + 8, height: SIZES.logoSize + 8, borderRadius: (SIZES.logoSize + 8) / 2 }]}>
+                {sponsor.image ? (
+                  <Image
+                    source={{ uri: sponsor.image }}
+                    style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: SIZES.logoSize / 2 }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={styles.logoText}>{sponsor.logoText}</Text>
+                )}
               </View>
             </View>
             <Text style={styles.sponsorName}>{sponsor.name}</Text>
-            <View style={styles.partnerBadge}>
-              {/* <CpuIcon /> */}
-              <Text style={styles.partnerBadgeText}>{sponsor.partnerType}</Text>
-            </View>
+            {sponsor.partnerType && (
+              <Text style={[styles.partnerBadgeText]}>{sponsor.partnerType}</Text>
+            )}
+            {sponsor.company && (
+              <View style={styles.companyBadge}>
+                <BuildingIcon size={16} />
+                <Text style={styles.companyText}>{sponsor.company}</Text>
+              </View>
+            )}
           </LinearGradient>
 
           {/* Contact Information Section */}
@@ -219,52 +267,62 @@ export const SponsorDetailsScreen = () => {
               <Text style={styles.sectionTitle}>Contact Information</Text>
             </View>
             <View style={styles.contactCard}>
-              <ContactItem
-                icon={MailIcon}
-                label="Email"
-                value={sponsor.email}
-                actionIcon={CopyIcon}
-                onAction={handleCopyEmail}
-              />
-              <ContactItem
-                icon={PhoneIcon}
-                label="Phone"
-                value={sponsor.phone}
-                actionIcon={PhoneIcon2}
-                onAction={handleCall}
-              />
-              <ContactItem
-                icon={GlobeIcon}
-                label="Website"
-                value={sponsor.website}
-                actionIcon={ExternalLinkIcon}
-                onAction={handleOpenWebsite}
-              />
-              <ContactItem
-                icon={MapPinIcon}
-                label="Location"
-                value={sponsor.location}
-                actionIcon={NavigationIcon}
-                onAction={handleOpenLocation}
-              />
+              {sponsor.email && (
+                <ContactItem
+                  icon={MailIcon}
+                  label="Email"
+                  value={sponsor.email}
+                  actionIcon={CopyIcon}
+                  onAction={handleCopyEmail}
+                />
+              )}
+              {sponsor.phone && (
+                <ContactItem
+                  icon={PhoneIcon}
+                  label="Phone"
+                  value={sponsor.phone}
+                  actionIcon={PhoneIcon2}
+                  onAction={handleCall}
+                />
+              )}
+              {sponsor.website && (
+                <ContactItem
+                  icon={GlobeIcon}
+                  label="Website"
+                  value={sponsor.website}
+                  actionIcon={ExternalLinkIcon}
+                  onAction={handleOpenWebsite}
+                />
+              )}
+              {sponsor.location && (
+                <ContactItem
+                  icon={MapPinIcon}
+                  label="Location"
+                  value={sponsor.location}
+                  actionIcon={NavigationIcon}
+                  onAction={handleOpenLocation}
+                />
+              )}
             </View>
           </View>
 
           {/* About Section */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <InfoIcon />
-              <Text style={styles.sectionTitle}>About</Text>
+          {sponsor.about && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <InfoIcon />
+                <Text style={styles.sectionTitle}>About</Text>
+              </View>
+              <View style={styles.aboutCard}>
+                <Text style={styles.aboutText}>{sponsor.about}</Text>
+              </View>
             </View>
-            <View style={styles.aboutCard}>
-              <Text style={styles.aboutText}>{sponsor.about}</Text>
-            </View>
-          </View>
+          )}
         </View>
       </ScrollView>
 
       {/* Start Chat Button */}
-      <View style={styles.bottomButtonContainer}>
+      <View style={[styles.bottomButtonContainer, { paddingBottom: Math.max(insets.bottom, 20) }]}>
         <TouchableOpacity style={styles.startChatButton} onPress={handleStartChat} activeOpacity={0.8}>
           <LinearGradient
             colors={colors.gradient}
@@ -301,24 +359,48 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   profileCard: {
     borderRadius: radius.lg,
-    padding: SIZES.paddingHorizontal * 1.5,
+    paddingVertical: SIZES.paddingHorizontal * 1.8,
+    paddingHorizontal: SIZES.paddingHorizontal * 1.5,
     alignItems: 'center',
     marginTop: SIZES.sectionSpacing - 12,
     marginBottom: SIZES.sectionSpacing,
-    minHeight: 200,
+    minHeight: 220,
     justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
   },
   logoContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
     borderWidth: 3,
     borderColor: colors.white,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 8,
+      },
+    }),
+    marginBottom: 8,
   },
   logo: {
     alignItems: 'center',
     justifyContent: 'center',
+    textAlign: 'center',
   },
   logoText: {
     fontSize: 24,
@@ -329,8 +411,25 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     color: colors.white,
-    marginBottom: 12,
     textAlign: 'center',
+  },
+  companyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: radius.pill,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  companyText: {
+    fontSize: SIZES.body,
+    fontWeight: '500',
+    color: colors.white,
+    opacity: 0.95,
   },
   partnerBadge: {
     flexDirection: 'row',
@@ -344,9 +443,12 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     gap: 6,
   },
   partnerBadgeText: {
-    fontSize: SIZES.body,
-    fontWeight: '600',
+    fontSize: SIZES.body - 1,
+    fontWeight: '400',
     color: colors.white,
+    textAlign: 'center',
+    opacity: 0.95,
+    marginBottom: 16,
   },
   section: {
     marginBottom: SIZES.sectionSpacing,
@@ -419,11 +521,11 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     left: 0,
     right: 0,
     paddingHorizontal: SIZES.paddingHorizontal,
-    paddingBottom: 20,
     paddingTop: 12,
     backgroundColor: colors.background,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+    // paddingBottom will be set dynamically based on safe area insets
   },
   startChatButton: {
     width: '100%',

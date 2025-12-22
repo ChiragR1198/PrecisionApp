@@ -3,6 +3,7 @@ import { useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,130 +13,144 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
-import { commonSizes, useResponsiveSizes } from '../../hooks/useResponsiveSizes';
+import { useGetAgendaQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
-const MapPinIcon = ({ color = colors.gray500, size = 12 }) => (
-  <Icon name="map-pin" size={size} color={color} />
-);
+const MapPinIcon = Icons.MapPin;
+const UserIcon = Icons.User;
 
-const UserIcon = ({ color = colors.gray500, size = 24 }) => (
-  <Icon name="user" size={size} color={color} />
-);
+// Helper function to format time from "08:00:00" to "8:00 AM"
+const formatTime = (timeStr) => {
+  if (!timeStr) return '';
+  const [hours, minutes] = timeStr.split(':');
+  const hour = parseInt(hours, 10);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${minutes} ${ampm}`;
+};
+
+// Helper function to format date
+const formatDate = (dateStr) => {
+  if (!dateStr) return { dayLabel: '', day: '', date: '' };
+  const date = new Date(dateStr);
+  const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  return {
+    dayLabel: days[date.getDay()],
+    day: date.getDate().toString(),
+    date: dateStr,
+  };
+};
+
+// Helper function to group agenda by time of day
+const groupAgendaByTime = (agendaItems) => {
+  const morning = [];
+  const afternoon = [];
+  const evening = [];
+
+  agendaItems.forEach((item) => {
+    const hour = parseInt(item.time?.split(':')[0] || '0', 10);
+    if (hour < 12) {
+      morning.push(item);
+    } else if (hour < 17) {
+      afternoon.push(item);
+    } else {
+      evening.push(item);
+    }
+  });
+
+  return { morning, afternoon, evening };
+};
 
 export const AgendaScreen = () => {
   const navigation = useNavigation();
-  const [selectedDate, setSelectedDate] = useState(2);
-  const [searchQuery, setSearchQuery] = useState('');
+  const { user } = useAppSelector((state) => state.auth);
+  const eventId = user?.event_id || 27;
   
-  // Use responsive sizes hook
-  const { SIZES, isTablet } = useResponsiveSizes({
-    headerIconSize: commonSizes.headerIconSize,
-    contentMaxWidth: commonSizes.contentMaxWidth,
-    paddingHorizontal: commonSizes.paddingHorizontal,
-    sectionSpacing: commonSizes.sectionSpacing,
-    cardSpacing: commonSizes.cardSpacing,
-    title: commonSizes.title,
-    body: commonSizes.body,
-    dateSelectorHeight: { android: 56, ios: 58, tablet: 60, default: 56 },
-  });
+  const { data: agendaResponse, isLoading, error, refetch } = useGetAgendaQuery(eventId);
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load agenda.';
+  }, [error]);
+  
+  const [selectedDateIndex, setSelectedDateIndex] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const dates = [
-    { id: 0, label: 'MON', day: '15' },
-    { id: 1, label: 'TUE', day: '16' },
-    { id: 2, label: 'WED', day: '17' },
-    { id: 3, label: 'THU', day: '18' },
-  ];
+  const agenda = useMemo(() => {
+    return agendaResponse?.data || agendaResponse || [];
+  }, [agendaResponse]);
 
-  const agendaData = useMemo(() => ({
-    morning: [
-      {
-        id: 1,
-        title: 'Opening Keynote',
-        duration: '60 min',
-        time: '9:00 - 10:00 AM',
-        description: 'Welcome address and industry overview by CEO',
-        location: 'Main Auditorium',
-        speakerAvatar: true,
-      },
-      {
-        id: 2,
-        title: 'Product Demo Session by John Doe & Jane Smith (CEO & CTO)',
-        duration: '60 min',
-        time: '9:00 - 10:00 AM',
-        description: `Live demonstration of our latest product features and capabilities as well as a Q&A session with the CEO and CTO of the company. This session will be moderated by the CEO of the company. The CEO will be available for a Q&A session after the demonstration. The session will be followed by a networking break. 
+  // Responsive sizes
+  const SIZES = {
+    headerIconSize: 22,
+    contentMaxWidth: '100%',
+    paddingHorizontal: 16,
+    sectionSpacing: 22,
+    cardSpacing: 12,
+    title: 15,
+    body: 13,
+    dateSelectorHeight: 56,
+  };
+  const isTablet = false;
 
-        This session aims to offer an in-depth exploration of our most recent technological advancements, emphasizing not only practical use-cases but also development decisions that led to the final product. Attendees will witness step-by-step walkthroughs of major features, with live interaction and demos prepared by the lead engineering team. The goal is to demystify the user experience, highlight critical differentiators from competitor solutions, and give concrete examples of how our product addresses real-world challenges in efficiency, scalability, and integration. 
+  // Get unique dates from agenda
+  const dates = useMemo(() => {
+    const uniqueDates = [...new Set(agenda.map(item => item.date))].sort();
+    return uniqueDates.map((dateStr, index) => {
+      const formatted = formatDate(dateStr);
+      return {
+        id: index,
+        label: formatted.dayLabel,
+        day: formatted.day,
+        date: dateStr,
+      };
+    });
+  }, [agenda]);
 
-        The CEO will open the session with a short address discussing the company’s vision for innovation and commitment to customer-centric product development. Following the address, the CTO will present a technical deep-dive into two new core modules now available in the latest release. You’ll learn about design choices, open questions the team addressed along the way, and how customer feedback influenced functionality and support.
+  // Filter agenda by selected date and transform data
+  const agendaData = useMemo(() => {
+    if (!agenda || agenda.length === 0) return { morning: [], afternoon: [], evening: [] };
+    
+    const selectedDateStr = dates[selectedDateIndex]?.date;
+    if (!selectedDateStr) return { morning: [], afternoon: [], evening: [] };
 
-        Throughout the demonstration, attendees are encouraged to submit their questions via the event app or by raising a hand in the audience. After the formal demonstration, there will be a dedicated Q&A period where the CEO and CTO will answer questions regarding roadmap, challenges, technical specifics, and customer adoption.
+    const filteredItems = agenda
+      .filter(item => item.date === selectedDateStr)
+      .map(item => ({
+        id: item.id,
+        title: item.title || 'Untitled Session',
+        time: formatTime(item.time),
+        description: item.description || '',
+        location: item.location || item.venue || '',
+        date: item.date,
+        event_id: item.event_id,
+      }));
 
-        Specific focus topics will include: 
-        - The architecture and security enhancements of the major platform update;
-        - How the product integrates with various cloud services;
-        - The new user personalization and analytics dashboard;
-        - Streamlined onboarding for enterprise teams;
-        - Recent real-world case studies that illustrate tangible results for key clients.
-
-        As a highlight, the product team will invite a select customer to join the stage and share their perspective and experience with the product, focusing on ease of use and implementation feedback. This segment will allow attendees to directly hear from their peers and expand their understanding of deployment best practices.
-
-        The session will conclude with remarks from the CTO outlining the next steps in the company’s innovation journey, inviting all feedback and participation in future beta programs. This event is designed to be highly interactive, informative, and to foster direct connections between customers and the leadership team.
-
-        After the Q&A, everyone is encouraged to join the networking break in the Demo Hall, where product managers, engineers, and customer success representatives will be available for one-on-one discussions, further demonstrations, and to gather feedback on both the session and the product. Refreshments, product literature, and exclusive event swag will be provided.
-
-        Whether you are a new customer interested in seeing our product capabilities first-hand, a long-time partner eager to understand the direction we’re heading, or an enthusiast hoping for a technical deep-dive, this session is structured to provide maximum value. Attendees will leave with not only a comprehensive understanding of what makes our latest product iteration unique but also with new contacts, fresh insights, and the opportunity to influence future updates.
-        `,
-        location: 'Demo Hall',
-      },
-    ],
-    afternoon: [
-      {
-        id: 3,
-        title: 'Panel Discussion',
-        duration: '60 min',
-        time: '9:00 - 10:00 AM',
-        description: 'Industry experts discuss future trends and challenges',
-        location: 'Conference Room A',
-      },
-      {
-        id: 4,
-        title: 'Networking Break',
-        duration: '60 min',
-        time: '9:00 - 10:00 AM',
-        description: 'Connect with fellow attendees over coffee and refreshments',
-        location: 'Lobby Area',
-      },
-    ],
-    evening: [
-      {
-        id: 5,
-        title: 'Closing Ceremony',
-        duration: '45 min',
-        time: '5:00 PM',
-        description: 'Awards presentation and closing remarks',
-        location: 'Main Auditorium',
-      },
-    ],
-  }), []);
+    return groupAgendaByTime(filteredItems);
+  }, [agenda, selectedDateIndex, dates]);
 
   const filteredAgendaData = useMemo(() => {
     if (!searchQuery.trim()) return agendaData;
     
     const query = searchQuery.toLowerCase();
     const filterItems = (items) => 
-        items.filter(item => 
-            item.title.toLowerCase().includes(query) ||
-        item.description.toLowerCase().includes(query) ||
-        item.location.toLowerCase().includes(query)
+      items.filter(item => 
+        (item.title || '').toLowerCase().includes(query) ||
+        (item.description || '').toLowerCase().includes(query) ||
+        (item.location || '').toLowerCase().includes(query)
       );
     
     return {
-        morning: filterItems(agendaData.morning),
-        afternoon: filterItems(agendaData.afternoon),
-        evening: filterItems(agendaData.evening),
+      morning: filterItems(agendaData.morning),
+      afternoon: filterItems(agendaData.afternoon),
+      evening: filterItems(agendaData.evening),
     };
-}, [searchQuery, agendaData]);
+  }, [searchQuery, agendaData]);
 
 const hasAnyResults = useMemo(() => {
     return (
@@ -154,7 +169,7 @@ const hasAnyResults = useMemo(() => {
         router.push({
           pathname: '/agenda-detail',
           params: {
-            agendaItem: JSON.stringify(item)
+            agendaId: item.id.toString()
           }
         });
       }}
@@ -162,31 +177,23 @@ const hasAnyResults = useMemo(() => {
     >
       <View style={styles.agendaCardHeader}>
         <Text style={styles.agendaCardTitle}>{item.title}</Text>
-        <View style={styles.durationBadge}>
-          <Text style={styles.durationText}>{item.duration}</Text>
-        </View>
       </View>
       
       <Text style={styles.agendaTime}>{item.time}</Text>
       
-      <Text style={styles.agendaDescription}
-        numberOfLines={2}
-        ellipsizeMode="tail">{item.description}</Text>
+      {item.description ? (
+        <Text style={styles.agendaDescription}
+          numberOfLines={2}
+          ellipsizeMode="tail">{item.description}</Text>
+      ) : null}
       
       <View style={styles.agendaFooter}>
-        {item.speaker && (
-          <View style={styles.speakerContainer}>
-            <View style={styles.speakerAvatar}>
-              <UserIcon size={24} color={colors.gray500} />
-            </View>
-            <Text style={styles.speakerName}>{item.speaker}</Text>
+        {item.location ? (
+          <View style={styles.locationContainer}>
+            <MapPinIcon size={12} />
+            <Text style={styles.locationText}>{item.location}</Text>
           </View>
-        )}
-        
-        <View style={styles.locationContainer}>
-          <MapPinIcon size={12} />
-          <Text style={styles.locationText}>{item.location}</Text>
-        </View>
+        ) : null}
       </View>
     </TouchableOpacity>
   );
@@ -227,32 +234,50 @@ const hasAnyResults = useMemo(() => {
       >
         <View style={styles.content}>
           {/* Date Selector */}
-          <View style={styles.dateSelector}>
-            {dates.map((date) => (
-              <TouchableOpacity
-                key={date.id}
-                style={[
-                  styles.dateButton,
-                  selectedDate === date.id && styles.dateButtonSelected
-                ]}
-                onPress={() => setSelectedDate(date.id)}
-                activeOpacity={0.8}
-              >
-                <Text style={[
-                  styles.dateButtonDayText,
-                  selectedDate === date.id && styles.dateButtonDayTextSelected
-                ]}>
-                  {date.label}
-                </Text>
-                <Text style={[
-                  styles.dateButtonDateText,
-                  selectedDate === date.id && styles.dateButtonDateTextSelected
-                ]}>
-                  {date.day}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          {dates.length > 0 && (
+            <View style={styles.dateSelector}>
+              {dates.map((date) => (
+                <TouchableOpacity
+                  key={date.id}
+                  style={[
+                    styles.dateButton,
+                    selectedDateIndex === date.id && styles.dateButtonSelected
+                  ]}
+                  onPress={() => setSelectedDateIndex(date.id)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[
+                    styles.dateButtonDayText,
+                    selectedDateIndex === date.id && styles.dateButtonDayTextSelected
+                  ]}>
+                    {date.label}
+                  </Text>
+                  <Text style={[
+                    styles.dateButtonDateText,
+                    selectedDateIndex === date.id && styles.dateButtonDateTextSelected
+                  ]}>
+                    {date.day}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          {/* Loading State */}
+          {isLoading && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading agenda...</Text>
+            </View>
+          )}
+
+          {/* Error State */}
+          {error && !isLoading && (
+            <View style={styles.errorContainer}>
+              <Icon name="alert-circle" size={48} color={colors.textMuted} />
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
+          )}
 
           {/* Search Bar */}
           <SearchBar
@@ -262,7 +287,7 @@ const hasAnyResults = useMemo(() => {
           />
 
           {/* Agenda Sections */}
-          {hasAnyResults ? (
+          {!isLoading && !error && hasAnyResults ? (
             <>
               <AgendaSection 
                 title="Morning" 
@@ -280,17 +305,21 @@ const hasAnyResults = useMemo(() => {
                 sectionColor="#C084FC" 
               />
             </>
-          ) : (
+          ) : !isLoading && !error ? (
             <View style={styles.emptyState}>
               <View style={styles.emptyIconCircle}>
-                <Icon name="search" size={22} color={colors.primary} />
+                <Icon name={searchQuery ? "search" : "calendar"} size={22} color={colors.primary} />
               </View>
-              <Text style={styles.emptyTitle}>No results found</Text>
+              <Text style={styles.emptyTitle}>
+                {searchQuery ? 'No results found' : 'No agenda items for this date'}
+              </Text>
               <Text style={styles.emptySubtitle}>
-                Try a different keyword or clear the search.
+                {searchQuery 
+                  ? 'Try a different keyword or clear the search.'
+                  : 'Select a different date or check back later.'}
               </Text>
             </View>
-          )}
+          ) : null}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -491,6 +520,27 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 13,
     fontWeight: '400',
     color: colors.gray600,
+    textAlign: 'center',
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  errorText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
     textAlign: 'center',
   },
 });

@@ -3,6 +3,7 @@
     "name": "PrecisionGlobe",
     "slug": "PrecisionGlobe",
     "version": "1.0.0",
+    "owner": "chirag1198",
     "orientation": "portrait",
     "icon": "./src/assets/images/Logo.png",
     "scheme": "precisionglobe",
@@ -13,16 +14,15 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "transparent",
+        "backgroundColor": "#FFFFFF",
         "foregroundImage": "./src/assets/images/Logo.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.CAMERA",
         "android.permission.CAMERA"
       ],
-      "package": "com.anonymous.PrecisionGlobe"
+      "package": "com.precisionglobe.app"
     },
     "web": {
       "output": "static",
@@ -41,11 +41,33 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      [
+        "expo-navigation-bar",
+        {
+          "barStyle": "dark-content"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera",
+          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone"
+        }
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "expo-navigation-bar": {
+        "barStyle": "dark-content"
+      },
+      "eas": {
+        "projectId": "0439d5f9-4716-47e0-a8f3-07b17c27a43d"
+      }
     }
   }
 }

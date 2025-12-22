@@ -1,9 +1,10 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { router } from 'expo-router';
 import { useNavigation } from '@react-navigation/native';
+import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -16,6 +17,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
+import { useGetAllDelegatesQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 const ChatIcon = ({ color = colors.icon, size = 24 }) => (
   <MaterialCommunityIcons name="chat" size={size} color={color} />
@@ -26,6 +29,47 @@ const TIER_STYLES = {
   'Gold Sponsor': { bg: 'rgba(250, 204, 21, 0.18)', text: '#A16207' },
   'Silver Sponsor': { bg: 'rgba(148, 163, 184, 0.18)', text: '#475569' },
   'Bronze Sponsor': { bg: 'rgba(251, 146, 60, 0.15)', text: '#C2410C' },
+};
+
+// Color palettes for delegates
+const LOGO_COLORS = [
+  '#EEF2FF', '#E6FFFA', '#FFF7ED', '#F5F3FF', '#FDF2F8',
+  '#ECFEFF', '#F0FDFA', '#FEF3C7', '#E0E7FF', '#FCE7F3',
+  '#D1FAE5', '#DBEAFE', '#F3E8FF', '#FED7AA', '#FDE68A',
+  '#CFFAFE', '#E0F2FE', '#F5D0FE', '#FBCFE8', '#FECACA',
+];
+
+const BADGE_COLORS = [
+  { bg: 'rgba(138, 52, 144, 0.15)', text: '#8A3490' },
+  { bg: 'rgba(59, 130, 246, 0.15)', text: '#3B82F6' },
+  { bg: 'rgba(34, 197, 94, 0.15)', text: '#22C55E' },
+  { bg: 'rgba(249, 115, 22, 0.15)', text: '#F97316' },
+  { bg: 'rgba(168, 85, 247, 0.15)', text: '#A855F7' },
+  { bg: 'rgba(236, 72, 153, 0.15)', text: '#EC4899' },
+  { bg: 'rgba(14, 165, 233, 0.15)', text: '#0EA5E9' },
+  { bg: 'rgba(20, 184, 166, 0.15)', text: '#14B8A6' },
+  { bg: 'rgba(234, 179, 8, 0.15)', text: '#EAB308' },
+  { bg: 'rgba(239, 68, 68, 0.15)', text: '#EF4444' },
+  { bg: 'rgba(139, 92, 246, 0.15)', text: '#8B5CF6' },
+  { bg: 'rgba(244, 63, 94, 0.15)', text: '#F43F5E' },
+  { bg: 'rgba(6, 182, 212, 0.15)', text: '#06B6D4' },
+  { bg: 'rgba(16, 185, 129, 0.15)', text: '#10B981' },
+  { bg: 'rgba(217, 119, 6, 0.15)', text: '#D97706' },
+  { bg: 'rgba(220, 38, 127, 0.15)', text: '#DC267F' },
+  { bg: 'rgba(99, 102, 241, 0.15)', text: '#6366F1' },
+  { bg: 'rgba(251, 146, 60, 0.15)', text: '#FB923C' },
+  { bg: 'rgba(34, 197, 94, 0.15)', text: '#22C55E' },
+  { bg: 'rgba(147, 51, 234, 0.15)', text: '#9333EA' },
+];
+
+// Generate consistent color based on string hash
+const getColorFromString = (str, colorArray) => {
+  if (!str) return colorArray[0];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colorArray[Math.abs(hash) % colorArray.length];
 };
 
 const SPONSORS = [
@@ -139,6 +183,22 @@ export const SponsorsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  
+  const { data: delegatesData, isLoading, error } = useGetAllDelegatesQuery(undefined, {
+    skip: !isDelegate,
+  });
+  
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load delegates.';
+  }, [error]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -170,14 +230,57 @@ export const SponsorsScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  // Map API delegates to the sponsor card shape
+  const delegates = useMemo(() => {
+    if (!isDelegate || !delegatesData) return [];
+    const list = Array.isArray(delegatesData?.data) ? delegatesData.data : Array.isArray(delegatesData) ? delegatesData : [];
+    return list.map((d) => {
+      const fullName =
+        d.full_name ||
+        `${d.fname || ''} ${d.lname || ''}`.trim() ||
+        d.name ||
+        '';
+      const name = fullName || 'Unknown';
+      const initials = name
+        .split(' ')
+        .filter(Boolean)
+        .map((part) => part[0]?.toUpperCase())
+        .slice(0, 2)
+        .join('') || 'DL';
+      const delegateId = String(d.id);
+      const logoBg = getColorFromString(delegateId, LOGO_COLORS);
+      const badgeColor = getColorFromString(delegateId + name, BADGE_COLORS);
+      return {
+        id: delegateId,
+        name,
+        tier: 'Delegate',
+        logoBg,
+        logoText: initials,
+        image: d.image || null,
+        partnerType: d.job_title || '',
+        email: d.email || '',
+        phone: d.mobile || '',
+        website: d.linkedin_url || '',
+        location: d.address || '',
+        about: d.bio || '',
+        company: d.company || '',
+        badgeColor,
+        raw: d,
+      };
+    });
+  }, [isDelegate, delegatesData]);
+
   const filteredSponsors = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return SPONSORS;
-    return SPONSORS.filter((sponsor) => sponsor.name.toLowerCase().includes(q));
-  }, [searchQuery]);
+    const baseList = isDelegate ? delegates : SPONSORS;
+    if (!q) return baseList;
+    return baseList.filter((sponsor) => sponsor.name.toLowerCase().includes(q));
+  }, [searchQuery, isDelegate, delegates]);
 
   const renderSponsor = ({ item }) => {
     const tierStyle = TIER_STYLES[item.tier] || { bg: colors.gray100, text: colors.text };
+    // Use delegate-specific badge color if available, otherwise use tier style
+    const badgeStyle = item.badgeColor || tierStyle;
     return (
       <TouchableOpacity 
         style={styles.card} 
@@ -198,13 +301,21 @@ export const SponsorsScreen = () => {
               { backgroundColor: item.logoBg, width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md },
             ]}
           >
-            <Text style={styles.logoText}>{item.logoText}</Text>
+            {item.image ? (
+              <Image
+                source={{ uri: item.image }}
+                style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md }}
+                resizeMode="cover"
+              />
+            ) : (
+              <Text style={styles.logoText}>{item.logoText}</Text>
+            )}
           </View>
         </View>
         <View style={styles.cardInfo}>
           <Text style={styles.cardTitle}>{item.name}</Text>
-          <View style={[styles.badge, { backgroundColor: tierStyle.bg }]}>
-            <Text style={[styles.badgeText, { color: tierStyle.text }]}>{item.tier}</Text>
+          <View style={[styles.badge, { backgroundColor: badgeStyle.bg }]}>
+            <Text style={[styles.badgeText, { color: badgeStyle.text }]}>{item.company || item.tier}</Text>
           </View>
         </View>
         <TouchableOpacity 
@@ -212,10 +323,18 @@ export const SponsorsScreen = () => {
           activeOpacity={0.7}
           onPress={(e) => {
             e.stopPropagation();
+            // Create thread object for MessageDetailScreen
+            const thread = {
+              id: item.id,
+              name: item.name,
+              status: 'Online',
+              avatar: item.image || `https://ui-avatars.com/api/?name=${encodeURIComponent(item.name)}&background=${encodeURIComponent(item.logoBg?.replace('#', '') || '8A3490')}&color=fff&size=200`,
+              messages: [], // Empty messages array - will start a new conversation
+            };
             router.push({
-              pathname: '/sponsor-details',
+              pathname: '/message-detail',
               params: {
-                sponsor: JSON.stringify(item)
+                thread: JSON.stringify(thread)
               }
             });
           }}
@@ -230,7 +349,7 @@ export const SponsorsScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <Header
-        title="Event Sponsors"
+        title={isDelegate ? 'Delegate' : 'Event Sponsors'}
         leftIcon="menu"
         onLeftPress={() => navigation.openDrawer?.()}
         iconSize={SIZES.headerIconSize}
@@ -243,28 +362,42 @@ export const SponsorsScreen = () => {
       >
         <View style={styles.content}>
           <SearchBar
-            placeholder="Search sponsors..."
+            placeholder={isDelegate ? 'Search delegates...' : 'Search sponsors...'}
             value={searchQuery}
             onChangeText={setSearchQuery}
             style={styles.searchBar}
           />
-          <Text style={styles.countText}>{`${filteredSponsors.length} sponsors found`}</Text>
+          <Text style={styles.countText}>
+            {isDelegate
+              ? `${filteredSponsors.length} delegates found`
+              : `${filteredSponsors.length} sponsors found`}
+          </Text>
         </View>
-        <FlatList
-          data={filteredSponsors}
-          keyExtractor={(item) => item.id}
-          renderItem={renderSponsor}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
-          showsVerticalScrollIndicator={true}
-          contentContainerStyle={[
-            styles.listContent,
-            filteredSponsors.length === 0 && { flex: 1 },
-            { paddingHorizontal: SIZES.paddingHorizontal }
-          ]}
-          bounces={true}
-          style={{ flex: 1, backgroundColor: '#F9FAFB' }}
-          keyboardShouldPersistTaps="handled"
-        />
+        {isLoading ? (
+          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1 }]}>
+            <Text style={styles.countText}>Loading...</Text>
+          </View>
+        ) : error ? (
+          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1, paddingHorizontal: 32 }]}>
+            <Text style={[styles.countText, { color: colors.textMuted }]}>{errorMessage}</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={filteredSponsors}
+            keyExtractor={(item) => item.id}
+            renderItem={renderSponsor}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            showsVerticalScrollIndicator={true}
+            contentContainerStyle={[
+              styles.listContent,
+              filteredSponsors.length === 0 && { flex: 1 },
+              { paddingHorizontal: SIZES.paddingHorizontal }
+            ]}
+            bounces={true}
+            style={{ flex: 1, backgroundColor: '#F9FAFB' }}
+            keyboardShouldPersistTaps="handled"
+          />
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

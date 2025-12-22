@@ -2,7 +2,7 @@ import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ImageBackground,
@@ -17,37 +17,19 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { eventService } from '../../services/api/eventService';
+import { useGetEventsQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 // Icon Components
-const CalendarIcon = ({ color = colors.white, size = 20 }) => (
-  <Icon name="calendar" size={size} color={color} />
-);
-
-const ChevronDownIcon = ({ color = colors.icon, size = 16 }) => (
-  <Icon name="chevron-down" size={size} color={color} />
-);
-
-const MapPinIcon = ({ color = colors.white, size = 14 }) => (
-  <Icon name="map-pin" size={size} color={color} />
-);
-
-const CalendarIconPrimary = ({ color = colors.primary, size = 20 }) => (
-  <Icon name="calendar" size={size} color={color} />
-);
-
-const ListIcon = ({ color = '#3B82F6', size = 24 }) => (
-  <Icon name="list" size={size} color={color} />
-);
-
-const UsersIcon = ({ color = '#22C55E', size = 20 }) => (
-  <Icon name="users" size={size} color={color} />
-);
-
-const SponsorsIcon = ({ color = '#F97316', size = 20 }) => (
-  <Icon name="briefcase" size={size} color={color} />
-);
+const CalendarIcon = Icons.Calendar;
+const ChevronDownIcon = Icons.ChevronDown;
+const MapPinIcon = Icons.MapPin;
+const CalendarIconPrimary = Icons.CalendarPrimary;
+const ListIcon = Icons.List;
+const UsersIcon = Icons.Users;
+const SponsorsIcon = Icons.Briefcase;
 
 // Helper function to format date
 const formatDate = (dateFrom, dateTo) => {
@@ -164,38 +146,24 @@ export const DashboardScreen = () => {
   const scrollViewRef = useRef(null);
   const navigation = useNavigation();
 
-  // State for events
-  const [events, setEvents] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [selectedEventIndex, setSelectedEventIndex] = useState(0);
+  const { data: eventsData, isLoading, error, refetch } = useGetEventsQuery();
+  const errorMessage = useMemo(() => {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error?.data?.message) return error.data.message;
+    if (error?.message) return error.message;
+    if (error?.status) return `Error ${error.status}`;
+    return 'Failed to load events.';
+  }, [error]);
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
   const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);
-
-  // Fetch events on mount
-  useEffect(() => {
-    fetchEvents();
-  }, []);
-
-  const fetchEvents = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      const result = await eventService.getAllEvents();
-      
-      if (result.success) {
-        setEvents(result.data || []);
-      } else {
-        setError(result.error || 'Failed to load events');
-      }
-    } catch (err) {
-      setError(err.message || 'An error occurred while loading events');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const [selectedEventIndex, setSelectedEventIndex] = useState(0);
 
   // Transform API event data to display format
   const EVENTS = useMemo(() => {
+    const events = eventsData?.data || eventsData || [];
     return events.map(event => ({
       id: event.id,
       title: event.title || 'Untitled Event',
@@ -204,9 +172,14 @@ export const DashboardScreen = () => {
       date_from: event.date_from,
       date_to: event.date_to,
     }));
-  }, [events]);
+  }, [eventsData]);
 
   const selectedEvent = EVENTS[selectedEventIndex] || null;
+
+  const handleEventSelect = (index) => {
+    setSelectedEventIndex(index);
+    setIsEventDropdownOpen(false);
+  };
 
   // Platform-aware Responsive SIZES
   const { SIZES, isTablet } = useMemo(() => {
@@ -272,6 +245,7 @@ export const DashboardScreen = () => {
         router.push('/attendees');
         break;
       case 'Sponsors':
+      case 'Delegate':
         router.push('/sponsors');
         break;
       default:
@@ -279,12 +253,7 @@ export const DashboardScreen = () => {
     }
   };
 
-  const handleEventSelect = (index) => {
-    setSelectedEventIndex(index);
-    setIsEventDropdownOpen(false);
-  };
-
-  const quickActions = [
+  const quickActions = useMemo(() => [
     {
       title: 'Event',
       subtitle: 'Event details',
@@ -307,13 +276,13 @@ export const DashboardScreen = () => {
       backgroundColor: '#F0FDF4',
     },
     {
-      title: 'Sponsors',
-      subtitle: 'Event partners',
+      title: isDelegate ? 'Delegate' : 'Sponsors',
+      subtitle: isDelegate ? 'View delegates' : 'Event partners',
       icon: <SponsorsIcon size={SIZES.quickActionIconInner} />,
       iconColor: '#F97316',
       backgroundColor: '#FFF7ED',
     },
-  ];
+  ], [SIZES.quickActionIconInner, isDelegate]);
 
   // Show loading state
   if (isLoading) {
@@ -345,8 +314,8 @@ export const DashboardScreen = () => {
         />
         <View style={styles.errorContainer}>
           <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={fetchEvents}>
+          <Text style={styles.errorText}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={refetch}>
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -355,7 +324,7 @@ export const DashboardScreen = () => {
   }
 
   // Show empty state
-  if (events.length === 0) {
+  if (EVENTS.length === 0) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <Header

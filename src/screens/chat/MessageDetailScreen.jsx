@@ -1,17 +1,17 @@
-import { useLocalSearchParams } from 'expo-router';
 import { useNavigation } from '@react-navigation/native';
+import { useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
-    FlatList,
-    Image,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 
@@ -53,6 +53,7 @@ export const MessageDetailScreen = () => {
   const params = useLocalSearchParams();
   const navigation = useNavigation();
   const [inputValue, setInputValue] = useState('');
+  const insets = useSafeAreaInsets();
 
   const thread = useMemo(() => {
     if (params?.thread) {
@@ -138,7 +139,7 @@ export const MessageDetailScreen = () => {
         showsVerticalScrollIndicator={false}
       />
 
-      <View style={[styles.inputBar, { paddingHorizontal: SIZES.paddingHorizontal }]}>
+      <View style={[styles.inputBar, { paddingHorizontal: SIZES.paddingHorizontal, paddingBottom: Math.max(insets.bottom, 12) }]}>
         <TouchableOpacity activeOpacity={0.7} style={styles.attachButton}>
           <Text style={styles.attachText}>＋</Text>
         </TouchableOpacity>
@@ -227,11 +228,12 @@ const createStyles = (SIZES) =>
     inputBar: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingVertical: 12,
+      paddingTop: 12,
       gap: 10,
       borderTopWidth: 1,
       borderTopColor: colors.border,
       backgroundColor: colors.white,
+      // paddingBottom will be set dynamically based on safe area insets
     },
     attachButton: {
       width: 34,
