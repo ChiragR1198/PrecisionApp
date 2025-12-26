@@ -43,6 +43,7 @@ export const CustomDrawerContent = (props) => {
   const dispatch = useAppDispatch();
   const [logoutMutation] = useLogoutMutation();
   const { user } = useAppSelector((state) => state.auth);
+  const { selectedEventId, selectedEventIndex } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
 
@@ -152,7 +153,22 @@ export const CustomDrawerContent = (props) => {
               return;
             }
             if (item.route) {
-              navigation.navigate(item.route);
+              // Pass eventId and selectedEventIndex as params if available
+              const params = {};
+              if (selectedEventId) {
+                params.eventId = String(selectedEventId);
+              }
+              if (selectedEventIndex !== undefined && selectedEventIndex !== null) {
+                params.selectedEventIndex = String(selectedEventIndex);
+              }
+              // Use router.push for Expo Router compatibility
+              if (Object.keys(params).length > 0) {
+                router.push({ pathname: `/${item.route}`, params });
+              } else {
+                router.push(`/${item.route}`);
+              }
+              // Close drawer after navigation
+              navigation.closeDrawer();
             }
           };
           return (

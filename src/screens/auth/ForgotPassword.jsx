@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
+import { useForgotPasswordMutation } from '../../store/api';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -115,6 +116,7 @@ export const ForgotPasswordScreen = () => {
   });
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [forgotPassword] = useForgotPasswordMutation();
 
   React.useEffect(() => {
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -192,13 +194,12 @@ export const ForgotPasswordScreen = () => {
   // Also: allow pressing it even if email is blank
 
   const handleSendResetLink = async () => {
-    // We do NOT check for formData.email.trim() anymore!
     setIsLoading(true);
     try {
-      // Implement actual password reset logic here
-      console.log('Sending reset link to:', formData.email);
-
-      router.push('/email-verification');
+      const email = formData.email.trim();
+      await forgotPassword(email).unwrap();
+      setIsSubmitted(true);
+      router.push({ pathname: '/email-verification', params: { email } });
     } catch (error) {
       console.error('Error sending reset link:', error);
     } finally {

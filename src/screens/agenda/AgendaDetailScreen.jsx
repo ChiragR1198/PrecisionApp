@@ -59,6 +59,19 @@ const formatDateDisplay = (dateStr) => {
   };
 };
 
+// Helpers to clean HTML descriptions returned by API
+const stripHtml = (s) => (typeof s === 'string' ? s.replace(/<[^>]*>/g, '') : '');
+const decodeEntities = (s) => (typeof s === 'string'
+  ? s
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x2F;/g, '/')
+  : '');
+const normalizeWhitespace = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
+
 export const AgendaDetailScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
@@ -102,7 +115,7 @@ export const AgendaDetailScreen = () => {
       id: selectedAgendaItem.id,
       title: selectedAgendaItem.title || 'Untitled Session',
       time: formatTime(selectedAgendaItem.time),
-      description: selectedAgendaItem.description || '',
+      description: normalizeWhitespace(decodeEntities(stripHtml(selectedAgendaItem.description || ''))),
       location: selectedAgendaItem.location || selectedAgendaItem.venue || '',
       locationDetails: '',
       date: dateFormatted.date,

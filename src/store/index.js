@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { configureStore } from '@reduxjs/toolkit';
 import { api } from './api';
 import authReducer from './slices/authSlice';
+import eventReducer from './slices/eventSlice';
 
 // AGGRESSIVE cleanup of ALL old Redux/persist state
 const clearOldReduxState = async () => {
@@ -40,6 +41,7 @@ clearOldReduxState().then(() => {
 export const store = configureStore({
   reducer: {
     auth: authReducer,
+    event: eventReducer,
     [api.reducerPath]: api.reducer,
   },
   middleware: (getDefaultMiddleware) =>

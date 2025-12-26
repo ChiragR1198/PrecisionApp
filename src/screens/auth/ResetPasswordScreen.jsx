@@ -17,6 +17,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
+import { useResetPasswordMutation } from '../../store/api';
+import { useLocalSearchParams } from 'expo-router';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -164,6 +166,8 @@ export const ResetPasswordScreen = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const params = useLocalSearchParams();
+  const [resetPassword] = useResetPasswordMutation();
 
   React.useEffect(() => {
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -239,13 +243,14 @@ export const ResetPasswordScreen = () => {
 
     setIsLoading(true);
     try {
-      // Implement actual password reset logic here
-      console.log('Resetting password:', formData.password);
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Navigate to login screen after successful reset
+      const email = params?.email || '';
+      const otp = params?.otp || '';
+      await resetPassword({
+        email,
+        otp,
+        new_password: formData.password,
+        confirm_password: formData.confirmPassword,
+      }).unwrap();
       router.push('/login');
     } catch (error) {
       console.error('Error resetting password:', error);

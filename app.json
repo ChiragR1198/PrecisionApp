@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "owner": "chirag1198",
     "orientation": "portrait",
-    "icon": "./src/assets/images/Logo.png",
+    "icon": "./src/assets/images/app-icon1.png",
     "scheme": "precisionglobe",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -15,7 +15,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
-        "foregroundImage": "./src/assets/images/Logo.png"
+        "foregroundImage": "./src/assets/images/app-icon.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -26,7 +26,7 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./src/assets/images/Logo.png"
+      "favicon": "./src/assets/images/app-icon.png"
     },
     "plugins": [
       "expo-router",
@@ -55,7 +55,16 @@
           "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone"
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 34
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

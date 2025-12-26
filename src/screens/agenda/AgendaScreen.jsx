@@ -1,6 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -63,12 +63,48 @@ const groupAgendaByTime = (agendaItems) => {
   return { morning, afternoon, evening };
 };
 
+// Helpers to clean HTML descriptions returned by API
+const stripHtml = (s) => (typeof s === 'string' ? s.replace(/<[^>]*>/g, '') : '');
+const decodeEntities = (s) => (typeof s === 'string'
+  ? s
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x2F;/g, '/')
+  : '');
+const normalizeWhitespace = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
+
 export const AgendaScreen = () => {
   const navigation = useNavigation();
+  const params = useLocalSearchParams();
   const { user } = useAppSelector((state) => state.auth);
-  const eventId = user?.event_id || 27;
+  const { selectedEventId } = useAppSelector((state) => state.event);
   
-  const { data: agendaResponse, isLoading, error, refetch } = useGetAgendaQuery(eventId);
+  // Priority: route params > Redux store > user.event_id
+  // Also handle comma-separated eventIds by taking the first one
+  const eventId = useMemo(() => {
+    let id = params?.eventId || selectedEventId || user?.event_id;
+    
+    // If eventId is a comma-separated string, take the first one
+    if (id && typeof id === 'string' && id.includes(',')) {
+      id = id.split(',')[0].trim();
+    }
+    
+    // Convert to number if it's a valid number string
+    if (id && !isNaN(Number(id))) {
+      return Number(id);
+    }
+    
+    return id || null;
+  }, [params?.eventId, selectedEventId, user?.event_id]);
+  
+  // API endpoint format: /agenda/{eventId}
+  // Pass eventId to get agenda for the selected event
+  const { data: agendaResponse, isLoading, error, refetch } = useGetAgendaQuery(eventId, {
+    skip: !eventId,
+  });
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -77,6 +113,9 @@ export const AgendaScreen = () => {
     if (error?.status) return `Error ${error.status}`;
     return 'Failed to load agenda.';
   }, [error]);
+
+  console.log('eventId', eventId);
+  console.log('agendaResponse', agendaResponse);
   
   const [selectedDateIndex, setSelectedDateIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
@@ -125,7 +164,7 @@ export const AgendaScreen = () => {
         id: item.id,
         title: item.title || 'Untitled Session',
         time: formatTime(item.time),
-        description: item.description || '',
+        description: normalizeWhitespace(decodeEntities(stripHtml(item.description || ''))),
         location: item.location || item.venue || '',
         date: item.date,
         event_id: item.event_id,
@@ -233,44 +272,45 @@ const hasAnyResults = useMemo(() => {
         bounces={false}
       >
         <View style={styles.content}>
-          {/* Date Selector */}
-          {dates.length > 0 && (
-            <View style={styles.dateSelector}>
-              {dates.map((date) => (
-                <TouchableOpacity
-                  key={date.id}
-                  style={[
-                    styles.dateButton,
-                    selectedDateIndex === date.id && styles.dateButtonSelected
-                  ]}
-                  onPress={() => setSelectedDateIndex(date.id)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[
-                    styles.dateButtonDayText,
-                    selectedDateIndex === date.id && styles.dateButtonDayTextSelected
-                  ]}>
-                    {date.label}
-                  </Text>
+          {/* Date Selector - always visible; shows inline spinner on selected pill while loading */}
+          <View style={styles.dateSelector}>
+            {(dates.length > 0 ? dates : [{ id: 0, label: 'DAY', day: '' }]).map((date) => (
+              <TouchableOpacity
+                key={date.id}
+                style={[
+                  styles.dateButton,
+                  selectedDateIndex === date.id && styles.dateButtonSelected
+                ]}
+                onPress={() => dates.length > 0 && setSelectedDateIndex(date.id)}
+                disabled={dates.length === 0}
+                activeOpacity={0.8}
+              >
+                <Text style={[
+                  styles.dateButtonDayText,
+                  selectedDateIndex === date.id && styles.dateButtonDayTextSelected
+                ]}>
+                  {date.label}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Text style={[
                     styles.dateButtonDateText,
                     selectedDateIndex === date.id && styles.dateButtonDateTextSelected
                   ]}>
-                    {date.day}
+                    {date.day || ''}
                   </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
+                  {isLoading && selectedDateIndex === date.id ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={selectedDateIndex === date.id ? colors.primary : colors.white}
+                      style={{ marginLeft: 8 }}
+                    />
+                  ) : null}
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-          {/* Loading State */}
-          {isLoading && (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={styles.loadingText}>Loading agenda...</Text>
-            </View>
-          )}
-
+          
           {/* Error State */}
           {error && !isLoading && (
             <View style={styles.errorContainer}>
@@ -286,8 +326,18 @@ const hasAnyResults = useMemo(() => {
             onChangeText={setSearchQuery}
           />
 
-          {/* Agenda Sections */}
-          {!isLoading && !error && hasAnyResults ? (
+          {/* Agenda Sections: now handle loading/error inside this area */}
+          {isLoading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading agenda...</Text>
+            </View>
+          ) : error ? (
+            <View style={styles.errorContainer}>
+              <Icon name="alert-circle" size={48} color={colors.textMuted} />
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
+          ) : hasAnyResults ? (
             <>
               <AgendaSection 
                 title="Morning" 
@@ -305,7 +355,7 @@ const hasAnyResults = useMemo(() => {
                 sectionColor="#C084FC" 
               />
             </>
-          ) : !isLoading && !error ? (
+          ) : (
             <View style={styles.emptyState}>
               <View style={styles.emptyIconCircle}>
                 <Icon name={searchQuery ? "search" : "calendar"} size={22} color={colors.primary} />
@@ -319,7 +369,7 @@ const hasAnyResults = useMemo(() => {
                   : 'Select a different date or check back later.'}
               </Text>
             </View>
-          ) : null}
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>

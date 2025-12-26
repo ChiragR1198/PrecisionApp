@@ -2,7 +2,7 @@ import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ImageBackground,
@@ -20,7 +20,8 @@ import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import { useGetEventsQuery } from '../../store/api';
-import { useAppSelector } from '../../store/hooks';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { setSelectedEvent } from '../../store/slices/eventSlice';
 
 // Icon Components
 const CalendarIcon = Icons.Calendar;
@@ -145,6 +146,7 @@ export const DashboardScreen = () => {
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
   const scrollViewRef = useRef(null);
   const navigation = useNavigation();
+  const dispatch = useAppDispatch();
 
   const { data: eventsData, isLoading, error, refetch } = useGetEventsQuery();
   const errorMessage = useMemo(() => {
@@ -179,7 +181,30 @@ export const DashboardScreen = () => {
   const handleEventSelect = (index) => {
     setSelectedEventIndex(index);
     setIsEventDropdownOpen(false);
+    // Update Redux store with selected event
+    const event = EVENTS[index];
+    if (event?.id) {
+      // Ensure eventId is a number (not a comma-separated string)
+      const eventId = typeof event.id === 'string' && event.id.includes(',') 
+        ? Number(event.id.split(',')[0].trim())
+        : Number(event.id);
+      dispatch(setSelectedEvent({ eventId, index }));
+    }
   };
+
+  // Update Redux store when events are loaded and initial selection is made
+  useEffect(() => {
+    if (EVENTS.length > 0 && selectedEventIndex >= 0 && selectedEventIndex < EVENTS.length) {
+      const event = EVENTS[selectedEventIndex];
+      if (event?.id) {
+        // Ensure eventId is a number (not a comma-separated string)
+        const eventId = typeof event.id === 'string' && event.id.includes(',') 
+          ? Number(event.id.split(',')[0].trim())
+          : Number(event.id);
+        dispatch(setSelectedEvent({ eventId, index: selectedEventIndex }));
+      }
+    }
+  }, [EVENTS, selectedEventIndex, dispatch]);
 
   // Platform-aware Responsive SIZES
   const { SIZES, isTablet } = useMemo(() => {
@@ -229,24 +254,28 @@ export const DashboardScreen = () => {
 
   const handleQuickAction = (action) => {
     console.log(`${action} pressed`);
-    // Navigate to respective screens
+    // Navigate to respective screens with eventId if available
+    const params = {};
+    if (selectedEvent?.id) {
+      params.eventId = String(selectedEvent.id);
+    }
+    if (selectedEventIndex !== undefined && selectedEventIndex !== null) {
+      params.selectedEventIndex = String(selectedEventIndex);
+    }
+    
     switch(action) {
       case 'Event':
-        if (selectedEvent?.id) {
-          router.push({ pathname: '/my-event', params: { selectedEventIndex: String(selectedEventIndex), eventId: String(selectedEvent.id) } });
-        } else {
-          router.push({ pathname: '/my-event', params: { selectedEventIndex: String(selectedEventIndex) } });
-        }
+        router.push({ pathname: '/my-event', params });
         break;
       case 'Agenda':
-        router.push('/agenda');
+        router.push({ pathname: '/agenda', params: Object.keys(params).length > 0 ? params : undefined });
         break;
       case 'Attendees':
-        router.push('/attendees');
+        router.push({ pathname: '/attendees', params: Object.keys(params).length > 0 ? params : undefined });
         break;
       case 'Sponsors':
       case 'Delegate':
-        router.push('/sponsors');
+        router.push({ pathname: '/sponsors', params: Object.keys(params).length > 0 ? params : undefined });
         break;
       default:
         break;

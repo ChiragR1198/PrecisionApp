@@ -17,6 +17,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
+import { useVerifyEmailMutation } from '../../store/api';
+import { useLocalSearchParams } from 'expo-router';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -108,6 +110,8 @@ export const EmailVerificationScreen = () => {
   const [timeLeft, setTimeLeft] = useState(300); // 5 minutes in seconds
   const [isLoading, setIsLoading] = useState(false);
   const [canResend, setCanResend] = useState(false);
+  const params = useLocalSearchParams();
+  const [verifyEmail] = useVerifyEmailMutation();
 
   // Timer countdown
   useEffect(() => {
@@ -191,9 +195,10 @@ export const EmailVerificationScreen = () => {
   const handleVerifyCode = async () => {
     setIsLoading(true);
     try {
-      console.log('Verifying code:', verificationCode.join(''));
-      
-      router.push('/reset-password');
+      const email = params?.email || '';
+      const otp = verificationCode.join('');
+      await verifyEmail({ email, otp, user_type: 'delegate' }).unwrap();
+      router.push({ pathname: '/reset-password', params: { email, otp } });
     } catch (error) {
       console.error('Error verifying code:', error);
     } finally {

@@ -11,19 +11,68 @@ const baseQuery = fetchBaseQuery({
       headers.set('Authorization', `Bearer ${token}`);
     }
     headers.set('Accept', 'application/json');
-    headers.set('Content-Type', 'application/json');
+    if (!headers.get('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
     return headers;
   },
 });
 
-// Enhanced base query with error handling
+// Shared in-flight refresh promise to prevent parallel refresh calls
+let refreshPromise = null;
+
+// Enhanced base query with error handling + automatic re-auth
 const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
-  const result = await baseQuery(args, api, extraOptions);
-  
+  let result = await baseQuery(args, api, extraOptions);
+
+  // If unauthorized, try to refresh token once
+  if (result.error && (result.error.status === 401 || result.error.status === 403)) {
+    if (!refreshPromise) {
+      refreshPromise = (async () => {
+        try {
+          const storedRefreshToken = await AsyncStorage.getItem('refresh_token');
+          const refreshBody = storedRefreshToken ? { refresh_token: storedRefreshToken } : undefined;
+          const refreshResult = await baseQuery({
+            url: API_ENDPOINTS.REFRESH_TOKEN,
+            method: 'POST',
+            body: refreshBody,
+          }, api, extraOptions);
+
+          const newToken = refreshResult?.data?.token || refreshResult?.data?.data?.token;
+          const newRefreshToken = refreshResult?.data?.refresh_token || refreshResult?.data?.data?.refresh_token;
+
+          if (newToken) {
+            await AsyncStorage.setItem('auth_token', newToken);
+            if (newRefreshToken) {
+              await AsyncStorage.setItem('refresh_token', newRefreshToken);
+            }
+            return true;
+          }
+        } catch (e) {
+          // no-op, will fall through to logout
+        }
+        // Refresh failed; clear and force re-login
+        await AsyncStorage.removeItem('auth_token');
+        await AsyncStorage.removeItem('refresh_token');
+        await AsyncStorage.removeItem('auth_user');
+        return false;
+      })().finally(() => {
+        // allow future refresh attempts
+        refreshPromise = null;
+      });
+    }
+
+    const refreshed = await refreshPromise;
+    if (refreshed) {
+      // Retry the original query with new token
+      result = await baseQuery(args, api, extraOptions);
+    }
+  }
+
   if (result.error) {
     const { status, data } = result.error;
     let errorMessage = `HTTP error! status: ${status}`;
-    
+
     if (data) {
       if (typeof data === 'string') {
         errorMessage = data;
@@ -39,10 +88,10 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
         errorMessage = data.data.message;
       }
     }
-    
+
     return { error: { status, data, message: errorMessage } };
   }
-  
+
   return result;
 };
 
@@ -63,10 +112,15 @@ export const api = createApi({
       async onQueryStarted(arg, { queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
-          if (data?.token) {
-            await AsyncStorage.setItem('auth_token', data.token);
-            await AsyncStorage.setItem('auth_user', JSON.stringify(data.data || data));
+          const token = data?.token || data?.data?.token;
+          const refreshToken = data?.refresh_token || data?.data?.refresh_token;
+          if (token) {
+            await AsyncStorage.setItem('auth_token', token);
           }
+          if (refreshToken) {
+            await AsyncStorage.setItem('refresh_token', refreshToken);
+          }
+          await AsyncStorage.setItem('auth_user', JSON.stringify(data.data || data));
         } catch (error) {
           console.error('Login token storage failed:', error);
         }
@@ -86,6 +140,7 @@ export const api = createApi({
           console.warn('Logout API failed, clearing local data anyway');
         } finally {
           await AsyncStorage.removeItem('auth_token');
+          await AsyncStorage.removeItem('refresh_token');
           await AsyncStorage.removeItem('auth_user');
         }
       },
@@ -93,25 +148,25 @@ export const api = createApi({
     
     forgotPassword: builder.mutation({
       query: (email) => ({
-        url: '/auth/forgot-password',
+        url: API_ENDPOINTS.AUTH_DELEGATE_FORGOT_PASSWORD,
         method: 'POST',
         body: { email },
       }),
     }),
     
     resetPassword: builder.mutation({
-      query: ({ token, password, password_confirmation }) => ({
-        url: '/auth/reset-password',
+      query: ({ email, otp, new_password, confirm_password }) => ({
+        url: API_ENDPOINTS.AUTH_DELEGATE_RESET_PASSWORD,
         method: 'POST',
-        body: { token, password, password_confirmation },
+        body: { email, otp, new_password, confirm_password },
       }),
     }),
     
     verifyEmail: builder.mutation({
-      query: ({ email, otp }) => ({
-        url: '/auth/verify-email',
+      query: ({ email, otp, user_type = 'delegate' }) => ({
+        url: API_ENDPOINTS.AUTH_VERIFY_FORGOT_PASSWORD_OTP,
         method: 'POST',
-        body: { email, otp },
+        body: { email, otp, user_type },
       }),
     }),
     
@@ -136,12 +191,26 @@ export const api = createApi({
     
     // ============ AGENDA ============
     getAgenda: builder.query({
-      query: (eventId) => eventId ? `${API_ENDPOINTS.DELEGATE_AGENDA}/${eventId}` : API_ENDPOINTS.DELEGATE_AGENDA,
+      query: (eventId) => {
+        // API endpoint format: /agenda/{eventId}
+        // Example: https://stage1.events.precision-globe.com/mobile/agenda/27
+        if (eventId) {
+          return API_ENDPOINTS.AGENDA_BY_ID(eventId);
+        }
+        // Fallback to delegate agenda if no eventId provided
+        return API_ENDPOINTS.AGENDA;
+      },
+      
       providesTags: ['Agenda'],
     }),
     
     getAgendaDetails: builder.query({
-      query: (agendaId) => API_ENDPOINTS.AGENDA_ITEM_BY_ID(agendaId),
+      query: (agendaId) => {
+        if (agendaId) {
+          return API_ENDPOINTS.AGENDA_ITEM_BY_ID(agendaId);
+        }
+        return null;
+      },
       providesTags: (result, error, agendaId) => [{ type: 'Agenda', id: agendaId }],
     }),
     
@@ -224,9 +293,10 @@ export const api = createApi({
     
     updateProfile: builder.mutation({
       query: (profileData) => ({
-        url: API_ENDPOINTS.DELEGATE_PROFILE,
-        method: 'PUT',
+        url: API_ENDPOINTS.DELEGATE_PROFILE_UPDATE,
+        method: 'POST',
         body: profileData,
+        headers: { 'Content-Type': 'multipart/form-data' },
       }),
       invalidatesTags: ['Profile'],
     }),
@@ -251,7 +321,7 @@ export const api = createApi({
     
     // ============ ITINERARY ============
     getItinerary: builder.query({
-      query: () => '/itinerary',
+      query: () => API_ENDPOINTS.DELEGATE_VIEW_ITINERARY,
       providesTags: ['Agenda'],
     }),
   }),

@@ -1,0 +1,588 @@
+{
+	"info": {
+		"_postman_id": "37193306-0890-43a8-a515-0e8549be8600",
+		"name": "Precision",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "40747582"
+	},
+	"item": [
+		{
+			"name": "Delegate",
+			"item": [
+				{
+					"name": "Login",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"email\":\"ravi120@yopmail.com\",\r\n    \"password\":\"FEMLbsSR\",\r\n    \"login_type\": \"delegate\"\r\n}"
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/auth/delegate-login",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"auth",
+								"delegate-login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Events",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjU3NzcyMjIsImV4cCI6MTc2NTg2MzYyMiwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.wV6xOLew9G_cSFbK4O0Ibds3VzVHDB0g8hCQlud-L9k",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/events",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"events"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "All-Delegates",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjU3NzcyMjIsImV4cCI6MTc2NTg2MzYyMiwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.wV6xOLew9G_cSFbK4O0Ibds3VzVHDB0g8hCQlud-L9k",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/all-delegates",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"all-delegates"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Send-Meeting-Request",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjU4NjkwMzEsImV4cCI6MTc2NTk1NTQzMSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.ZhRMuutSj6tP-TP4wUGpJkyCbSF9b4kgNNiqPMOxtJo",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"sponsor_id\": 820,\r\n  \"priority\": 1,\r\n  \"event_id\": 27\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/send-meeting-request",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"send-meeting-request"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Review-Meeting-Request",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				},
+				{
+					"name": "Meeting-Request-Action",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n \"meeting_request_id\": 15881, \r\n \"action\": 1 \r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/meeting-request-action/",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"meeting-request-action",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Agenda",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/agenda/27",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"agenda",
+								"27"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Agenda-Item",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/agenda/item/33202",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"agenda",
+								"item",
+								"33202"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Attendees",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/attendees",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"attendees"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "View-Itinerary",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/view-itinerary",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"view-itinerary"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/profile",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"profile"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Profile-Update",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "fname",
+									"value": "test",
+									"type": "text"
+								},
+								{
+									"key": "lname",
+									"value": "delegate",
+									"type": "text"
+								},
+								{
+									"key": "job_title",
+									"value": "Jr.Developer",
+									"type": "text"
+								},
+								{
+									"key": "company",
+									"value": "Labyrx Immunology Therapeutics",
+									"type": "text"
+								},
+								{
+									"key": "bio",
+									"value": "",
+									"type": "text"
+								},
+								{
+									"key": "mobile",
+									"value": "+164756800460",
+									"type": "text"
+								},
+								{
+									"key": "office_number",
+									"value": "2323232320",
+									"type": "text"
+								},
+								{
+									"key": "country",
+									"value": "India",
+									"type": "text"
+								},
+								{
+									"key": "state",
+									"value": "Gujarat",
+									"type": "text"
+								},
+								{
+									"key": "linkedin_url",
+									"value": "",
+									"type": "text"
+								},
+								{
+									"key": "sms_notification",
+									"value": "1",
+									"type": "text"
+								},
+								{
+									"key": "email_notification",
+									"value": "1",
+									"type": "text"
+								},
+								{
+									"key": "Image",
+									"value": "",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/delegate/profile/update",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"delegate",
+								"profile",
+								"update"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Forgot-Password",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \"email\": \"jimpang@yopmail.com\" }",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/auth/delegate-forgot-password",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"auth",
+								"delegate-forgot-password"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify-Password",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjY2NTM0ODEsImV4cCI6MTc2NjczOTg4MSwidXNlcl9pZCI6IjUxMzciLCJ1c2VyX3R5cGUiOiJkZWxlZ2F0ZSIsImVtYWlsIjoicmF2aTEyMEB5b3BtYWlsLmNvbSJ9.RSpxvUSGso3a7kc1f3cF33Zhd2KQPZyHk-9_LavxMpY",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \"email\": \"jimpang@yopmail.com\", \r\n\"otp\": \"443995\", \r\n\"user_type\": \"delegate\" }",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/auth/verify-forgot-password-otp",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"auth",
+								"verify-forgot-password-otp"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Reset-Password",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \r\n\"email\": \"jimpang@yopmail.com\",\r\n \"otp\": \"443995\",\r\n \"new_password\": \"C@123456\",\r\n \"confirm_password\": \"C@123456\"\r\n }",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{App_URL}}mobile/auth/delegate-reset-password",
+							"host": [
+								"{{App_URL}}mobile"
+							],
+							"path": [
+								"auth",
+								"delegate-reset-password"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Message",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "last_email_tested",
+			"value": ""
+		},
+		{
+			"key": "test_execution_time",
+			"value": ""
+		},
+		{
+			"key": "server_config_issue_detected",
+			"value": ""
+		},
+		{
+			"key": "last_known_error",
+			"value": ""
+		},
+		{
+			"key": "api_status",
+			"value": ""
+		}
+	]
+}
