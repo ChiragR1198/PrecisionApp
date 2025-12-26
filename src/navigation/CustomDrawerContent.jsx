@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../constants/theme';
 import { useGetProfileQuery, useLogoutMutation } from '../store/api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
-import { logout as logoutAction } from '../store/slices/authSlice';
+import { clearAuth } from '../store/slices/authSlice';
 
 const NAV_ITEMS = [
   { label: 'Dashboard', route: 'dashboard', icon: 'bar-chart-2' },
@@ -137,12 +137,12 @@ export const CustomDrawerContent = (props) => {
                     onPress: async () => {
                       try {
                         await logoutMutation().unwrap();
-                        dispatch(logoutAction());
+                        dispatch(clearAuth());
                         router.replace('/login');
                       } catch (error) {
                         console.error('Logout error:', error);
                         // Even if API call fails, clear auth and navigate to login
-                        dispatch(logoutAction());
+                        dispatch(clearAuth());
                         router.replace('/login');
                       }
                     },
