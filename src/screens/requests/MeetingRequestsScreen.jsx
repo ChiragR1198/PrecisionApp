@@ -1,6 +1,7 @@
 import { useNavigation } from '@react-navigation/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   FlatList,
   Image,
@@ -18,7 +19,12 @@ import UserAvatar from '../../assets/images/user.png';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
-import { useGetMeetingRequestsQuery, useUpdateMeetingRequestMutation } from '../../store/api';
+import {
+  useDelegateMeetingRequestActionMutation,
+  useGetDelegateMeetingRequestsQuery,
+  useGetSponsorMeetingRequestsQuery
+} from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 // const FILTERS = ['All', 'Sponsors', 'Delegates']; // Filters disabled as per request
 
@@ -37,8 +43,20 @@ import { useGetMeetingRequestsQuery, useUpdateMeetingRequestMutation } from '../
 export const MeetingRequestsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
-  const { data: requestsData, isLoading, error, refetch } = useGetMeetingRequestsQuery();
-  const [updateMeetingRequest] = useUpdateMeetingRequestMutation();
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  
+  // Use appropriate hook based on user type
+  const { data: delegateRequestsData, isLoading: isLoadingDelegate, error: delegateError, refetch: refetchDelegate } = useGetDelegateMeetingRequestsQuery(undefined, { skip: !isDelegate });
+  const { data: sponsorRequestsData, isLoading: isLoadingSponsor, error: sponsorError, refetch: refetchSponsor } = useGetSponsorMeetingRequestsQuery(undefined, { skip: isDelegate });
+  
+  const requestsData = isDelegate ? delegateRequestsData : sponsorRequestsData;
+  const isLoading = isDelegate ? isLoadingDelegate : isLoadingSponsor;
+  const error = isDelegate ? delegateError : sponsorError;
+  const refetch = isDelegate ? refetchDelegate : refetchSponsor;
+  
+  const [updateMeetingRequest] = useDelegateMeetingRequestActionMutation();
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -67,17 +85,42 @@ export const MeetingRequestsScreen = () => {
       list = response.data.data;
     }
     
-    // Transform to expected format
-    return list.map((item) => ({
-      id: String(item.id),
-      name: item.sponsor_name || 'Unknown',
-      company: item.sponsor_company || '',
+    // Transform to expected format based on user type
+    return list.map((item) => {
+      // For delegate: shows sponsor info (who sent request to delegate)
+      // For sponsor: shows delegate info (who sent request to sponsor)
+      if (isDelegate) {
+        // Delegate viewing requests - show sponsor info
+        // API response has: sponsor_name, sponsor_company, sponsor_image
+        return {
+          id: String(item.id || item.meeting_request_id),
+          name: item.sponsor_name || item.name || 'Unknown Sponsor',
+          company: item.sponsor_company || item.company || '',
       type: item.from === 'sponsor' ? 'Sponsor' : 'Delegate',
-      avatar: UserAvatar,
-      currentAction: item.is_accepted ? Number(item.is_accepted) : null,
+          avatar: item.sponsor_image ? { uri: item.sponsor_image } : UserAvatar,
+          currentAction: item.is_accepted !== null && item.is_accepted !== undefined ? Number(item.is_accepted) : null,
+          raw: item,
+        };
+      } else {
+        // Sponsor viewing requests - show delegate info
+        // API response has: delegate_full_name or delegate_fname + delegate_lname, delegate_company, delegate_image
+        const delegateName = item.delegate_full_name || 
+          (item.delegate_fname && item.delegate_lname ? `${item.delegate_fname} ${item.delegate_lname}`.trim() : null) ||
+          item.delegate_name || 
+          item.name || 
+          'Unknown Delegate';
+        return {
+          id: String(item.id || item.meeting_request_id),
+          name: delegateName,
+          company: item.delegate_company || item.company || '',
+          type: item.from === 'delegate' ? 'Delegate' : 'Sponsor',
+          avatar: item.delegate_image ? { uri: item.delegate_image } : UserAvatar,
+          currentAction: item.is_accepted !== null && item.is_accepted !== undefined ? Number(item.is_accepted) : null,
       raw: item,
-    }));
-  }, [requestsData]);
+        };
+      }
+    });
+  }, [requestsData, isDelegate]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -121,14 +164,26 @@ export const MeetingRequestsScreen = () => {
   const handleAction = async (item, action) => {
     try {
       const meetingRequestId = Number(item?.raw?.id || item.id);
+      if (!meetingRequestId || isNaN(meetingRequestId)) {
+        Alert.alert('Error', 'Invalid meeting request ID');
+        return;
+      }
+      
+      // API expects: 1 for approve, 2 for reject
+      const actionValue = action === 1 ? 1 : 2;
+      const actionText = action === 1 ? 'accepted' : 'declined';
+      
       await updateMeetingRequest({
-        id: meetingRequestId,
-        status: action === 1 ? 'accepted' : 'rejected',
+        meeting_request_id: meetingRequestId,
+        action: actionValue,
       }).unwrap();
       
+      Alert.alert('Success', `Meeting request ${actionText} successfully`);
       refetch();
     } catch (e) {
       console.error('Error updating meeting request action:', e);
+      console.error('Error details:', e?.data || e?.message || e);
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to update meeting request');
     }
   };
 
@@ -169,7 +224,7 @@ export const MeetingRequestsScreen = () => {
       </View>
       <View style={styles.contactInfo}>
         <Text style={styles.contactName}>{item.name}</Text>
-        <Text style={styles.contactCompany}>{item.company}</Text>
+        {item.company ? <Text style={styles.contactCompany}>{item.company}</Text> : null}
         <View style={[styles.typeBadge, item.type === 'Sponsor' ? styles.sponsorBadge : styles.delegateBadge]}>
           <Text style={[styles.typeBadgeText, item.type === 'Sponsor' ? styles.sponsorBadgeText : styles.delegateBadgeText]}>
             {item.type}
@@ -363,15 +418,10 @@ export const MeetingRequestsScreen = () => {
                     onPress={async () => {
                       if (!selectedContact) return;
                       try {
-                        const payload = {
-                          contact_id: selectedContact.id,
-                          priority: selectedPriority.toLowerCase(),
-                        };
-                        console.log('Sending meeting request payload:', payload);
-                        await updateMeetingRequest({
-                          id: payload.contact_id,
-                          status: payload.priority,
-                        }).unwrap();
+                        // Note: This modal functionality seems unused based on the commented code above
+                        // Keeping it for potential future use but it may need different implementation
+                        console.log('Modal send request - functionality may need review');
+                        closeModal();
                       } catch (error) {
                         console.error('Error sending meeting request:', error);
                       } finally {

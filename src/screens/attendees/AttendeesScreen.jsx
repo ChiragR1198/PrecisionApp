@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Dimensions,
   FlatList,
@@ -24,7 +25,7 @@ import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useCreateMeetingRequestMutation, useGetAttendeesQuery } from '../../store/api';
+import { useGetDelegateAttendeesQuery, useSendDelegateMeetingRequestMutation } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 console.log('Platform:', Platform.OS);
@@ -37,8 +38,8 @@ const UserIcon = Icons.User;
 export const AttendeesScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
-  const { data: attendeesData, isLoading, error, refetch } = useGetAttendeesQuery();
-  const [createMeetingRequest] = useCreateMeetingRequestMutation();
+  const { data: attendeesData, isLoading, error, refetch } = useGetDelegateAttendeesQuery();
+  const [createMeetingRequest] = useSendDelegateMeetingRequestMutation();
   const { user } = useAppSelector((state) => state.auth);
   const errorMessage = useMemo(() => {
     if (!error) return '';
@@ -230,18 +231,34 @@ export const AttendeesScreen = () => {
     if (!selectedAttendee) return;
 
     try {
+      // Validate sponsor_id
+      if (!selectedAttendee.id) {
+        Alert.alert('Error', 'Invalid sponsor ID');
+        return;
+      }
+
       const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
       const priorityValue = priorityMap[selectedPriority] || 1;
 
+      // Get current date and time
+      const now = new Date();
+      const date = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
+      const time = now.toTimeString().split(' ')[0]; // Format: HH:MM:SS
+
       await createMeetingRequest({
         sponsor_id: Number(selectedAttendee.id),
-        priority: priorityValue,
         event_id: Number(user?.event_id || 27),
+        priority: priorityValue,
+        date: date,
+        time: time,
+        message: '',
       }).unwrap();
 
+      Alert.alert('Success', 'Meeting request sent successfully');
       closeModal();
     } catch (e) {
       console.error('Error sending meeting request:', e);
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
     }
   };
 

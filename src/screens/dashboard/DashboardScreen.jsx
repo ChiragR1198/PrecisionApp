@@ -19,7 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useGetEventsQuery } from '../../store/api';
+import { useGetDelegateEventsQuery } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { setSelectedEvent } from '../../store/slices/eventSlice';
 
@@ -148,7 +148,10 @@ export const DashboardScreen = () => {
   const navigation = useNavigation();
   const dispatch = useAppDispatch();
 
-  const { data: eventsData, isLoading, error, refetch } = useGetEventsQuery();
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
+  const { data: eventsData, isLoading, error, refetch } = useGetDelegateEventsQuery(undefined, {
+    skip: !isAuthenticated || !user,
+  });
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -157,7 +160,6 @@ export const DashboardScreen = () => {
     if (error?.status) return `Error ${error.status}`;
     return 'Failed to load events.';
   }, [error]);
-  const { user } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);

@@ -18,7 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useLoginMutation } from '../../store/api';
+import { useDelegateLoginMutation, useSponsorLoginMutation } from '../../store/api';
 
 // Icon Components
 const EyeIcon = Icons.Eye;
@@ -149,7 +149,9 @@ const formFields = [
 // Main LoginScreen Component
 export const LoginScreen = () => {
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
-  const [login, { isLoading }] = useLoginMutation();
+  const [delegateLogin, { isLoading: isLoadingDelegate }] = useDelegateLoginMutation();
+  const [sponsorLogin, { isLoading: isLoadingSponsor }] = useSponsorLoginMutation();
+  const isLoading = isLoadingDelegate || isLoadingSponsor;
 
   const scrollViewRef = useRef(null);
 
@@ -259,10 +261,11 @@ export const LoginScreen = () => {
     setError('');
 
     try {
-      await login({
+      const loginMutation = formData.userType === 'sponsor' ? sponsorLogin : delegateLogin;
+      await loginMutation({
         email: formData.email.trim(),
         password: formData.password,
-        userType: formData.userType,
+        login_type: formData.userType,
       }).unwrap();
       
       // Navigation will be handled by Redux auth state and _layout.js

@@ -158,19 +158,33 @@ export const AgendaScreen = () => {
     const selectedDateStr = dates[selectedDateIndex]?.date;
     if (!selectedDateStr) return { morning: [], afternoon: [], evening: [] };
 
-    const filteredItems = agenda
-      .filter(item => item.date === selectedDateStr)
-      .map(item => ({
+    // First filter and group by original time format
+    const filteredItems = agenda.filter(item => item.date === selectedDateStr);
+    const grouped = groupAgendaByTime(filteredItems);
+
+    // Then format the time for display in each group
+    const formatGroupItems = (items) => 
+      items.map(item => ({
         id: item.id,
         title: item.title || 'Untitled Session',
-        time: formatTime(item.time),
+        time: formatTime(item.time), // Format time for display
+        timeOriginal: item.time, // Keep original for sorting
         description: normalizeWhitespace(decodeEntities(stripHtml(item.description || ''))),
         location: item.location || item.venue || '',
         date: item.date,
         event_id: item.event_id,
-      }));
+      })).sort((a, b) => {
+        // Sort by original time
+        const timeA = a.timeOriginal || '';
+        const timeB = b.timeOriginal || '';
+        return timeA.localeCompare(timeB);
+      });
 
-    return groupAgendaByTime(filteredItems);
+    return {
+      morning: formatGroupItems(grouped.morning),
+      afternoon: formatGroupItems(grouped.afternoon),
+      evening: formatGroupItems(grouped.evening),
+    };
   }, [agenda, selectedDateIndex, dates]);
 
   const filteredAgendaData = useMemo(() => {

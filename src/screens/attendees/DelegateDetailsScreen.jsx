@@ -18,7 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-import { useCreateMeetingRequestMutation } from '../../store/api';
+import { useSendDelegateMeetingRequestMutation } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const UserIcon = ({ color = colors.white, size = 18 }) => (
@@ -54,7 +54,7 @@ export const DelegateDetailsScreen = () => {
   const params = useLocalSearchParams();
   const [priority, setPriority] = useState('1st');
   const { user } = useAppSelector((state) => state.auth);
-  const [createMeetingRequest] = useCreateMeetingRequestMutation();
+  const [createMeetingRequest] = useSendDelegateMeetingRequestMutation();
 
   // Get delegate data from params
   const delegate = useMemo(() => {
@@ -109,15 +109,29 @@ export const DelegateDetailsScreen = () => {
 
   const handleSendMeetingRequest = async () => {
     try {
+      // Validate sponsor_id
+      if (!delegate.id || delegate.id === '') {
+        Alert.alert('Error', 'Invalid sponsor ID');
+        return;
+      }
+
       // Map priority text to number: 1st=1, 2nd=2
       const priorityMap = { '1st': 1, '2nd': 2 };
       const priorityValue = priorityMap[priority] || 1;
 
+      // Get current date and time
+      const now = new Date();
+      const date = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
+      const time = now.toTimeString().split(' ')[0]; // Format: HH:MM:SS
+
       // Prepare payload
       const payload = {
         sponsor_id: Number(delegate.id),
-        priority: priorityValue,
         event_id: Number(user?.event_id || 27),
+        priority: priorityValue,
+        date: date,
+        time: time,
+        message: '',
       };
 
       await createMeetingRequest(payload).unwrap();
@@ -125,7 +139,7 @@ export const DelegateDetailsScreen = () => {
       Alert.alert('Success', 'Meeting request sent successfully');
     } catch (e) {
       console.error('Error sending meeting request:', e);
-      Alert.alert('Error', e.message || 'Failed to send meeting request');
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
     }
   };
 

@@ -8,7 +8,7 @@ import React, { useMemo } from 'react';
 import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../constants/theme';
-import { useGetProfileQuery, useLogoutMutation } from '../store/api';
+import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSponsorLogoutMutation } from '../store/api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { clearAuth } from '../store/slices/authSlice';
 
@@ -41,14 +41,20 @@ const getIcon = (name, size, color) => {
 export const CustomDrawerContent = (props) => {
   const { state, navigation } = props;
   const dispatch = useAppDispatch();
-  const [logoutMutation] = useLogoutMutation();
-  const { user } = useAppSelector((state) => state.auth);
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const { selectedEventId, selectedEventIndex } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+  const [delegateLogout] = useDelegateLogoutMutation();
+  const [sponsorLogout] = useSponsorLogoutMutation();
+  const logoutMutation = isDelegate ? delegateLogout : sponsorLogout;
 
-  // Fetch profile data
-  const { data: profileData } = useGetProfileQuery();
+  // Fetch profile data - only if user is authenticated and logged in
+  const shouldSkipDelegate = !isAuthenticated || !user || !isDelegate;
+  const shouldSkipSponsor = !isAuthenticated || !user || isDelegate;
+  const { data: delegateProfileData } = useGetDelegateProfileQuery(undefined, { skip: shouldSkipDelegate });
+  const { data: sponsorProfileData } = useGetSponsorProfileQuery(undefined, { skip: shouldSkipSponsor });
+  const profileData = isDelegate ? delegateProfileData : sponsorProfileData;
   const profile = useMemo(() => {
     return profileData?.data || profileData || null;
   }, [profileData]);

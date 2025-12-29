@@ -20,7 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
-import { useGetAgendaDetailsQuery } from '../../store/api';
+import { useGetAgendaItemQuery } from '../../store/api';
 
 const ClockIcon = ({ color = colors.white, size = 20 }) => (
   <MaterialCommunityIcons name="clock" size={size} color={color} />
@@ -77,7 +77,7 @@ export const AgendaDetailScreen = () => {
   const params = useLocalSearchParams();
   const navigation = useNavigation();
   
-  const { data: agendaData, isLoading, error, refetch } = useGetAgendaDetailsQuery(
+  const { data: agendaData, isLoading, error, refetch } = useGetAgendaItemQuery(
     params?.agendaId,
     { skip: !params?.agendaId }
   );

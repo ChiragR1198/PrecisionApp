@@ -7,7 +7,8 @@ import { ActivityIndicator, ImageBackground, Modal, Platform, ScrollView, StyleS
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-import { useGetEventsQuery } from '../../store/api';
+import { useGetDelegateEventsQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 const CalendarIcon = ({ color = colors.white, size = 20 }) => (
   <Icon name="calendar" size={size} color={color} />
@@ -135,7 +136,10 @@ export const EventOverviewScreen = () => {
   const params = useLocalSearchParams();
   const [isAboutExpanded, setIsAboutExpanded] = useState(false);
 
-  const { data: eventsData, isLoading, error, refetch } = useGetEventsQuery();
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
+  const { data: eventsData, isLoading, error, refetch } = useGetDelegateEventsQuery(undefined, {
+    skip: !isAuthenticated || !user,
+  });
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;

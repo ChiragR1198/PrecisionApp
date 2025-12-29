@@ -25,8 +25,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useGetProfileQuery, useLogoutMutation, useUpdateProfileMutation } from '../../store/api';
-import { useAppDispatch } from '../../store/hooks';
+import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { logout as logoutAction } from '../../store/slices/authSlice';
 
 // Icon Components
@@ -153,15 +153,87 @@ export const ProfileScreen = () => {
   const navigation = useNavigation();
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
-  const [logoutMutation] = useLogoutMutation();
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  const userId = user?.id; // Track user ID to detect user changes
+  const [delegateLogout] = useDelegateLogoutMutation();
+  const [sponsorLogout] = useSponsorLogoutMutation();
+  const logoutMutation = isDelegate ? delegateLogout : sponsorLogout;
   
-  const { data: profileData, isLoading: isLoadingProfile, error: profileError, refetch: refetchProfile } = useGetProfileQuery();
-  const [updateProfile] = useUpdateProfileMutation();
+  // Only fetch profile if user is authenticated and logged in
+  const shouldSkipDelegate = !isAuthenticated || !user || !isDelegate || !userId;
+  const shouldSkipSponsor = !isAuthenticated || !user || isDelegate || !userId;
+  
+  const { data: delegateProfileData, isLoading: isLoadingDelegateProfile, error: delegateProfileError, refetch: refetchDelegateProfile } = useGetDelegateProfileQuery(undefined, { 
+    skip: shouldSkipDelegate,
+    refetchOnMountOrArgChange: true, // Force refetch when component mounts
+  });
+  const { data: sponsorProfileData, isLoading: isLoadingSponsorProfile, error: sponsorProfileError, refetch: refetchSponsorProfile } = useGetSponsorProfileQuery(undefined, { 
+    skip: shouldSkipSponsor,
+    refetchOnMountOrArgChange: true, // Force refetch when component mounts
+  });
+  
+  // Debug logging
+  React.useEffect(() => {
+    console.log('ProfileScreen - Current userId:', userId);
+    console.log('ProfileScreen - isDelegate:', isDelegate);
+    console.log('ProfileScreen - delegateProfileData:', delegateProfileData);
+    console.log('ProfileScreen - sponsorProfileData:', sponsorProfileData);
+  }, [userId, isDelegate, delegateProfileData, sponsorProfileData]);
+  
+  const profileData = isDelegate ? delegateProfileData : sponsorProfileData;
+  const isLoadingProfile = isDelegate ? isLoadingDelegateProfile : isLoadingSponsorProfile;
+  const profileError = isDelegate ? delegateProfileError : sponsorProfileError;
+  const refetchProfile = isDelegate ? refetchDelegateProfile : refetchSponsorProfile;
+  
+  // Track previous user ID and refetch when it changes
+  const prevUserIdRef = React.useRef(userId);
+  React.useEffect(() => {
+    if (userId && userId !== prevUserIdRef.current) {
+      // User changed - clear form and force refetch profile
+      console.log('User changed from', prevUserIdRef.current, 'to', userId, '- forcing refetch');
+      prevUserIdRef.current = userId;
+      setFormData({
+        fullName: '',
+        email: '',
+        phoneNumber: '',
+        jobTitle: '',
+        company: '',
+        officeNumber: '',
+        country: '',
+        state: '',
+        address: '',
+        linkedinUrl: '',
+        bio: '',
+        companyInformation: '',
+      });
+      setProfileImage(null);
+      // Force refetch after a small delay to ensure cache is cleared
+      setTimeout(() => {
+        refetchProfile();
+      }, 100);
+    } else if (!prevUserIdRef.current && userId) {
+      // First time userId is set
+      prevUserIdRef.current = userId;
+      refetchProfile();
+    }
+  }, [userId, refetchProfile]);
+  
+  const [updateDelegateProfile] = useUpdateDelegateProfileMutation();
+  const [updateSponsorProfile] = useUpdateSponsorProfileMutation();
+  const updateProfile = isDelegate ? updateDelegateProfile : updateSponsorProfile;
   
   // Extract profile data from API response
   const profile = useMemo(() => {
-    return profileData?.data || profileData || null;
-  }, [profileData]);
+    const data = profileData?.data || profileData || null;
+    // Only return profile if it matches current user ID
+    if (data && userId && data.id && String(data.id) !== String(userId)) {
+      console.log('Profile ID mismatch:', data.id, 'vs userId:', userId);
+      return null; // Don't use cached profile from different user
+    }
+    return data;
+  }, [profileData, userId]);
   
   const [formData, setFormData] = useState({
     fullName: '',
@@ -178,9 +250,10 @@ export const ProfileScreen = () => {
     companyInformation: '',
   });
   
-  // Update form data when profile loads
+  // Update form data when profile loads - only if profile matches current user
   React.useEffect(() => {
-    if (profile) {
+    if (profile && userId && profile.id && String(profile.id) === String(userId)) {
+      console.log('Updating form data for user:', userId, 'Profile ID:', profile.id);
       setFormData({
         fullName: profile.full_name || `${profile.fname || ''} ${profile.lname || ''}`.trim() || '',
         email: profile.email || '',
@@ -197,12 +270,32 @@ export const ProfileScreen = () => {
       });
       if (profile.image) {
         setProfileImage(profile.image);
+      } else {
+        setProfileImage(null);
       }
       // Set notification preferences
       setSmsNotification(profile.sms_notification === 1 || profile.sms_notification === true);
       setEmailNotification(profile.email_notification === 1 || profile.email_notification === true);
+    } else if (!profile && userId) {
+      // If no profile but we have userId, clear form (waiting for new data)
+      console.log('Clearing form - waiting for profile for user:', userId);
+      setFormData({
+        fullName: '',
+        email: '',
+        phoneNumber: '',
+        jobTitle: '',
+        company: '',
+        officeNumber: '',
+        country: '',
+        state: '',
+        address: '',
+        linkedinUrl: '',
+        bio: '',
+        companyInformation: '',
+      });
+      setProfileImage(null);
     }
-  }, [profile]);
+  }, [profile, userId]);
   
   const [smsNotification, setSmsNotification] = useState(true);
   const [emailNotification, setEmailNotification] = useState(true);

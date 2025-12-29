@@ -34,34 +34,92 @@ const authSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
-    // Handle login
-    builder.addMatcher(
-      api.endpoints.login.matchFulfilled,
-      (state, action) => {
-        state.isAuthenticated = true;
-        state.user = action.payload.data || action.payload;
-        state.error = null;
-      }
-    );
-    
-    builder.addMatcher(
-      api.endpoints.login.matchRejected,
-      (state, action) => {
-        state.isAuthenticated = false;
-        state.user = null;
-        state.error = action.error?.message || 'Login failed';
-      }
-    );
-    
-    // Handle logout
-    builder.addMatcher(
-      api.endpoints.logout.matchFulfilled,
-      (state) => {
-        state.isAuthenticated = false;
-        state.user = null;
-        state.error = null;
-      }
-    );
+    // Handle delegate login
+    if (api.endpoints?.delegateLogin) {
+      builder.addMatcher(
+        api.endpoints.delegateLogin.matchFulfilled,
+        (state, action) => {
+          state.isAuthenticated = true;
+          state.user = action.payload.data || action.payload;
+          state.error = null;
+        }
+      );
+      
+      builder.addMatcher(
+        api.endpoints.delegateLogin.matchRejected,
+        (state, action) => {
+          state.isAuthenticated = false;
+          state.user = null;
+          state.error = action.error?.message || 'Login failed';
+        }
+      );
+    }
+
+    // Handle sponsor login
+    if (api.endpoints?.sponsorLogin) {
+      builder.addMatcher(
+        api.endpoints.sponsorLogin.matchFulfilled,
+        (state, action) => {
+          state.isAuthenticated = true;
+          state.user = action.payload.data || action.payload;
+          state.error = null;
+        }
+      );
+
+      builder.addMatcher(
+        api.endpoints.sponsorLogin.matchRejected,
+        (state, action) => {
+          state.isAuthenticated = false;
+          state.user = null;
+          state.error = action.error?.message || 'Login failed';
+        }
+      );
+    }
+
+    // Handle delegate logout
+    if (api.endpoints?.delegateLogout) {
+      builder.addMatcher(
+        api.endpoints.delegateLogout.matchFulfilled,
+        (state) => {
+          state.isAuthenticated = false;
+          state.user = null;
+          state.error = null;
+        }
+      );
+
+      builder.addMatcher(
+        api.endpoints.delegateLogout.matchRejected,
+        (state) => {
+          // Even if logout API fails, clear local state
+          state.isAuthenticated = false;
+          state.user = null;
+          state.error = null;
+        }
+      );
+    }
+
+    // Handle sponsor logout
+    if (api.endpoints?.sponsorLogout) {
+      builder.addMatcher(
+        api.endpoints.sponsorLogout.matchFulfilled,
+        (state) => {
+          state.isAuthenticated = false;
+          state.user = null;
+          state.error = null;
+        }
+      );
+
+      builder.addMatcher(
+        api.endpoints.sponsorLogout.matchRejected,
+        (state) => {
+          // Even if logout API fails, clear local state
+          state.isAuthenticated = false;
+          state.user = null;
+          state.error = null;
+        }
+      );
+    }
+
   },
 });
 
@@ -83,6 +141,8 @@ export const checkAuthStatus = () => async (dispatch) => {
   } catch (error) {
     console.error('Error checking auth status:', error);
     dispatch(setAuth({ isAuthenticated: false, user: null }));
+  } finally {
+    dispatch(setAuthLoading(false));
   }
 };
 
