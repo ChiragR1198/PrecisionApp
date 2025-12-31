@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
-import { useResetPasswordMutation } from '../../store/api';
+import { useDelegateResetPasswordMutation } from '../../store/api';
 import { useLocalSearchParams } from 'expo-router';
 
 // Icon Components
@@ -167,7 +167,7 @@ export const ResetPasswordScreen = () => {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const params = useLocalSearchParams();
-  const [resetPassword] = useResetPasswordMutation();
+  const [resetPassword] = useDelegateResetPasswordMutation();
 
   React.useEffect(() => {
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -251,7 +251,14 @@ export const ResetPasswordScreen = () => {
         new_password: formData.password,
         confirm_password: formData.confirmPassword,
       }).unwrap();
-      router.push('/login');
+      // Delay navigation to ensure root layout is mounted
+      setTimeout(() => {
+        try {
+          router.push('/login');
+        } catch (navError) {
+          console.warn('⚠️ Navigation error:', navError);
+        }
+      }, 100);
     } catch (error) {
       console.error('Error resetting password:', error);
     } finally {
@@ -264,7 +271,13 @@ export const ResetPasswordScreen = () => {
   };
 
   const handleBackToLogin = () => {
-    router.push('/login');
+    setTimeout(() => {
+      try {
+        router.push('/login');
+      } catch (navError) {
+        console.warn('⚠️ Navigation error:', navError);
+      }
+    }, 100);
   };
 
   const isPasswordValid = formData.password.length >= 8 && 

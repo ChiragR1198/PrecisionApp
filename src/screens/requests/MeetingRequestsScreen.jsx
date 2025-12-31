@@ -22,7 +22,8 @@ import { colors, radius } from '../../constants/theme';
 import {
   useDelegateMeetingRequestActionMutation,
   useGetDelegateMeetingRequestsQuery,
-  useGetSponsorMeetingRequestsQuery
+  useGetSponsorMeetingRequestsQuery,
+  useSponsorMeetingRequestActionMutation
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
@@ -56,7 +57,10 @@ export const MeetingRequestsScreen = () => {
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? refetchDelegate : refetchSponsor;
   
-  const [updateMeetingRequest] = useDelegateMeetingRequestActionMutation();
+  // Use appropriate mutation based on user type
+  const [updateDelegateMeetingRequest] = useDelegateMeetingRequestActionMutation();
+  const [updateSponsorMeetingRequest] = useSponsorMeetingRequestActionMutation();
+  const updateMeetingRequest = isDelegate ? updateDelegateMeetingRequest : updateSponsorMeetingRequest;
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -71,6 +75,9 @@ export const MeetingRequestsScreen = () => {
   const [selectedPriority, setSelectedPriority] = useState('Medium');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const modalAnim = useRef(new Animated.Value(0)).current;
+  
+  // Track action updates locally for immediate UI feedback
+  const [actionUpdates, setActionUpdates] = useState({});
   
   const requests = useMemo(() => {
     let list = [];
@@ -87,18 +94,24 @@ export const MeetingRequestsScreen = () => {
     
     // Transform to expected format based on user type
     return list.map((item) => {
+      const itemId = String(item.id || item.meeting_request_id);
+      // Get locally updated action if exists, otherwise use API data
+      const localAction = actionUpdates[itemId];
+      const apiAction = item.is_accepted !== null && item.is_accepted !== undefined ? Number(item.is_accepted) : null;
+      const currentAction = localAction !== undefined ? localAction : apiAction;
+      
       // For delegate: shows sponsor info (who sent request to delegate)
       // For sponsor: shows delegate info (who sent request to sponsor)
       if (isDelegate) {
         // Delegate viewing requests - show sponsor info
         // API response has: sponsor_name, sponsor_company, sponsor_image
         return {
-          id: String(item.id || item.meeting_request_id),
+          id: itemId,
           name: item.sponsor_name || item.name || 'Unknown Sponsor',
           company: item.sponsor_company || item.company || '',
-      type: item.from === 'sponsor' ? 'Sponsor' : 'Delegate',
+          type: item.from === 'sponsor' ? 'Sponsor' : 'Delegate',
           avatar: item.sponsor_image ? { uri: item.sponsor_image } : UserAvatar,
-          currentAction: item.is_accepted !== null && item.is_accepted !== undefined ? Number(item.is_accepted) : null,
+          currentAction: currentAction,
           raw: item,
         };
       } else {
@@ -110,17 +123,17 @@ export const MeetingRequestsScreen = () => {
           item.name || 
           'Unknown Delegate';
         return {
-          id: String(item.id || item.meeting_request_id),
+          id: itemId,
           name: delegateName,
           company: item.delegate_company || item.company || '',
           type: item.from === 'delegate' ? 'Delegate' : 'Sponsor',
           avatar: item.delegate_image ? { uri: item.delegate_image } : UserAvatar,
-          currentAction: item.is_accepted !== null && item.is_accepted !== undefined ? Number(item.is_accepted) : null,
-      raw: item,
+          currentAction: currentAction,
+          raw: item,
         };
       }
     });
-  }, [requestsData, isDelegate]);
+  }, [requestsData, isDelegate, actionUpdates]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -169,9 +182,17 @@ export const MeetingRequestsScreen = () => {
         return;
       }
       
+      const itemId = String(item.id || meetingRequestId);
+      
       // API expects: 1 for approve, 2 for reject
       const actionValue = action === 1 ? 1 : 2;
       const actionText = action === 1 ? 'accepted' : 'declined';
+      
+      // Optimistically update UI immediately
+      setActionUpdates((prev) => ({
+        ...prev,
+        [itemId]: actionValue,
+      }));
       
       await updateMeetingRequest({
         meeting_request_id: meetingRequestId,
@@ -183,6 +204,15 @@ export const MeetingRequestsScreen = () => {
     } catch (e) {
       console.error('Error updating meeting request action:', e);
       console.error('Error details:', e?.data || e?.message || e);
+      
+      // Revert optimistic update on error
+      const itemId = String(item.id || item?.raw?.id);
+      setActionUpdates((prev) => {
+        const updated = { ...prev };
+        delete updated[itemId];
+        return updated;
+      });
+      
       Alert.alert('Error', e?.data?.message || e?.message || 'Failed to update meeting request');
     }
   };
@@ -253,46 +283,42 @@ export const MeetingRequestsScreen = () => {
         const declineLabel = isDeclined ? 'Declined' : 'Decline';
 
         return (
-      <View style={styles.actionButtons}>
-        <TouchableOpacity
-            style={[
-              styles.actionButton,
-              isDeclined && styles.declineButtonActive,
-            ]}
-          activeOpacity={0.85}
-          onPress={() => {
-              handleAction(item, 2);
-          }}
-        >
-            <Text
+          <View style={styles.actionButtons}>
+            <TouchableOpacity
               style={[
-                styles.actionButtonText,
-                isDeclined && styles.declineButtonTextActive,
+                styles.actionButton,
+                isDeclined && styles.declineButtonActive,
               ]}
+              activeOpacity={0.85}
+              onPress={() => handleAction(item, 2)}
             >
-              {declineLabel}
-            </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-            style={[
-              styles.actionButton,
-              isAccepted && styles.acceptButtonActive,
-            ]}
-          activeOpacity={0.85}
-          onPress={() => {
-              handleAction(item, 1);
-          }}
-        >
-            <Text
+              <Text
+                style={[
+                  styles.actionButtonText,
+                  isDeclined && styles.declineButtonTextActive,
+                ]}
+              >
+                {declineLabel}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               style={[
-                styles.actionButtonText,
-                isAccepted && styles.acceptButtonTextActive,
+                styles.actionButton,
+                isAccepted && styles.acceptButtonActive,
               ]}
+              activeOpacity={0.85}
+              onPress={() => handleAction(item, 1)}
             >
-              {acceptLabel}
-            </Text>
-        </TouchableOpacity>
-      </View>
+              <Text
+                style={[
+                  styles.actionButtonText,
+                  isAccepted && styles.acceptButtonTextActive,
+                ]}
+              >
+                {acceptLabel}
+              </Text>
+            </TouchableOpacity>
+          </View>
         );
       })()}
     </View>
@@ -566,12 +592,14 @@ const createStyles = (SIZES) => StyleSheet.create({
     gap: 8,
   },
   actionButton: {
-    paddingHorizontal: 14,
+    width: 90, // Fixed width for both buttons
     paddingVertical: 8,
     borderRadius: radius.pill,
     borderWidth: 1,
     backgroundColor: colors.white,
     borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   actionButtonText: {
     fontSize: SIZES.body,

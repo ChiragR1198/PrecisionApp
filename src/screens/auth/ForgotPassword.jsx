@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
-import { useForgotPasswordMutation } from '../../store/api';
+import { useDelegateForgotPasswordMutation } from '../../store/api';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -116,7 +116,7 @@ export const ForgotPasswordScreen = () => {
   });
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [forgotPassword] = useForgotPasswordMutation();
+  const [forgotPassword] = useDelegateForgotPasswordMutation();
 
   React.useEffect(() => {
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -197,9 +197,16 @@ export const ForgotPasswordScreen = () => {
     setIsLoading(true);
     try {
       const email = formData.email.trim();
-      await forgotPassword(email).unwrap();
+      await forgotPassword({ email }).unwrap();
       setIsSubmitted(true);
-      router.push({ pathname: '/email-verification', params: { email } });
+      // Delay navigation to ensure root layout is mounted
+      setTimeout(() => {
+        try {
+          router.push({ pathname: '/email-verification', params: { email } });
+        } catch (navError) {
+          console.warn('⚠️ Navigation error:', navError);
+        }
+      }, 100);
     } catch (error) {
       console.error('Error sending reset link:', error);
     } finally {

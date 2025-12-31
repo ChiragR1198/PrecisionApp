@@ -1,16 +1,14 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Animated,
-  Dimensions,
   FlatList,
   Image,
   Modal,
-  PixelRatio,
   Platform,
   Pressable,
   ScrollView,
@@ -25,22 +23,145 @@ import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useGetDelegateAttendeesQuery, useSendDelegateMeetingRequestMutation } from '../../store/api';
-import { useAppSelector } from '../../store/hooks';
+import {
+  useGetDelegateAttendeesQuery,
+  useGetSponsorAllAttendeesQuery,
+  useGetSponsorServicesQuery,
+  useSendDelegateMeetingRequestMutation,
+  useSendSponsorMeetingRequestMutation
+} from '../../store/api';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { clearAuth } from '../../store/slices/authSlice';
 
-console.log('Platform:', Platform.OS);
-console.log('Screen:', Dimensions.get('window'));
-console.log('Pixel Ratio:', PixelRatio.get());
-
-const ChevronRightIcon = Icons.ChevronRight;
 const UserIcon = Icons.User;
+
+const AttendeeRow = React.memo(function AttendeeRow({
+  item,
+  SIZES,
+  styles,
+  onOpenDetails,
+  onOpenRequest,
+}) {
+  return (
+    <TouchableOpacity
+      style={styles.row}
+      activeOpacity={0.8}
+      onPress={() => onOpenDetails(item)}
+    >
+      <View
+        style={[
+          styles.avatar,
+          {
+            width: SIZES.avatarSize,
+            height: SIZES.avatarSize,
+            borderRadius: SIZES.avatarSize / 2,
+          },
+        ]}
+      >
+        {item.image ? (
+          <Image
+            source={{ uri: item.image }}
+            style={{
+              width: SIZES.avatarSize,
+              height: SIZES.avatarSize,
+              borderRadius: SIZES.avatarSize / 2,
+            }}
+            resizeMode="cover"
+          />
+        ) : (
+          <UserIcon size={SIZES.avatarSize * 0.5} />
+        )}
+      </View>
+      <View style={styles.rowInfo}>
+        <Text style={styles.rowName} numberOfLines={1}>
+          {item.name}
+        </Text>
+        <Text style={styles.rowMeta} numberOfLines={1}>
+          {item.role}
+        </Text>
+        <Text style={[styles.rowMeta1]} numberOfLines={1}>
+          {item.company}
+        </Text>
+      </View>
+      <TouchableOpacity
+        style={styles.requestButton}
+        activeOpacity={0.85}
+        onPress={(e) => {
+          e.stopPropagation();
+          onOpenRequest(item);
+        }}
+      >
+        <Text style={styles.requestButtonText}>Request</Text>
+      </TouchableOpacity>
+    </TouchableOpacity>
+  );
+});
 
 export const AttendeesScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
-  const { data: attendeesData, isLoading, error, refetch } = useGetDelegateAttendeesQuery();
-  const [createMeetingRequest] = useSendDelegateMeetingRequestMutation();
-  const { user } = useAppSelector((state) => state.auth);
+  const dispatch = useAppDispatch();
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQueryDebounced, setSearchQueryDebounced] = useState('');
+  const [selectedServices, setSelectedServices] = useState([]);
+  const [draftSelectedServices, setDraftSelectedServices] = useState([]);
+  
+  // Conditionally fetch attendees based on user type
+  const { 
+    data: delegateAttendeesData, 
+    isLoading: delegateLoading, 
+    error: delegateError, 
+    refetch: delegateRefetch 
+  } = useGetDelegateAttendeesQuery(undefined, {
+    skip: !isAuthenticated || !user || !isDelegate, // Skip for sponsors
+    refetchOnMountOrArgChange: true,
+  });
+  
+  // For sponsors, pass selectedServices to filter attendees by service
+  const { 
+    data: sponsorAttendeesData, 
+    isLoading: sponsorLoading, 
+    error: sponsorError, 
+    refetch: sponsorRefetch 
+  } = useGetSponsorAllAttendeesQuery(selectedServices.length > 0 ? selectedServices : undefined, {
+    skip: !isAuthenticated || !user || isDelegate, // Skip for delegates
+    refetchOnMountOrArgChange: true,
+  });
+  
+  const attendeesData = isDelegate ? delegateAttendeesData : sponsorAttendeesData;
+  const isLoading = isDelegate ? delegateLoading : sponsorLoading;
+  const error = isDelegate ? delegateError : sponsorError;
+  const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
+  
+  const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
+  const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
+  const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
+  
+  // Fetch sponsor services for filter
+  const eventId = user?.event_id || user?.events?.[0]?.id || 27;
+  const { 
+    data: sponsorServicesData, 
+    isLoading: servicesLoading 
+  } = useGetSponsorServicesQuery(eventId, {
+    skip: !isAuthenticated || !user || isDelegate, // Skip for delegates
+    refetchOnMountOrArgChange: true,
+  });
+  
+  // Handle authentication errors - redirect to login
+  useEffect(() => {
+    if (error && (error.status === 401 || error.status === 'NO_TOKEN' || error.status === 403 || error.status === 'AUTH_REQUIRED')) {
+      console.log('🚪 Auth error detected - redirecting to login. Status:', error.status);
+      dispatch(clearAuth());
+      setTimeout(() => {
+        router.replace('/login');
+      }, 0);
+    }
+  }, [error, dispatch]);
+  
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -53,10 +174,6 @@ export const AttendeesScreen = () => {
   const attendees = useMemo(() => {
     return attendeesData?.data || attendeesData || [];
   }, [attendeesData]);
-  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
-  const isDelegate = loginType === 'delegate';
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedService, setSelectedService] = useState(null);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
   const [sortBy, setSortBy] = useState('Name (A to Z)');
@@ -97,18 +214,26 @@ export const AttendeesScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
-  // Filter options and sample data (can be wired to API later)
-  const FILTER_OPTIONS = useMemo(() => (
-    [
-      'All Services',
-      'Product',
-      'Development',
-      'Marketing',
-      'Design',
-      'Sales',
-      'Data',
-    ]
-  ), []);
+  // Filter options - use API data for sponsors, hardcoded for delegates
+  const sponsorServices = useMemo(() => {
+    if (!sponsorServicesData) return [];
+    // Handle API response structure: { services: [...] } or direct array
+    const services = sponsorServicesData?.services || sponsorServicesData?.data || sponsorServicesData || [];
+    return Array.isArray(services) ? services : [];
+  }, [sponsorServicesData]);
+
+  const FILTER_OPTIONS = useMemo(() => {
+    if (isDelegate) {
+      // For delegates, use hardcoded options (or empty if not needed)
+      return [];
+    }
+    // For sponsors, use services from API (no "All Services" option for multi-select)
+    const services = sponsorServices.map((service) => {
+      // Handle both object and string formats
+      return typeof service === 'string' ? service : (service.name || service.title || service.service || '');
+    }).filter(Boolean);
+    return services;
+  }, [isDelegate, sponsorServices]);
 
   const SORT_OPTIONS = useMemo(() => (
     [
@@ -129,83 +254,103 @@ export const AttendeesScreen = () => {
   // is available in the app (e.g. address, bio, linkedin_url, etc.)
   const DATA = useMemo(() => {
     if (!attendees || attendees.length === 0) return [];
-    return attendees.map((attendee) => ({
-      // Full raw response per attendee from API
-      ...attendee,
-      // Normalized / UI-friendly fields (override or add)
-      id: attendee.id,
-      name: attendee.name || 'Unknown',
-      role: attendee.job_title || '',
-      company: attendee.company || '',
-      service: 'All Services', // API doesn't provide service, so default to 'All Services'
-      email: attendee.email || '',
-      phone: attendee.mobile || '',
-      image: attendee.image || null,
-      // If backend sends these, they will be preserved
-      address: attendee.address || attendee.Address || '',
-      bio: attendee.bio || '',
-      linkedin: attendee.linkedin_url || attendee.linkedin || '',
-      status: attendee.status,
-    }));
+    return attendees.map((attendee) => {
+      // Avoid cloning/spreading the full object for every attendee (big perf win on large lists).
+      const id = attendee?.id;
+      const name =
+        attendee?.name ||
+        attendee?.full_name ||
+        attendee?.fullName ||
+        attendee?.delegate_name ||
+        'Unknown';
+      const role = attendee?.job_title || '';
+      const company = attendee?.company || '';
+      const nameKey = String(name || '').toLowerCase();
+      const roleKey = String(role || '').toLowerCase();
+      const companyKey = String(company || '').toLowerCase();
+
+      return {
+        id,
+        name,
+        full_name: attendee?.full_name || attendee?.fullName || '',
+        role,
+        company,
+        service:
+          attendee?.service ||
+          attendee?.service_name ||
+          attendee?.service_title ||
+          'All Services',
+        email: attendee?.email || '',
+        phone: attendee?.mobile || '',
+        image: attendee?.image || null,
+        address: attendee?.address || attendee?.Address || '',
+        bio: attendee?.bio || '',
+        linkedin: attendee?.linkedin_url || attendee?.linkedin || '',
+        status: attendee?.status,
+        // Precomputed keys for fast search/sort
+        _nameKey: nameKey,
+        _roleKey: roleKey,
+        _companyKey: companyKey,
+        _searchText: `${nameKey} ${roleKey} ${companyKey}`,
+        // Keep raw available (used only when navigating/details)
+        raw: attendee,
+      };
+    });
   }, [attendees]);
 
-  const filteredData = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    let base = DATA;
-    // Service filter disabled - API doesn't provide service field
-    // if (selectedService && selectedService !== 'All Services') {
-    //   base = base.filter((a) => a.service === selectedService);
-    // }
-    if (q) {
-      base = base.filter((a) =>
-        (a.name || '').toLowerCase().includes(q) ||
-        (a.role || '').toLowerCase().includes(q) ||
-        (a.company || '').toLowerCase().includes(q)
-      );
-    }
-    // Apply sorting
-    const sorted = [...base];
+  // Important perf detail:
+  // - Sorting can be O(n log n); don't re-sort on every search keystroke.
+  // - We sort only when DATA or sortBy changes, then apply cheap filter for search.
+  const sortedData = useMemo(() => {
+    const sorted = [...DATA];
     switch (sortBy) {
       case 'Name (Z to A)':
-        sorted.sort((a, b) => b.name.localeCompare(a.name));
+        sorted.sort((a, b) => String(b?._nameKey || '').localeCompare(String(a?._nameKey || '')));
         break;
       case 'Company (A to Z)':
-        sorted.sort((a, b) => String(a.company || '').localeCompare(String(b.company || '')));
+        sorted.sort((a, b) => String(a?._companyKey || '').localeCompare(String(b?._companyKey || '')));
         break;
       case 'Company (Z to A)':
-        sorted.sort((a, b) => String(b.company || '').localeCompare(String(a.company || '')));
+        sorted.sort((a, b) => String(b?._companyKey || '').localeCompare(String(a?._companyKey || '')));
         break;
       case 'Role (A to Z)':
-        sorted.sort((a, b) => String(a.role || '').localeCompare(String(b.role || '')));
+        sorted.sort((a, b) => String(a?._roleKey || '').localeCompare(String(b?._roleKey || '')));
         break;
       case 'Role (Z to A)':
-        sorted.sort((a, b) => String(b.role || '').localeCompare(String(a.role || '')));
+        sorted.sort((a, b) => String(b?._roleKey || '').localeCompare(String(a?._roleKey || '')));
         break;
       case 'Newest':
         // API doesn't provide date field, so sort by ID (newest = higher ID)
-        sorted.sort((a, b) => parseInt(b.id) - parseInt(a.id));
+        sorted.sort((a, b) => (Number(b?.id) || 0) - (Number(a?.id) || 0));
         break;
       case 'Oldest':
         // API doesn't provide date field, so sort by ID (oldest = lower ID)
-        sorted.sort((a, b) => parseInt(a.id) - parseInt(b.id));
+        sorted.sort((a, b) => (Number(a?.id) || 0) - (Number(b?.id) || 0));
         break;
       case 'Name (A to Z)':
       default:
-        sorted.sort((a, b) => a.name.localeCompare(b.name));
+        sorted.sort((a, b) => String(a?._nameKey || '').localeCompare(String(b?._nameKey || '')));
         break;
     }
     return sorted;
-  }, [searchQuery, selectedService, sortBy, DATA]);
+  }, [sortBy, DATA]);
 
-  const openModal = (attendee) => {
+  const filteredData = useMemo(() => {
+    const q = searchQueryDebounced.trim().toLowerCase();
+    if (!q) return sortedData;
+    // Service filtering is handled by API, so we don't filter here.
+    return sortedData.filter((a) => (a?._searchText || '').includes(q));
+  }, [searchQueryDebounced, sortedData]);
+
+  const openModal = useCallback((attendee) => {
     setSelectedPriority('1st');
     setSelectedAttendee(attendee);
     setIsModalVisible(true);
-  };
+  }, []);
 
-  const closeModal = () => {
+  const closeModal = useCallback(() => {
     setIsModalVisible(false);
-  };
+  }, []);
 
   useEffect(() => {
     if (isModalVisible) {
@@ -231,9 +376,9 @@ export const AttendeesScreen = () => {
     if (!selectedAttendee) return;
 
     try {
-      // Validate sponsor_id
+      // Validate attendee ID
       if (!selectedAttendee.id) {
-        Alert.alert('Error', 'Invalid sponsor ID');
+        Alert.alert('Error', `Invalid ${isDelegate ? 'sponsor' : 'delegate'} ID`);
         return;
       }
 
@@ -245,14 +390,26 @@ export const AttendeesScreen = () => {
       const date = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
       const time = now.toTimeString().split(' ')[0]; // Format: HH:MM:SS
 
-      await createMeetingRequest({
-        sponsor_id: Number(selectedAttendee.id),
-        event_id: Number(user?.event_id || 27),
-        priority: priorityValue,
-        date: date,
-        time: time,
-        message: '',
-      }).unwrap();
+      // Use different parameter names based on user type
+      const requestData = isDelegate
+        ? {
+            sponsor_id: Number(selectedAttendee.id),
+            event_id: Number(user?.event_id || 27),
+            priority: priorityValue,
+            date: date,
+            time: time,
+            message: '',
+          }
+        : {
+            delegate_id: Number(selectedAttendee.id),
+            event_id: Number(user?.event_id || 27),
+            priority: priorityValue,
+            date: date,
+            time: time,
+            message: '',
+          };
+
+      await createMeetingRequest(requestData).unwrap();
 
       Alert.alert('Success', 'Meeting request sent successfully');
       closeModal();
@@ -262,46 +419,92 @@ export const AttendeesScreen = () => {
     }
   };
 
-  const renderItem = ({ item }) => (
-    <TouchableOpacity 
-      style={styles.row} 
-      activeOpacity={0.8} 
-      onPress={() => {
-        router.push({
-          pathname: '/delegate-details',
-          params: {
-            delegate: JSON.stringify(item)
-          }
-        });
-      }}
-    >
-      <View style={[styles.avatar, { width: SIZES.avatarSize, height: SIZES.avatarSize, borderRadius: SIZES.avatarSize / 2 }]}>
-        {item.image ? (
-          <Image 
-            source={{ uri: item.image }} 
-            style={{ width: SIZES.avatarSize, height: SIZES.avatarSize, borderRadius: SIZES.avatarSize / 2 }}
-            resizeMode="cover"
-          />
-        ) : (
-          <UserIcon size={SIZES.avatarSize * 0.5} />
-        )}
-      </View>
-      <View style={styles.rowInfo}>
-        <Text style={styles.rowName}>{item.name}</Text>
-        <Text style={styles.rowMeta} numberOfLines={1}>{item.role}</Text>
-        <Text style={[styles.rowMeta1]} numberOfLines={1}>{item.company}</Text>
-      </View>
-      <TouchableOpacity 
-        style={styles.requestButton}
-        activeOpacity={0.85}
-        onPress={(e) => {
-          e.stopPropagation();
-          openModal(item);
-        }}
-      >
-        <Text style={styles.requestButtonText}>Request</Text>
-      </TouchableOpacity>
-    </TouchableOpacity>
+  // Debounce search to avoid filtering/sorting on every keystroke (big lists).
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQueryDebounced(searchQuery), 200);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const onOpenDetails = useCallback((item) => {
+    const payload = item?.raw ? { ...item.raw, ...item } : item;
+    if (payload?.raw) delete payload.raw;
+    router.push({
+      pathname: '/delegate-details',
+      params: {
+        delegate: JSON.stringify(payload),
+      },
+    });
+  }, []);
+
+  const onOpenRequest = openModal;
+
+  const renderItem = useCallback(
+    ({ item }) => (
+      <AttendeeRow
+        item={item}
+        SIZES={SIZES}
+        styles={styles}
+        onOpenDetails={onOpenDetails}
+        onOpenRequest={onOpenRequest}
+      />
+    ),
+    [SIZES, styles, onOpenDetails, onOpenRequest]
+  );
+
+  const itemSeparator = useCallback(() => <View style={styles.separator} />, [styles.separator]);
+
+  // Estimated fixed height (we clamp name to 1 line); helps FlatList virtualization.
+  const ITEM_HEIGHT = useMemo(() => Math.round(SIZES.avatarSize + 32), [SIZES.avatarSize]);
+  const getItemLayout = useCallback(
+    (_, index) => ({ length: ITEM_HEIGHT, offset: ITEM_HEIGHT * index, index }),
+    [ITEM_HEIGHT]
+  );
+
+  const openFilter = useCallback(() => {
+    setDraftSelectedServices(selectedServices);
+    setIsFilterOpen(true);
+  }, [selectedServices]);
+
+  const applyFilter = useCallback(() => {
+    setSelectedServices(draftSelectedServices);
+    setIsFilterOpen(false);
+  }, [draftSelectedServices]);
+
+  const clearDraftFilter = useCallback(() => {
+    setDraftSelectedServices([]);
+  }, []);
+
+  const draftSelectedSet = useMemo(
+    () => new Set(Array.isArray(draftSelectedServices) ? draftSelectedServices : []),
+    [draftSelectedServices]
+  );
+
+  const toggleDraftService = useCallback((opt) => {
+    setDraftSelectedServices((prev) => {
+      const prevArr = Array.isArray(prev) ? prev : [];
+      const set = new Set(prevArr);
+      if (set.has(opt)) set.delete(opt);
+      else set.add(opt);
+      return Array.from(set);
+    });
+  }, []);
+
+  const renderServiceItem = useCallback(
+    ({ item: opt }) => {
+      const isSelected = draftSelectedSet.has(opt);
+      return (
+        <TouchableOpacity
+          key={opt}
+          style={[styles.modalItem, isSelected && styles.modalItemActive]}
+          activeOpacity={0.9}
+          onPress={() => toggleDraftService(opt)}
+        >
+          <Text style={[styles.modalItemText, isSelected && styles.modalItemTextActive]}>{opt}</Text>
+          {isSelected ? <Icon name="check" size={16} color={colors.primary} /> : <View style={styles.checkboxUnchecked} />}
+        </TouchableOpacity>
+      );
+    },
+    [draftSelectedSet, styles, toggleDraftService]
   );
 
   // Show loading state
@@ -354,45 +557,33 @@ export const AttendeesScreen = () => {
 
       <View style={styles.contentWrap}>
         <View style={styles.content}>
-          {isDelegate ? (
-            <View style={styles.searchRow}>
-              <View style={styles.searchBarWrapper}>
-                <SearchBar
-                  placeholder="Search attendees..."
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                  style={styles.searchBarInline}
-                />
-              </View>
-              <TouchableOpacity
-                style={styles.filterIconBtn}
-                activeOpacity={0.8}
-                onPress={() => setIsSortOpen(true)}
-              >
-                <Icon name="sliders" size={18} color={colors.white} />
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <>
+          {/* Search, Filter (sponsors only), and Sort in same row */}
+          <View style={styles.searchRow}>
+            <View style={styles.searchBarWrapper}>
               <SearchBar
                 placeholder="Search attendees..."
                 value={searchQuery}
                 onChangeText={setSearchQuery}
-                style={styles.searchBar}
+                style={styles.searchBarInline}
               />
-              <View style={styles.filtersRow}>
-                 {/* <TouchableOpacity style={styles.selectServiceBtn} activeOpacity={0.8} onPress={() => setIsFilterOpen(true)}>
-                    <View style={styles.selectServiceContent}>
-                      <Text style={styles.selectServiceText}>{selectedService || 'Select Service'}</Text>
-                      <Icon name="chevron-down" size={16} color={colors.text} />
-                    </View>
-                  </TouchableOpacity> */}
-                <TouchableOpacity style={styles.filterIconBtn} activeOpacity={0.8} onPress={() => setIsSortOpen(true)}>
-                  <Icon name="sliders" size={18} color={colors.white} />
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
+            </View>
+            {!isDelegate && (
+              <TouchableOpacity
+                style={[styles.filterIconBtn, selectedServices.length > 0 && styles.filterIconBtnActive]}
+                activeOpacity={0.8}
+                onPress={openFilter}
+              >
+                <Icon name="filter" size={18} color={colors.white} />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.filterIconBtn}
+              activeOpacity={0.8}
+              onPress={() => setIsSortOpen(true)}
+            >
+              <Icon name="sliders" size={18} color={colors.white} />
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.countRow}>
             <View style={styles.countDot} />
@@ -404,9 +595,16 @@ export const AttendeesScreen = () => {
               data={filteredData}
               keyExtractor={(item) => String(item.id)}
               renderItem={renderItem}
-              ItemSeparatorComponent={() => <View style={styles.separator} />}
+              ItemSeparatorComponent={itemSeparator}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              removeClippedSubviews={Platform.OS === 'android'}
+              initialNumToRender={12}
+              maxToRenderPerBatch={12}
+              updateCellsBatchingPeriod={50}
+              windowSize={7}
+              getItemLayout={getItemLayout}
             />
           ) : (
             <View style={styles.emptyState}>
@@ -430,26 +628,44 @@ export const AttendeesScreen = () => {
           <View style={styles.modalCenterWrap}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Select Service</Text>
-              <ScrollView style={styles.modalList} contentContainerStyle={styles.modalListContent} showsVerticalScrollIndicator>
-                {FILTER_OPTIONS.map((opt) => (
-                  <TouchableOpacity
-                    key={opt}
-                    style={[styles.modalItem, selectedService === opt && styles.modalItemActive]}
-                    activeOpacity={0.9}
-                    onPress={() => { setSelectedService(opt === 'All Services' ? null : opt); setIsFilterOpen(false); }}
+              {servicesLoading && isDelegate === false ? (
+                <View style={styles.modalLoadingContainer}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={styles.modalLoadingText}>Loading services...</Text>
+                </View>
+              ) : FILTER_OPTIONS.length === 0 ? (
+                <View style={styles.modalLoadingContainer}>
+                  <Text style={styles.modalLoadingText}>No services available</Text>
+                </View>
+              ) : (
+                <FlatList
+                  style={styles.modalList}
+                  contentContainerStyle={styles.modalListContent}
+                  data={FILTER_OPTIONS}
+                  keyExtractor={(opt) => String(opt)}
+                  renderItem={renderServiceItem}
+                  showsVerticalScrollIndicator
+                  keyboardShouldPersistTaps="handled"
+                  initialNumToRender={12}
+                  maxToRenderPerBatch={12}
+                  windowSize={7}
+                  extraData={draftSelectedServices}
+                />
+              )}
+              <View style={styles.modalButtonRow2}>
+                {draftSelectedServices.length > 0 && (
+                  <TouchableOpacity 
+                    onPress={clearDraftFilter}
+                    activeOpacity={0.8} 
+                    style={[styles.modalCloseBtn, styles.modalClearBtn]}
                   >
-                    <Text style={[styles.modalItemText, selectedService === opt && styles.modalItemTextActive]}>{opt}</Text>
-                    {selectedService === opt || (opt === 'All Services' && !selectedService) ? (
-                      <Icon name="check" size={16} color={colors.primary} />
-                    ) : (
-                      <View />
-                    )}
+                    <Text style={[styles.modalCloseText, styles.modalClearText]}>Clear All</Text>
                   </TouchableOpacity>
-                ))}
-              </ScrollView>
-              <TouchableOpacity onPress={() => setIsFilterOpen(false)} activeOpacity={0.8} style={styles.modalCloseBtn}>
-                <Text style={styles.modalCloseText}>Close</Text>
-              </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={applyFilter} activeOpacity={0.8} style={styles.modalCloseBtn}>
+                  <Text style={styles.modalCloseText}>Apply</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </View>
@@ -535,7 +751,11 @@ export const AttendeesScreen = () => {
                     )}
                   </View>
                   <View style={styles.modalContactInfo}>
-                    <Text style={styles.modalContactName}>{selectedAttendee.name}</Text>
+                    <Text style={styles.modalContactName}>
+                      {isDelegate
+                        ? selectedAttendee.name
+                        : (selectedAttendee.full_name || selectedAttendee.name)}
+                    </Text>
                     <Text style={styles.modalContactCompany}>{selectedAttendee.company}</Text>
                   </View>
                 </View>
@@ -640,6 +860,11 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  filterIconBtnActive: {
+    backgroundColor: colors.primaryDark,
+    borderWidth: 2,
+    borderColor: colors.white,
   },
   countRow: {
     flexDirection: 'row',
@@ -771,17 +996,48 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   modalItemTextActive: {
     color: colors.primary,
   },
-  modalCloseBtn: {
+  checkboxUnchecked: {
+    width: 16,
+    height: 16,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: colors.border,
+  },
+  modalButtonRow2: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
     marginTop: 12,
+  },
+  modalCloseBtn: {
+    flex: 1,
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: radius.pill,
-    backgroundColor: 'rgba(138, 52, 144, 0.12)'
+    backgroundColor: 'rgba(138, 52, 144, 0.12)',
+    alignItems: 'center',
+  },
+  modalClearBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
   },
   modalCloseText: {
     color: colors.primary,
     fontWeight: '600',
+  },
+  modalClearText: {
+    color: '#EF4444',
+  },
+  modalLoadingContainer: {
+    paddingVertical: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
   loadingContainer: {
     flex: 1,

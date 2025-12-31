@@ -19,8 +19,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useGetDelegateEventsQuery } from '../../store/api';
+import { useGetDelegateEventsQuery, useGetSponsorEventsQuery } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { clearAuth } from '../../store/slices/authSlice';
 import { setSelectedEvent } from '../../store/slices/eventSlice';
 
 // Icon Components
@@ -149,9 +150,28 @@ export const DashboardScreen = () => {
   const dispatch = useAppDispatch();
 
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
-  const { data: eventsData, isLoading, error, refetch } = useGetDelegateEventsQuery(undefined, {
-    skip: !isAuthenticated || !user,
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  
+  // Fetch events based on user type
+  // Delegate: use /delegate/events
+  // Sponsor: use /sponsor/events
+  const { data: delegateEventsData, isLoading: delegateLoading, error: delegateError, refetch: delegateRefetch } = useGetDelegateEventsQuery(undefined, {
+    skip: !isAuthenticated || !user || !isDelegate, // Skip for sponsors
+    refetchOnMountOrArgChange: true,
   });
+  
+  const { data: sponsorEventsData, isLoading: sponsorLoading, error: sponsorError, refetch: sponsorRefetch } = useGetSponsorEventsQuery(undefined, {
+    skip: !isAuthenticated || !user || isDelegate, // Skip for delegates
+    refetchOnMountOrArgChange: true,
+  });
+  
+  // Use appropriate data based on user type
+  const eventsData = isDelegate ? delegateEventsData : sponsorEventsData;
+  const isLoading = isDelegate ? delegateLoading : sponsorLoading;
+  const error = isDelegate ? delegateError : sponsorError;
+  const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
+  
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -160,15 +180,87 @@ export const DashboardScreen = () => {
     if (error?.status) return `Error ${error.status}`;
     return 'Failed to load events.';
   }, [error]);
-  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
-  const isDelegate = loginType === 'delegate';
+  
+  // Check for auth errors and redirect to login
+  useEffect(() => {
+    if (error && (error.status === 401 || error.status === 'NO_TOKEN' || error.status === 403 || error.status === 'AUTH_REQUIRED')) {
+      // Token expired, invalid, or permission denied - redirect to login
+      console.log('🚪 Auth error detected - redirecting to login. Status:', error.status);
+      dispatch(clearAuth());
+      // Use setTimeout to ensure navigation happens after component is mounted
+      setTimeout(() => {
+        try {
+          router.replace('/login');
+        } catch (navError) {
+          console.warn('⚠️ Navigation error:', navError);
+        }
+      }, 100);
+    }
+  }, [error, dispatch]);
   const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);
   const [selectedEventIndex, setSelectedEventIndex] = useState(0);
 
   // Transform API event data to display format
   const EVENTS = useMemo(() => {
-    const events = eventsData?.data || eventsData || [];
-    return events.map(event => ({
+    if (!eventsData) {
+      console.log('📊 Dashboard: No eventsData');
+      return [];
+    }
+    
+    console.log('📊 Dashboard: Raw eventsData:', JSON.stringify(eventsData, null, 2));
+    
+    // Handle different API response structures
+    let events = [];
+    
+    // Case 1: eventsData.data is an array (most common)
+    if (Array.isArray(eventsData.data)) {
+      events = eventsData.data;
+      console.log('📊 Dashboard: Found events in eventsData.data:', events.length);
+    }
+    // Case 2: eventsData itself is an array
+    else if (Array.isArray(eventsData)) {
+      events = eventsData;
+      console.log('📊 Dashboard: eventsData is direct array:', events.length);
+    }
+    // Case 3: eventsData.data is a single object
+    else if (eventsData.data && typeof eventsData.data === 'object' && !Array.isArray(eventsData.data)) {
+      events = [eventsData.data];
+      console.log('📊 Dashboard: Single event object in eventsData.data');
+    }
+    // Case 4: eventsData is a single object
+    else if (eventsData && typeof eventsData === 'object' && !Array.isArray(eventsData) && eventsData.id) {
+      events = [eventsData];
+      console.log('📊 Dashboard: eventsData is single event object');
+    }
+    
+    if (events.length === 0) {
+      console.log('📊 Dashboard: No events found');
+      return [];
+    }
+    
+    console.log('📊 Dashboard: Extracted events before deduplication:', events.length, events.map(e => e?.id));
+    
+    // Remove duplicates based on event ID (handle both string and number IDs)
+    const seenIds = new Set();
+    const uniqueEvents = events.filter((event) => {
+      if (!event || !event.id) {
+        console.warn('⚠️ Dashboard: Event without ID:', event);
+        return false;
+      }
+      // Normalize ID to string for comparison
+      const eventId = String(event.id);
+      if (seenIds.has(eventId)) {
+        console.warn('⚠️ Dashboard: Duplicate event found, filtering out:', eventId);
+        return false; // Duplicate, filter it out
+      }
+      seenIds.add(eventId);
+      return true;
+    });
+    
+    console.log('📊 Dashboard: Unique events after deduplication:', uniqueEvents.length, uniqueEvents.map(e => e?.id));
+    
+    // Transform to display format
+    const transformed = uniqueEvents.map(event => ({
       id: event.id,
       title: event.title || 'Untitled Event',
       date: formatDate(event.date_from, event.date_to),
@@ -176,7 +268,11 @@ export const DashboardScreen = () => {
       date_from: event.date_from,
       date_to: event.date_to,
     }));
-  }, [eventsData]);
+    
+    console.log('📊 Dashboard: Final EVENTS array:', transformed.length, transformed.map(e => ({ id: e.id, title: e.title })));
+    
+    return transformed;
+  }, [eventsData, user, isDelegate]);
 
   const selectedEvent = EVENTS[selectedEventIndex] || null;
 

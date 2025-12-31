@@ -3,6 +3,7 @@ import { useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+  Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -17,7 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
-import { useGetAllDelegatesQuery } from '../../store/api';
+import { useGetAllDelegatesQuery, useGetEventSponsorQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const ChatIcon = ({ color = colors.icon, size = 24 }) => (
@@ -186,10 +187,24 @@ export const SponsorsScreen = () => {
   const { user } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+  const isSponsor = loginType === 'sponsor';
   
-  const { data: delegatesData, isLoading, error } = useGetAllDelegatesQuery(undefined, {
+  // Get event ID for sponsor query
+  const eventId = user?.event_id || user?.events?.[0]?.id || 27;
+  
+  // Fetch delegates (for delegate login)
+  const { data: delegatesData, isLoading: delegatesLoading, error: delegatesError } = useGetAllDelegatesQuery(undefined, {
     skip: !isDelegate,
   });
+  
+  // Fetch event sponsors (for sponsor login)
+  const { data: sponsorsData, isLoading: sponsorsLoading, error: sponsorsError } = useGetEventSponsorQuery(eventId, {
+    skip: !isSponsor || !eventId,
+  });
+  
+  // Combine loading and error states
+  const isLoading = isDelegate ? delegatesLoading : sponsorsLoading;
+  const error = isDelegate ? delegatesError : sponsorsError;
   
   const errorMessage = useMemo(() => {
     if (!error) return '';
@@ -197,8 +212,8 @@ export const SponsorsScreen = () => {
     if (error?.data?.message) return error.data.message;
     if (error?.message) return error.message;
     if (error?.status) return `Error ${error.status}`;
-    return 'Failed to load delegates.';
-  }, [error]);
+    return isDelegate ? 'Failed to load delegates.' : 'Failed to load sponsors.';
+  }, [error, isDelegate]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -270,12 +285,52 @@ export const SponsorsScreen = () => {
     });
   }, [isDelegate, delegatesData]);
 
+  // Map API sponsors to the sponsor card shape
+  const sponsors = useMemo(() => {
+    if (!isSponsor || !sponsorsData) return [];
+    const list = Array.isArray(sponsorsData?.data) ? sponsorsData.data : Array.isArray(sponsorsData) ? sponsorsData : [];
+    return list.map((s) => {
+      const name = s.name || s.full_name || 'Unknown';
+      const initials = name
+        .split(' ')
+        .filter(Boolean)
+        .map((part) => part[0]?.toUpperCase())
+        .slice(0, 2)
+        .join('') || 'SP';
+      const sponsorId = String(s.id);
+      const logoBg = getColorFromString(sponsorId, LOGO_COLORS);
+      const badgeColor = getColorFromString(sponsorId + name, BADGE_COLORS);
+      
+      // Determine tier based on company or use default
+      const tier = s.company ? 'Sponsor' : 'Event Sponsor';
+      
+      return {
+        id: sponsorId,
+        name,
+        tier,
+        logoBg,
+        logoText: initials,
+        image: s.image || null,
+        partnerType: s.job_title || '',
+        email: s.email || '',
+        phone: s.mobile || s.tel || '',
+        website: '',
+        location: '',
+        about: s.biography || s.company_information || '',
+        company: s.company || '',
+        badgeColor,
+        raw: s,
+      };
+    });
+  }, [isSponsor, sponsorsData]);
+
   const filteredSponsors = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const baseList = isDelegate ? delegates : SPONSORS;
+    // Use API data if available, otherwise fallback to hardcoded SPONSORS (for non-logged-in or fallback)
+    const baseList = isDelegate ? delegates : (isSponsor ? sponsors : SPONSORS);
     if (!q) return baseList;
     return baseList.filter((sponsor) => sponsor.name.toLowerCase().includes(q));
-  }, [searchQuery, isDelegate, delegates]);
+  }, [searchQuery, isDelegate, isSponsor, delegates, sponsors]);
 
   const renderSponsor = ({ item }) => {
     const tierStyle = TIER_STYLES[item.tier] || { bg: colors.gray100, text: colors.text };
@@ -323,14 +378,33 @@ export const SponsorsScreen = () => {
           activeOpacity={0.7}
           onPress={(e) => {
             e.stopPropagation();
+            
+            // Get the ID from item (could be from delegates or sponsors)
+            const itemId = item.id || item.raw?.id;
+            
+            if (!itemId) {
+              Alert.alert('Error', 'Invalid user information');
+              return;
+            }
+
+            // Determine user_type based on what we're viewing
+            // If viewing delegates (isDelegate = true), recipient is delegate
+            // If viewing sponsors (isSponsor = true), recipient is sponsor
+            const recipientType = isDelegate ? 'delegate' : 'sponsor';
+            
             // Create thread object for MessageDetailScreen
             const thread = {
-              id: item.id,
+              id: String(itemId),
+              user_id: Number(itemId), // Must be number for API
+              user_type: recipientType, // Recipient type (delegate or sponsor)
               name: item.name,
-              status: 'Online',
-              avatar: item.image || `https://ui-avatars.com/api/?name=${encodeURIComponent(item.name)}&background=${encodeURIComponent(item.logoBg?.replace('#', '') || '8A3490')}&color=fff&size=200`,
-              messages: [], // Empty messages array - will start a new conversation
+              user_name: item.name,
+              avatar: item.image,
+              user_image: item.image,
+              company: item.company,
+              email: item.email,
             };
+            
             router.push({
               pathname: '/message-detail',
               params: {

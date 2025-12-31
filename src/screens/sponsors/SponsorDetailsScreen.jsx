@@ -162,8 +162,36 @@ export const SponsorDetailsScreen = () => {
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
   const handleStartChat = () => {
-    // Implement chat functionality
-    console.log('Start chat with', sponsor.name);
+    // Prepare thread data for MessageDetailScreen
+    // MessageDetailScreen expects: user_id, user_type, name, avatar/user_image
+    // Since this is SponsorDetailsScreen, the recipient is always a sponsor
+    const sponsorId = sponsor.id || sponsor.raw?.id;
+    
+    if (!sponsorId) {
+      Alert.alert('Error', 'Invalid sponsor information');
+      return;
+    }
+
+    const threadData = {
+      id: String(sponsorId),
+      user_id: Number(sponsorId), // Use sponsor ID as user_id (must be number for API)
+      user_type: 'sponsor', // Recipient is always a sponsor in this screen
+      name: sponsor.name,
+      user_name: sponsor.name,
+      avatar: sponsor.image,
+      user_image: sponsor.image,
+      // Include any other fields that might be useful
+      company: sponsor.company,
+      email: sponsor.email,
+    };
+
+    // Navigate to MessageDetailScreen
+    router.push({
+      pathname: '/message-detail',
+      params: {
+        thread: JSON.stringify(threadData),
+      },
+    });
   };
 
   const handleCopyEmail = () => {

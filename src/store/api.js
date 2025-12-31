@@ -29,17 +29,131 @@ const baseQuery = fetchBaseQuery({
   },
 });
 
-// Shared in-flight refresh promise to prevent parallel refresh calls
-let refreshPromise = null;
+// Base64 decode utility for React Native
+const base64Decode = (str) => {
+  try {
+    // React Native compatible base64 decode
+    if (typeof atob !== 'undefined') {
+      return atob(str);
+    }
+    // Fallback for React Native (using Buffer if available)
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(str, 'base64').toString('binary');
+    }
+    // Manual base64 decode as last resort
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    let output = '';
+    str = str.replace(/[^A-Za-z0-9\+\/\=]/g, '');
+    for (let i = 0; i < str.length; i += 4) {
+      const enc1 = chars.indexOf(str.charAt(i));
+      const enc2 = chars.indexOf(str.charAt(i + 1));
+      const enc3 = chars.indexOf(str.charAt(i + 2));
+      const enc4 = chars.indexOf(str.charAt(i + 3));
+      const chr1 = (enc1 << 2) | (enc2 >> 4);
+      const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+      const chr3 = ((enc3 & 3) << 6) | enc4;
+      output += String.fromCharCode(chr1);
+      if (enc3 !== 64) output += String.fromCharCode(chr2);
+      if (enc4 !== 64) output += String.fromCharCode(chr3);
+    }
+    return output;
+  } catch (error) {
+    console.error('❌ Error in base64 decode:', error);
+    return null;
+  }
+};
 
-// Enhanced base query with error handling + automatic re-auth
+// JWT decode utility (simple base64 decode - no signature verification needed)
+const decodeJWT = (token) => {
+  try {
+    if (!token) return null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    // Decode payload (base64url)
+    const payload = parts[1];
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = base64Decode(base64);
+    if (!decoded) return null;
+    
+    // Convert to JSON
+    const jsonPayload = decodeURIComponent(
+      decoded
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch (error) {
+    console.error('❌ Error decoding JWT:', error);
+    return null;
+  }
+};
+
+// Token expiry utility
+// Tokens are valid for 30 days, auto logout 2 hours before expiry
+const AUTO_LOGOUT_HOURS_BEFORE_EXPIRY = 2;
+const AUTO_LOGOUT_SECONDS = AUTO_LOGOUT_HOURS_BEFORE_EXPIRY * 60 * 60; // 2 hours in seconds
+
+const checkTokenExpiry = async () => {
+  try {
+    const token = await AsyncStorage.getItem('auth_token');
+    if (!token) return true; // No token, assume expired
+    
+    // Decode JWT to get expiry time
+    const decoded = decodeJWT(token);
+    if (!decoded || !decoded.exp) {
+      console.warn('⚠️ Could not decode token or missing exp field');
+      return true; // Assume expired for security
+    }
+    
+    // Get expiry time from JWT (in seconds)
+    const tokenExpiry = decoded.exp;
+    // Calculate auto logout time (2 hours before expiry)
+    const autoLogoutTime = tokenExpiry - AUTO_LOGOUT_SECONDS;
+    // Current time in seconds
+    const now = Math.floor(Date.now() / 1000);
+    
+    if (now >= autoLogoutTime) {
+      console.log('⏰ Token expired (2 hours before JWT expiry) - auto logout');
+      // Clear all auth data
+      await AsyncStorage.removeItem('auth_token');
+      await AsyncStorage.removeItem('refresh_token');
+      await AsyncStorage.removeItem('auth_user');
+      await AsyncStorage.removeItem('token_expires_at');
+      await AsyncStorage.removeItem('token_created_at');
+      return true; // Token expired
+    }
+    return false; // Token still valid
+  } catch (error) {
+    console.error('❌ Error checking token expiry:', error);
+    return true; // On error, assume expired for security
+  }
+};
+
+// Enhanced base query with error handling
+// Note: Tokens are valid for 30 days, auto logout 2 hours before expiry
 const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
+  // Check token expiry before making request (for protected endpoints)
+  const isAuthEndpoint = args.url?.includes('/auth/') || args.url?.includes('/login') || args.url?.includes('/logout');
+  if (!isAuthEndpoint) {
+    const isExpired = await checkTokenExpiry();
+    if (isExpired) {
+      return {
+        error: {
+          status: 'AUTH_REQUIRED',
+          data: { message: 'Session expired. Please login again.' },
+          message: 'Session expired. Please login again.',
+        },
+      };
+    }
+  }
+  
   // Check token before making request
   const tokenBeforeRequest = await AsyncStorage.getItem('auth_token');
   console.log('🌐 API Request:', args.url || args, 'Token present:', tokenBeforeRequest ? 'Yes' : 'No');
   
   // For authenticated endpoints (not login/logout), ensure token is available
-  const isAuthEndpoint = args.url?.includes('/auth/') || args.url?.includes('/login') || args.url?.includes('/logout');
   if (!isAuthEndpoint && !tokenBeforeRequest) {
     // Silently skip if no token (user might have logged out)
     // Don't log error as this is expected behavior after logout
@@ -90,103 +204,35 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
     }
   }
 
-  // If unauthorized, try to refresh token once
-  if (result.error && (result.error.status === 401 || result.error.status === 403)) {
-    console.log('🔄 Token expired (401/403) - Attempting to refresh token...');
+  // If unauthorized (401), token is invalid/expired - redirect to login
+  // Tokens are valid for 30 days, so no refresh needed
+  // For 403 (Forbidden), don't refresh - it's a permission issue, not token expiry
+  if (result.error && result.error.status === 401) {
+    console.log('🚫 Unauthorized (401) - Token invalid/expired. Clearing auth and redirecting to login...');
     
-    if (!refreshPromise) {
-      refreshPromise = (async () => {
-        try {
-          const storedRefreshToken = await AsyncStorage.getItem('refresh_token');
-          
-          if (!storedRefreshToken) {
-            console.error('❌ No refresh token available - user needs to login again');
-            await AsyncStorage.removeItem('auth_token');
-            await AsyncStorage.removeItem('refresh_token');
-            await AsyncStorage.removeItem('auth_user');
-            return false;
-          }
-          
-          console.log('🔄 Calling refresh token API...');
-          const refreshBody = { refresh_token: storedRefreshToken };
-          const refreshResult = await baseQuery(
-            {
-              url: API_ENDPOINTS.REFRESH_TOKEN,
-              method: 'POST',
-              body: refreshBody,
-            },
-            api,
-            extraOptions
-          );
-
-          if (refreshResult.error) {
-            console.error('❌ Refresh token API failed:', refreshResult.error);
-            // Refresh failed; clear and force re-login
-            await AsyncStorage.removeItem('auth_token');
-            await AsyncStorage.removeItem('refresh_token');
-            await AsyncStorage.removeItem('auth_user');
-            return false;
-          }
-
-          // Refresh token API response structure:
-          // { success: true, message: "...", token: "...", expires_at: "...", data: {...} }
-          const responseData = refreshResult?.data || {};
-          const newToken = responseData?.token || responseData?.data?.token;
-          const expiresAt = responseData?.expires_at;
-          
-          // Note: Refresh token API doesn't return new refresh_token in response
-          // We keep using the same refresh_token for future refreshes
-
-          if (newToken) {
-            await AsyncStorage.setItem('auth_token', newToken);
-            // Store the same new token as refresh_token (backend uses same token for refresh)
-            await AsyncStorage.setItem('refresh_token', newToken);
-            console.log('✅ New token stored successfully');
-            console.log('✅ New refresh token stored (same as access token)');
-            
-            if (expiresAt) {
-              console.log('📅 Token expires at:', expiresAt);
-              // Optionally store expires_at for proactive refresh
-              await AsyncStorage.setItem('token_expires_at', expiresAt);
-            }
-            
-            return true;
-          } else {
-            console.error('❌ No token received from refresh API');
-            console.error('Refresh API response:', JSON.stringify(responseData, null, 2));
-            await AsyncStorage.removeItem('auth_token');
-            await AsyncStorage.removeItem('refresh_token');
-            await AsyncStorage.removeItem('auth_user');
-            return false;
-          }
-        } catch (e) {
-          console.error('❌ Error during token refresh:', e);
-          // Refresh failed; clear and force re-login
-          await AsyncStorage.removeItem('auth_token');
-          await AsyncStorage.removeItem('refresh_token');
-          await AsyncStorage.removeItem('auth_user');
-          return false;
-        }
-      })().finally(() => {
-        // allow future refresh attempts
-        refreshPromise = null;
-      });
+    // Clear all auth data
+    try {
+      await AsyncStorage.removeItem('auth_token');
+      await AsyncStorage.removeItem('refresh_token');
+      await AsyncStorage.removeItem('auth_user');
+      await AsyncStorage.removeItem('token_expires_at');
+      await AsyncStorage.removeItem('token_created_at');
+    } catch (e) {
+      console.error('❌ Error clearing auth data:', e);
     }
-
-    const refreshed = await refreshPromise;
-    if (refreshed) {
-      console.log('✅ Token refreshed successfully - retrying original request...');
-      // Retry the original query with new token
-      result = await baseQuery(args, api, extraOptions);
-      
-      if (!result.error) {
-        console.log('✅ Request successful after token refresh');
-      } else {
-        console.error('❌ Request failed even after token refresh:', result.error);
-      }
-    } else {
-      console.error('❌ Token refresh failed - user needs to login again');
-    }
+    
+    // Return error that will trigger redirect in component
+    return {
+      error: {
+        status: 'AUTH_REQUIRED',
+        data: { message: 'Authentication required. Please login again.' },
+        message: 'Authentication required. Please login again.',
+      },
+    };
+  } else if (result.error && result.error.status === 403) {
+    // 403 Forbidden - permission issue, not token expiry
+    // Don't try to refresh, just return the error
+    console.warn('⚠️ 403 Forbidden - Permission denied. Not attempting token refresh.');
   }
 
   if (result.error) {
@@ -252,36 +298,33 @@ export const api = createApi({
           
           // Try multiple possible field names for token
           const token = data?.token || data?.data?.token || data?.access_token || data?.accessToken;
-          // Try multiple possible field names for refresh token
-          const refreshToken = data?.refresh_token || data?.data?.refresh_token || data?.refreshToken || data?.refresh_token || data?.refresh;
           
           console.log('🔐 Delegate Login - Token received:', token ? 'Yes' : 'No');
-          console.log('🔐 Delegate Login - RefreshToken received:', refreshToken ? 'Yes' : 'No');
-          
-          // If no refresh token in response, log available fields
-          if (!refreshToken) {
-            console.warn('⚠️ No refresh token found. Available fields:', Object.keys(data || {}));
-          }
           
           if (token) {
             await AsyncStorage.setItem('auth_token', token);
-            // Store the same token as refresh_token (backend uses same token for refresh)
-            await AsyncStorage.setItem('refresh_token', token);
             const storedToken = await AsyncStorage.getItem('auth_token');
-            const storedRefreshToken = await AsyncStorage.getItem('refresh_token');
             console.log('✅ Token stored successfully:', storedToken ? 'Yes' : 'No');
-            console.log('✅ Refresh token stored (same as access token):', storedRefreshToken ? 'Yes' : 'No');
+            
+            // Decode JWT to show expiry info
+            const decoded = decodeJWT(token);
+            if (decoded && decoded.exp) {
+              const expiryDate = new Date(decoded.exp * 1000);
+              const autoLogoutDate = new Date((decoded.exp - AUTO_LOGOUT_SECONDS) * 1000);
+              console.log('📅 Token expires at:', expiryDate.toLocaleString());
+              console.log('⏰ Auto logout at:', autoLogoutDate.toLocaleString(), '(2 hours before expiry)');
+            } else {
+              console.log('📅 Token valid for 30 days (auto logout 2 hours before expiry)');
+            }
           } else {
             console.error('❌ No token received in login response');
           }
           
-          // Note: Backend uses the same token for both access and refresh
-          // If separate refreshToken is provided, use it; otherwise use token as refresh_token
-          if (refreshToken && refreshToken !== token) {
-            await AsyncStorage.setItem('refresh_token', refreshToken);
-            console.log('✅ Separate refresh token stored');
-          }
-          await AsyncStorage.setItem('auth_user', JSON.stringify(data.data || data));
+          // Store user data including qr_image
+          const userData = data.data || data;
+          console.log('🔐 Delegate Login - User data:', JSON.stringify(userData, null, 2));
+          console.log('🔐 Delegate Login - QR Image:', userData?.qr_image || 'Not found');
+          await AsyncStorage.setItem('auth_user', JSON.stringify(userData));
           
           // Reset entire RTK Query cache to ensure fresh data for new user
           // Add delay to ensure token is fully stored and network is ready
@@ -311,36 +354,33 @@ export const api = createApi({
           
           // Try multiple possible field names for token
           const token = data?.token || data?.data?.token || data?.access_token || data?.accessToken;
-          // Try multiple possible field names for refresh token
-          const refreshToken = data?.refresh_token || data?.data?.refresh_token || data?.refreshToken || data?.refresh_token || data?.refresh;
           
           console.log('🔐 Sponsor Login - Token received:', token ? 'Yes' : 'No');
-          console.log('🔐 Sponsor Login - RefreshToken received:', refreshToken ? 'Yes' : 'No');
-          
-          // If no refresh token in response, log available fields
-          if (!refreshToken) {
-            console.warn('⚠️ No refresh token found. Available fields:', Object.keys(data || {}));
-          }
           
           if (token) {
             await AsyncStorage.setItem('auth_token', token);
-            // Store the same token as refresh_token (backend uses same token for refresh)
-            await AsyncStorage.setItem('refresh_token', token);
             const storedToken = await AsyncStorage.getItem('auth_token');
-            const storedRefreshToken = await AsyncStorage.getItem('refresh_token');
             console.log('✅ Token stored successfully:', storedToken ? 'Yes' : 'No');
-            console.log('✅ Refresh token stored (same as access token):', storedRefreshToken ? 'Yes' : 'No');
+            
+            // Decode JWT to show expiry info
+            const decoded = decodeJWT(token);
+            if (decoded && decoded.exp) {
+              const expiryDate = new Date(decoded.exp * 1000);
+              const autoLogoutDate = new Date((decoded.exp - AUTO_LOGOUT_SECONDS) * 1000);
+              console.log('📅 Token expires at:', expiryDate.toLocaleString());
+              console.log('⏰ Auto logout at:', autoLogoutDate.toLocaleString(), '(2 hours before expiry)');
+            } else {
+              console.log('📅 Token valid for 30 days (auto logout 2 hours before expiry)');
+            }
           } else {
             console.error('❌ No token received in login response');
           }
           
-          // Note: Backend uses the same token for both access and refresh
-          // If separate refreshToken is provided, use it; otherwise use token as refresh_token
-          if (refreshToken && refreshToken !== token) {
-            await AsyncStorage.setItem('refresh_token', refreshToken);
-            console.log('✅ Separate refresh token stored');
-          }
-          await AsyncStorage.setItem('auth_user', JSON.stringify(data.data || data));
+          // Store user data including qr_image
+          const userData = data.data || data;
+          console.log('🔐 Sponsor Login - User data:', JSON.stringify(userData, null, 2));
+          console.log('🔐 Sponsor Login - QR Image:', userData?.qr_image || 'Not found');
+          await AsyncStorage.setItem('auth_user', JSON.stringify(userData));
           
           // Reset entire RTK Query cache to ensure fresh data for new user
           // Add delay to ensure token is fully stored and network is ready
@@ -353,7 +393,10 @@ export const api = createApi({
       },
     }),
 
-    // Refresh Token
+    // Refresh Token - DISABLED
+    // Tokens are valid for 30 days, no refresh needed
+    // Auto logout happens 2 hours before token expiry (28 days 22 hours after login)
+    /*
     refreshToken: builder.mutation({
       query: (refreshToken) => ({
         url: API_ENDPOINTS.REFRESH_TOKEN,
@@ -364,16 +407,13 @@ export const api = createApi({
       async onQueryStarted(arg, { queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
-          // Refresh token API response: { success, message, token, expires_at, data }
           const newToken = data?.token || data?.data?.token;
           const expiresAt = data?.expires_at;
           
           if (newToken) {
             await AsyncStorage.setItem('auth_token', newToken);
-            // Store the same new token as refresh_token (backend uses same token for refresh)
             await AsyncStorage.setItem('refresh_token', newToken);
             console.log('✅ Token refreshed via mutation');
-            console.log('✅ Refresh token updated (same as access token)');
             
             if (expiresAt) {
               await AsyncStorage.setItem('token_expires_at', expiresAt);
@@ -384,6 +424,7 @@ export const api = createApi({
         }
       },
     }),
+    */
 
     // Delegate Logout
     delegateLogout: builder.mutation({
@@ -403,6 +444,7 @@ export const api = createApi({
           await AsyncStorage.removeItem('refresh_token');
           await AsyncStorage.removeItem('auth_user');
           await AsyncStorage.removeItem('token_expires_at');
+          await AsyncStorage.removeItem('token_created_at');
           
           // Clear entire RTK Query cache on logout
           // Use longer delay to allow active queries to complete/abort gracefully
@@ -446,6 +488,7 @@ export const api = createApi({
           await AsyncStorage.removeItem('refresh_token');
           await AsyncStorage.removeItem('auth_user');
           await AsyncStorage.removeItem('token_expires_at');
+          await AsyncStorage.removeItem('token_created_at');
           
           // Clear entire RTK Query cache on logout
           // Use longer delay to allow active queries to complete/abort gracefully
@@ -498,11 +541,37 @@ export const api = createApi({
       }),
     }),
 
+    // 16. Delegate Change Password
+    delegateChangePassword: builder.mutation({
+      query: ({ current_password, new_password, confirm_password }) => ({
+        url: API_ENDPOINTS.AUTH_DELEGATE_CHANGE_PASSWORD,
+        method: 'POST',
+        body: { current_password, new_password, confirm_password },
+      }),
+      invalidatesTags: ['Profile'],
+    }),
+
+    // 17. Sponsor Change Password
+    sponsorChangePassword: builder.mutation({
+      query: ({ current_password, new_password, confirm_password }) => ({
+        url: API_ENDPOINTS.AUTH_SPONSOR_CHANGE_PASSWORD,
+        method: 'POST',
+        body: { current_password, new_password, confirm_password },
+      }),
+      invalidatesTags: ['Profile'],
+    }),
+
     // ============ DELEGATE ENDPOINTS ============
     // 2. Delegate Events
     getDelegateEvents: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_EVENTS,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_EVENTS,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['Events'],
+      // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
     }),
 
     // 3. All Delegates
@@ -561,8 +630,12 @@ export const api = createApi({
 
     // 9. Delegate Attendees
     getDelegateAttendees: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_ATTENDEES,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_ATTENDEES,
+        params: { _t: Date.now() }, // Add timestamp to force fresh request
+      }),
       providesTags: ['Attendees'],
+      refetchOnMountOrArgChange: true, // Force refetch on mount
     }),
 
     // 10. View Itinerary (Delegate)
@@ -581,6 +654,8 @@ export const api = createApi({
       providesTags: ['Profile'],
       // Don't cache this query - always fetch fresh
       keepUnusedDataFor: 0,
+      // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
     }),
 
     // 12. Delegate Profile Update
@@ -620,23 +695,85 @@ export const api = createApi({
 
     // 17. Message List (Delegate)
     getDelegateMessages: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_CHAT_MESSAGE_LIST,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_CHAT_MESSAGE_LIST,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['Messages'],
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
+    }),
+
+    // 18. Get Contacts (Delegate)
+    getDelegateContacts: builder.query({
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_CONTACTS,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
+      providesTags: ['Contacts'],
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
+      // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
+    }),
+
+    // 19. Save Contact (Delegate)
+    saveDelegateContact: builder.mutation({
+      query: (contactData) => ({
+        url: API_ENDPOINTS.DELEGATE_SAVE_CONTACT,
+        method: 'POST',
+        body: contactData,
+      }),
+      invalidatesTags: ['Contacts'],
+    }),
+
+    // 20. Get Messages with specific user (Delegate)
+    getDelegateChatMessages: builder.query({
+      query: (toId) => {
+        if (!toId) {
+          return null;
+        }
+        return {
+          url: API_ENDPOINTS.DELEGATE_CHAT_MESSAGES,
+          params: { 
+            to_id: toId,
+            // Add timestamp to force fresh request (bypass cache)
+            _t: Date.now(),
+          },
+        };
+      },
+      providesTags: ['Messages'],
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // ============ SPONSOR ENDPOINTS ============
-    // 2. Sponsor Event by ID
+    // 2. Sponsor Events (all events)
+    getSponsorEvents: builder.query({
+      query: () => ({
+        url: API_ENDPOINTS.SPONSOR_EVENTS,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
+      providesTags: ['Events'],
+      // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
+    }),
+
+    // 3. Sponsor Event by ID
     getSponsorEvent: builder.query({
       query: (eventId) => {
         if (!eventId) {
           return null;
         }
-        return API_ENDPOINTS.SPONSOR_EVENTS_BY_ID(eventId);
+        return `${API_ENDPOINTS.SPONSOR_EVENTS}/${eventId}`;
       },
       providesTags: ['Events'],
     }),
 
-    // 3. Event Sponsor
+    // 4. Event Sponsor
     getEventSponsor: builder.query({
       query: (eventId) => {
         if (!eventId) {
@@ -653,6 +790,16 @@ export const api = createApi({
       providesTags: ['MeetingRequests'],
     }),
 
+    // 4a. Sponsor Meeting Request Action
+    sponsorMeetingRequestAction: builder.mutation({
+      query: ({ meeting_request_id, action }) => ({
+        url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_ACTION,
+        method: 'POST',
+        body: { meeting_request_id, action }, // action: "accept" or "reject"
+      }),
+      invalidatesTags: ['MeetingRequests'],
+    }),
+
     // 5. Sponsor Services
     getSponsorServices: builder.query({
       query: (eventId) => ({
@@ -664,8 +811,25 @@ export const api = createApi({
 
     // 6. Sponsor All Attendees
     getSponsorAllAttendees: builder.query({
-      query: () => API_ENDPOINTS.SPONSOR_ALL_ATTENDEES,
+      query: (selectedServices = []) => {
+        const params = { _t: Date.now() }; // Add timestamp to force fresh request
+        // Add services as query parameter if provided
+        if (selectedServices && selectedServices.length > 0) {
+          // Handle both array and comma-separated string
+          if (Array.isArray(selectedServices)) {
+            // Use comma-separated format for services
+            params.services = selectedServices.join(',');
+          } else {
+            params.services = selectedServices;
+          }
+        }
+        return {
+          url: API_ENDPOINTS.SPONSOR_ALL_ATTENDEES,
+          params,
+        };
+      },
       providesTags: ['Attendees'],
+      refetchOnMountOrArgChange: true, // Force refetch on mount
     }),
 
     // 7. Send Meeting Request (Sponsor)
@@ -694,6 +858,8 @@ export const api = createApi({
       providesTags: ['Profile'],
       // Don't cache this query - always fetch fresh
       keepUnusedDataFor: 0,
+      // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
     }),
 
     // 10. Sponsor Profile Update
@@ -733,8 +899,34 @@ export const api = createApi({
 
     // 12. Message List (Sponsor)
     getSponsorMessages: builder.query({
-      query: () => API_ENDPOINTS.SPONSOR_CHAT_MESSAGE_LIST,
+      query: () => ({
+        url: API_ENDPOINTS.SPONSOR_CHAT_MESSAGE_LIST,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['Messages'],
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
+    }),
+
+    // 13. Get Messages with specific user (Sponsor)
+    getSponsorChatMessages: builder.query({
+      query: (toId) => {
+        if (!toId) {
+          return null;
+        }
+        return {
+          url: API_ENDPOINTS.SPONSOR_CHAT_MESSAGES,
+          params: { 
+            to_id: toId,
+            // Add timestamp to force fresh request (bypass cache)
+            _t: Date.now(),
+          },
+        };
+      },
+      providesTags: ['Messages'],
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
   }),
 });
@@ -746,10 +938,12 @@ export const {
   useSponsorLoginMutation,
   useDelegateLogoutMutation,
   useSponsorLogoutMutation,
-  useRefreshTokenMutation,
+  // useRefreshTokenMutation, // DISABLED - Tokens valid for 30 days, no refresh needed
   useDelegateForgotPasswordMutation,
   useVerifyForgotPasswordOtpMutation,
   useDelegateResetPasswordMutation,
+  useDelegateChangePasswordMutation,
+  useSponsorChangePasswordMutation,
 
   // Delegate Endpoints
   useGetDelegateEventsQuery,
@@ -763,13 +957,18 @@ export const {
   useGetDelegateItineraryQuery,
   useGetDelegateProfileQuery,
   useUpdateDelegateProfileMutation,
+  useGetDelegateContactsQuery,
+  useSaveDelegateContactMutation,
   useSendDelegateMessageMutation,
   useGetDelegateMessagesQuery,
+  useGetDelegateChatMessagesQuery,
 
   // Sponsor Endpoints
+  useGetSponsorEventsQuery,
   useGetSponsorEventQuery,
   useGetEventSponsorQuery,
   useGetSponsorMeetingRequestsQuery,
+  useSponsorMeetingRequestActionMutation,
   useGetSponsorServicesQuery,
   useGetSponsorAllAttendeesQuery,
   useSendSponsorMeetingRequestMutation,
@@ -778,4 +977,5 @@ export const {
   useUpdateSponsorProfileMutation,
   useSendSponsorMessageMutation,
   useGetSponsorMessagesQuery,
+  useGetSponsorChatMessagesQuery,
 } = api;

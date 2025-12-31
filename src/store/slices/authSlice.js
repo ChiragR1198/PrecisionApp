@@ -125,10 +125,120 @@ const authSlice = createSlice({
 
 export const { setAuth, clearAuth, setAuthLoading, setAuthError, clearAuthError } = authSlice.actions;
 
+// Base64 decode utility for React Native
+const base64Decode = (str) => {
+  try {
+    // React Native compatible base64 decode
+    if (typeof atob !== 'undefined') {
+      return atob(str);
+    }
+    // Fallback for React Native (using Buffer if available)
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(str, 'base64').toString('binary');
+    }
+    // Manual base64 decode as last resort
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    let output = '';
+    str = str.replace(/[^A-Za-z0-9\+\/\=]/g, '');
+    for (let i = 0; i < str.length; i += 4) {
+      const enc1 = chars.indexOf(str.charAt(i));
+      const enc2 = chars.indexOf(str.charAt(i + 1));
+      const enc3 = chars.indexOf(str.charAt(i + 2));
+      const enc4 = chars.indexOf(str.charAt(i + 3));
+      const chr1 = (enc1 << 2) | (enc2 >> 4);
+      const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+      const chr3 = ((enc3 & 3) << 6) | enc4;
+      output += String.fromCharCode(chr1);
+      if (enc3 !== 64) output += String.fromCharCode(chr2);
+      if (enc4 !== 64) output += String.fromCharCode(chr3);
+    }
+    return output;
+  } catch (error) {
+    console.error('❌ Error in base64 decode:', error);
+    return null;
+  }
+};
+
+// JWT decode utility (simple base64 decode - no signature verification needed)
+const decodeJWT = (token) => {
+  try {
+    if (!token) return null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    // Decode payload (base64url)
+    const payload = parts[1];
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = base64Decode(base64);
+    if (!decoded) return null;
+    
+    // Convert to JSON
+    const jsonPayload = decodeURIComponent(
+      decoded
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch (error) {
+    console.error('❌ Error decoding JWT:', error);
+    return null;
+  }
+};
+
+// Token expiry check utility
+// Tokens are valid for 30 days, auto logout 2 hours before expiry
+const AUTO_LOGOUT_HOURS_BEFORE_EXPIRY = 2;
+const AUTO_LOGOUT_SECONDS = AUTO_LOGOUT_HOURS_BEFORE_EXPIRY * 60 * 60; // 2 hours in seconds
+
+const checkTokenExpiry = async () => {
+  try {
+    const token = await AsyncStorage.getItem('auth_token');
+    if (!token) return true; // No token, assume expired
+    
+    // Decode JWT to get expiry time
+    const decoded = decodeJWT(token);
+    if (!decoded || !decoded.exp) {
+      console.warn('⚠️ Could not decode token or missing exp field');
+      return true; // Assume expired for security
+    }
+    
+    // Get expiry time from JWT (in seconds)
+    const tokenExpiry = decoded.exp;
+    // Calculate auto logout time (2 hours before expiry)
+    const autoLogoutTime = tokenExpiry - AUTO_LOGOUT_SECONDS;
+    // Current time in seconds
+    const now = Math.floor(Date.now() / 1000);
+    
+    if (now >= autoLogoutTime) {
+      console.log('⏰ Token expired (2 hours before JWT expiry) - auto logout');
+      // Clear all auth data
+      await AsyncStorage.removeItem('auth_token');
+      await AsyncStorage.removeItem('refresh_token');
+      await AsyncStorage.removeItem('auth_user');
+      await AsyncStorage.removeItem('token_expires_at');
+      await AsyncStorage.removeItem('token_created_at');
+      return true; // Token expired
+    }
+    return false; // Token still valid
+  } catch (error) {
+    console.error('❌ Error checking token expiry:', error);
+    return true; // On error, assume expired for security
+  }
+};
+
 // Thunk to check auth status on app load
 export const checkAuthStatus = () => async (dispatch) => {
   try {
     dispatch(setAuthLoading(true));
+    
+    // Check token expiry first
+    const isExpired = await checkTokenExpiry();
+    if (isExpired) {
+      dispatch(setAuth({ isAuthenticated: false, user: null }));
+      return;
+    }
+    
     const token = await AsyncStorage.getItem('auth_token');
     const storedUser = await AsyncStorage.getItem('auth_user');
     

@@ -1,75 +1,80 @@
-import React, { useMemo, useState } from 'react';
 import { useNavigation } from '@react-navigation/native';
+import React, { useMemo, useState } from 'react';
 import {
-    FlatList,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View
+  ActivityIndicator,
+  FlatList,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
+import { useGetDelegateItineraryQuery, useGetSponsorItineraryQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 const FILTERS = ['All Days', 'Today', 'Tomorrow'];
 
-const ITINERARY = [
-  {
-    id: 'day1',
-    day: 'Day 1 - March 15, 2025',
-    events: [
-      {
-        id: 'event1',
-        title: 'Opening Keynote',
-        subtitle: 'Main Auditorium',
-        icon: '🎤',
-        time: '9:00 AM - 10:00 AM',
-      },
-      {
-        id: 'event2',
-        title: 'Panel Discussion',
-        subtitle: 'Future of Technology • Hall A',
-        icon: '🧩',
-        time: '10:30 AM - 12:00 PM',
-      },
-      {
-        id: 'event3',
-        title: 'Networking Lunch',
-        subtitle: 'Connect with attendees • Room B1',
-        icon: '🥗',
-        time: '12:00 PM - 1:30 PM',
-      },
-    ],
-  },
-  {
-    id: 'day2',
-    day: 'Day 2 - March 16, 2025',
-    events: [
-      {
-        id: 'event4',
-        title: 'Workshop: AI Development',
-        subtitle: 'Hands-on coding session • Cafeteria',
-        icon: '💻',
-        time: '9:00 AM - 11:30 AM',
-      },
-      {
-        id: 'event5',
-        title: 'Awards Ceremony',
-        subtitle: 'Recognition of achievements • Lab C2',
-        icon: '🏆',
-        time: '2:00 PM - 3:30 PM',
-      },
-    ],
-  },
-];
+// Format date to readable format (e.g., "March 15, 2025")
+const formatDate = (dateString) => {
+  if (!dateString) return '';
+  try {
+    const date = new Date(dateString);
+    const options = { year: 'numeric', month: 'long', day: 'numeric' };
+    return date.toLocaleDateString('en-US', options);
+  } catch (e) {
+    return dateString;
+  }
+};
+
+// Format time from HH:MM:SS to HH:MM AM/PM
+const formatTime = (timeString) => {
+  if (!timeString) return '';
+  try {
+    const [hours, minutes] = timeString.split(':');
+    const hour = parseInt(hours, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const displayHour = hour % 12 || 12;
+    return `${displayHour}:${minutes} ${ampm}`;
+  } catch (e) {
+    return timeString;
+  }
+};
+
+// Get icon based on priority or default
+const getEventIcon = (priority) => {
+  const icons = ['📅', '🎤', '💼', '🤝', '🍽️', '🏆', '💡', '🎯'];
+  const priorityNum = parseInt(priority, 10) || 1;
+  return icons[(priorityNum - 1) % icons.length];
+};
 
 export const ItineraryScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All Days');
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  const isSponsor = loginType === 'sponsor';
+
+  // Fetch itinerary based on user type
+  const { data: delegateItineraryData, isLoading: delegateLoading, error: delegateError } = useGetDelegateItineraryQuery(undefined, {
+    skip: !isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const { data: sponsorItineraryData, isLoading: sponsorLoading, error: sponsorError } = useGetSponsorItineraryQuery(undefined, {
+    skip: !isSponsor,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const isLoading = isDelegate ? delegateLoading : sponsorLoading;
+  const error = isDelegate ? delegateError : sponsorError;
+  const itineraryData = isDelegate ? delegateItineraryData : sponsorItineraryData;
 
   const { SIZES, isTablet } = useMemo(() => {
     const isTabletDevice = SCREEN_WIDTH >= 768;
@@ -91,11 +96,98 @@ export const ItineraryScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  // Map API data to UI format and group by date
+  const itinerary = useMemo(() => {
+    if (!itineraryData?.data || !Array.isArray(itineraryData.data)) return [];
+
+    // Group items by date
+    const groupedByDate = {};
+    itineraryData.data.forEach((item) => {
+      const date = item.date || '';
+      if (!date) return;
+
+      if (!groupedByDate[date]) {
+        groupedByDate[date] = [];
+      }
+
+      // Get delegate/sponsor info (handle both delegate and sponsor fields)
+      const fullName = 
+        item.delegate_full_name || 
+        item.sponsor_full_name ||
+        `${(item.delegate_fname || item.sponsor_fname || '')} ${(item.delegate_lname || item.sponsor_lname || '')}`.trim() ||
+        item.name ||
+        'Unknown';
+      
+      const company = item.delegate_company || item.sponsor_company || item.company || '';
+      const jobTitle = item.delegate_job_title || item.sponsor_job_title || item.job_title || '';
+      const time = formatTime(item.time);
+      const priority = item.priority || '1';
+      const tableNo = item.table_no || '';
+
+      // Build subtitle
+      let subtitle = '';
+      if (company) subtitle += company;
+      if (jobTitle) subtitle += (subtitle ? ' • ' : '') + jobTitle;
+      if (tableNo) subtitle += (subtitle ? ' • ' : '') + `Table ${tableNo}`;
+      if (!subtitle) subtitle = 'Meeting';
+
+      groupedByDate[date].push({
+        id: String(item.id),
+        title: fullName,
+        subtitle,
+        icon: getEventIcon(priority),
+        time,
+        date,
+        priority,
+      });
+    });
+
+    // Convert to array format and sort by date
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    return Object.keys(groupedByDate)
+      .sort()
+      .map((date, index) => {
+        const dateObj = new Date(date);
+        const formattedDate = formatDate(date);
+        return {
+          id: `day-${date}`,
+          day: formattedDate,
+          date: date,
+          dateObj,
+          events: groupedByDate[date].sort((a, b) => {
+            // Sort events by time
+            const timeA = a.time || '';
+            const timeB = b.time || '';
+            return timeA.localeCompare(timeB);
+          }),
+        };
+      });
+  }, [itineraryData]);
+
   const filteredItinerary = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return ITINERARY.filter((day, index) => {
-      if (activeFilter === 'Today' && index !== 0) return false;
-      if (activeFilter === 'Tomorrow' && index !== 1) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    return itinerary.filter((day) => {
+      // Apply date filter
+      if (activeFilter === 'Today') {
+        const dayDate = new Date(day.date);
+        dayDate.setHours(0, 0, 0, 0);
+        if (dayDate.getTime() !== today.getTime()) return false;
+      } else if (activeFilter === 'Tomorrow') {
+        const dayDate = new Date(day.date);
+        dayDate.setHours(0, 0, 0, 0);
+        if (dayDate.getTime() !== tomorrow.getTime()) return false;
+      }
+
+      // Apply search filter
       if (!q) return true;
       return day.events.some(
         (event) =>
@@ -103,7 +195,7 @@ export const ItineraryScreen = () => {
           event.subtitle.toLowerCase().includes(q)
       );
     });
-  }, [activeFilter, searchQuery]);
+  }, [activeFilter, searchQuery, itinerary]);
 
   const renderEvent = ({ item }) => (
     <View style={styles.eventCard}>
@@ -151,25 +243,45 @@ export const ItineraryScreen = () => {
           })}
         </View>
 
-        <FlatList
-          data={filteredItinerary}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View style={styles.daySection}>
-              <View style={styles.dayHeader}>
-                <Text style={styles.dayTitle}>{item.day}</Text>
-                <View style={styles.dayDivider} />
-              </View>
-              {item.events.map((event) => (
-                <View key={event.id} style={styles.eventWrapper}>
-                  {renderEvent({ item: event })}
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading itinerary...</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>
+              {error?.data?.message || error?.message || 'Failed to load itinerary'}
+            </Text>
+          </View>
+        ) : filteredItinerary.length > 0 ? (
+          <FlatList
+            data={filteredItinerary}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <View style={styles.daySection}>
+                <View style={styles.dayHeader}>
+                  <Text style={styles.dayTitle}>{item.day}</Text>
+                  <View style={styles.dayDivider} />
                 </View>
-              ))}
-            </View>
-          )}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        />
+                {item.events.map((event) => (
+                  <View key={event.id} style={styles.eventWrapper}>
+                    {renderEvent({ item: event })}
+                  </View>
+                ))}
+              </View>
+            )}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+          />
+        ) : (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>No itinerary items found</Text>
+            <Text style={styles.emptySubtext}>
+              {searchQuery ? 'Try a different search term' : 'Your itinerary will appear here'}
+            </Text>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -272,6 +384,48 @@ const createStyles = (SIZES) =>
     eventTime: {
       fontWeight: '600',
       color: colors.primary,
+    },
+    loadingContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingVertical: 40,
+    },
+    loadingText: {
+      marginTop: 16,
+      fontSize: 14,
+      color: colors.textMuted,
+    },
+    errorContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 32,
+      paddingVertical: 40,
+    },
+    errorText: {
+      fontSize: 15,
+      color: colors.textMuted,
+      textAlign: 'center',
+    },
+    emptyContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingVertical: 48,
+    },
+    emptyText: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: colors.text,
+      textAlign: 'center',
+    },
+    emptySubtext: {
+      marginTop: 8,
+      fontSize: 14,
+      color: colors.textMuted,
+      textAlign: 'center',
+      paddingHorizontal: 32,
     },
   });
 

@@ -15,12 +15,16 @@ export const API_ENDPOINTS = {
   SPONSOR_LOGIN: '/auth/sponsor-login',
   DELEGATE_LOGOUT: '/auth/delegate-logout',
   SPONSOR_LOGOUT: '/auth/sponsor-logout',
-  REFRESH_TOKEN: '/auth/refresh-token',
+  // REFRESH_TOKEN: '/auth/refresh-token',
   
   // Password Reset (Delegate)
   AUTH_DELEGATE_FORGOT_PASSWORD: '/auth/delegate-forgot-password',
   AUTH_VERIFY_FORGOT_PASSWORD_OTP: '/auth/verify-forgot-password-otp',
   AUTH_DELEGATE_RESET_PASSWORD: '/auth/delegate-reset-password',
+  AUTH_DELEGATE_CHANGE_PASSWORD: '/auth/delegate-change-password',
+  
+  // Password Change (Sponsor)
+  AUTH_SPONSOR_CHANGE_PASSWORD: '/auth/sponsor-change-password',
 
   // ============ DELEGATE ENDPOINTS ============
   DELEGATE_EVENTS: '/delegate/events',
@@ -37,20 +41,27 @@ export const API_ENDPOINTS = {
 
   // Delegate Messages
   DELEGATE_CHAT_SEND_MESSAGE: '/delegate/chat/send-message',
-  DELEGATE_CHAT_MESSAGE_LIST: '/delegate/chat/message-list',
+  DELEGATE_CHAT_MESSAGE_LIST: '/delegate/chat/all-messages',
+  DELEGATE_CHAT_MESSAGES: '/delegate/chat/messages', // Get messages with specific user (query param: to_id)
+  
+  // Delegate Contacts
+  DELEGATE_CONTACTS: '/delegate/contacts',
+  DELEGATE_SAVE_CONTACT: '/delegate/save-contact',
 
   // ============ SPONSOR ENDPOINTS ============
-  SPONSOR_EVENTS_BY_ID: (id) => `/sponsor/events/${id}`,
+  SPONSOR_EVENTS: '/sponsor/events',
   SPONSOR_EVENT_SPONSOR: (id) => `/sponsor/event-sponsor/${id}`,
   SPONSOR_MEETING_REQUEST_FROM_DELEGATE: '/sponsor/meeting-request-from-delegate',
   SPONSOR_SEND_MEETING_REQUEST: '/sponsor/send-meeting-request',
+  SPONSOR_MEETING_REQUEST_ACTION: '/sponsor/meeting-request-action',
   SPONSOR_SERVICES: '/sponsor/services', // Query param: event_id
   SPONSOR_ALL_ATTENDEES: '/sponsor/all-attendees',
   SPONSOR_VIEW_ITINERARY: '/sponsor/view-itinerary',
   SPONSOR_PROFILE: '/sponsor/profile',
   SPONSOR_PROFILE_UPDATE: '/sponsor/profile/update',
   SPONSOR_CHAT_SEND_MESSAGE: '/sponsor/chat/send-message',
-  SPONSOR_CHAT_MESSAGE_LIST: '/sponsor/chat/message-list',
+  SPONSOR_CHAT_MESSAGE_LIST: '/sponsor/chat/all-messages',
+  SPONSOR_CHAT_MESSAGES: '/sponsor/chat/messages',
 
   // ============ AGENDA ============
   AGENDA_BY_ID: (id) => `/agenda/${id}`,

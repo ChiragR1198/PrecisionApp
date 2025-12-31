@@ -1,7 +1,8 @@
-import { router } from 'expo-router';
 import { useNavigation } from '@react-navigation/native';
+import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+    ActivityIndicator,
     FlatList,
     Image,
     Platform,
@@ -15,69 +16,74 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors } from '../../constants/theme';
+import { useGetDelegateMessagesQuery, useGetSponsorMessagesQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
-const CHAT_THREADS = [
-  {
-    id: '1',
-    name: 'Sarah Johnson',
-    message: "Hey! How's the project going?",
-    time: '2:30 PM',
-    unreadCount: 3,
-    avatar: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=facearea&w=200&h=200',
-    messages: [
-      { id: 'sj-1', sender: 'them', text: 'Hey! Are we still on for lunch tomorrow?', time: '2:30 PM' },
-      { id: 'sj-2', sender: 'me', text: 'Yes! Looking forward to it. How about 12:30 at the usual place?', time: '2:32 PM' },
-      { id: 'sj-3', sender: 'them', text: 'Perfect! See you there 😊', time: '2:35 PM' },
-      { id: 'sj-4', sender: 'me', text: "Great! I'll make a reservation just in case", time: '2:36 PM' },
-    ],
-  },
-  {
-    id: '2',
-    name: 'Mike Chen',
-    message: 'Thanks for the feedback!',
-    time: '1:15 PM',
-    unreadCount: 0,
-    avatar: 'https://images.unsplash.com/photo-1502767089025-6572583495b0?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: '3',
-    name: 'Emma Wilson',
-    message: "Perfect! Let's schedule a meeting",
-    time: '11:30 AM',
-    unreadCount: 0,
-    avatar: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: '4',
-    name: 'Alex Rodriguez',
-    message: 'Sounds good to me!',
-    time: 'Yesterday',
-    unreadCount: 0,
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=facearea&w=200&h=200',
-  },
-  {
-    id: '5',
-    name: 'Development Team',
-    message: 'Code review completed ✓',
-    time: 'Yesterday',
-    unreadCount: 0,
-    avatar: null,
-    badgeIcon: true,
-  },
-  {
-    id: '6',
-    name: 'Lisa Park',
-    message: 'Great work on the presentation!',
-    time: 'Monday',
-    unreadCount: 0,
-    avatar: 'https://images.unsplash.com/photo-1542596768-5d1d21f1cf98?auto=format&fit=facearea&w=200&h=200',
-  },
-];
+// Format date string to relative time (e.g., "2:30 PM", "Yesterday", "Monday")
+const formatMessageTime = (dateString) => {
+  if (!dateString) return '';
+  
+  try {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    // Today - show time
+    if (diffDays === 0) {
+      const hours = date.getHours();
+      const minutes = date.getMinutes();
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      const displayHours = hours % 12 || 12;
+      const displayMinutes = minutes.toString().padStart(2, '0');
+      return `${displayHours}:${displayMinutes} ${ampm}`;
+    }
+    
+    // Yesterday
+    if (diffDays === 1) {
+      return 'Yesterday';
+    }
+    
+    // This week - show day name
+    if (diffDays < 7) {
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      return days[date.getDay()];
+    }
+    
+    // Older - show date
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch (e) {
+    return '';
+  }
+};
 
 export const MessagesScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const { user } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  const isSponsor = loginType === 'sponsor';
+  
+  // Fetch messages based on user type - no cache, always fresh data
+  const { data: delegateMessagesData, isLoading: delegateLoading, error: delegateError } = useGetDelegateMessagesQuery(undefined, {
+    skip: !isDelegate,
+    refetchOnMountOrArgChange: true,
+    // Disable cache - always fetch fresh data
+    keepUnusedDataFor: 0,
+  });
+  
+  const { data: sponsorMessagesData, isLoading: sponsorLoading, error: sponsorError } = useGetSponsorMessagesQuery(undefined, {
+    skip: !isSponsor,
+    refetchOnMountOrArgChange: true,
+    // Disable cache - always fetch fresh data
+    keepUnusedDataFor: 0,
+  });
+  
+  const isLoading = isDelegate ? delegateLoading : sponsorLoading;
+  const error = isDelegate ? delegateError : sponsorError;
+  const messagesData = isDelegate ? delegateMessagesData : sponsorMessagesData;
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -106,15 +112,45 @@ export const MessagesScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  // Map API messages to chat thread format
+  const chatThreads = useMemo(() => {
+    // Only use API data - no static fallback
+    if (!messagesData) return [];
+    
+    const list = Array.isArray(messagesData?.data) ? messagesData.data : [];
+    return list.map((item) => {
+      const userId = String(item.user_id || item.id || '');
+      const name = item.user_name || item.name || 'Unknown';
+      const avatar = item.user_image || item.image || null;
+      const unreadCount = item.unread_count || item.unreadCount || 0;
+      const lastMessage = item.last_message || item.message || '';
+      const lastMessageDate = item.last_message_date || item.last_message_date || item.date || '';
+      const time = formatMessageTime(lastMessageDate);
+      
+      return {
+        id: userId,
+        user_id: item.user_id || item.id, // Keep original user_id for API calls
+        user_type: item.user_type || 'delegate', // Keep user_type for determining to_type
+        name,
+        message: lastMessage,
+        time,
+        unreadCount,
+        avatar,
+        status: 'Online', // Default status
+        messages: [], // Will be loaded in detail screen
+      };
+    });
+  }, [messagesData]);
+
   const filteredChats = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return CHAT_THREADS;
-    return CHAT_THREADS.filter(
+    if (!q) return chatThreads;
+    return chatThreads.filter(
       (chat) =>
         chat.name.toLowerCase().includes(q) ||
-        chat.message.toLowerCase().includes(q)
+        (chat.message || '').toLowerCase().includes(q)
     );
-  }, [searchQuery]);
+  }, [searchQuery, chatThreads]);
 
   const renderRow = ({ item }) => (
     <TouchableOpacity
@@ -134,8 +170,19 @@ export const MessagesScreen = () => {
           <View style={styles.iconAvatar}>
             <Text style={styles.iconAvatarText}>{"</>"}</Text>
           </View>
-        ) : (
+        ) : item.avatar ? (
           <Image source={{ uri: item.avatar }} style={styles.avatarImage} />
+        ) : (
+          <View style={styles.iconAvatar}>
+            <Text style={styles.iconAvatarText}>
+              {item.name
+                .split(' ')
+                .map((n) => n[0])
+                .slice(0, 2)
+                .join('')
+                .toUpperCase()}
+            </Text>
+          </View>
         )}
       </View>
       <View style={styles.rowContent}>
@@ -145,7 +192,7 @@ export const MessagesScreen = () => {
         </View>
         <View style={styles.rowMessageWrap}>
           <Text style={styles.rowMessage} numberOfLines={1}>
-            {item.message}
+            {item.message || 'No messages yet'}
           </Text>
           {item.unreadCount > 0 && (
             <View style={styles.unreadBadge}>
@@ -159,7 +206,6 @@ export const MessagesScreen = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-
       <Header
         title="Messages"
         leftIcon="menu"
@@ -175,14 +221,32 @@ export const MessagesScreen = () => {
           style={styles.searchBar}
         />
 
-        <FlatList
-          data={filteredChats}
-          keyExtractor={(item) => item.id}
-          renderItem={renderRow}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        />
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading messages...</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>
+              {error?.data?.message || error?.message || 'Failed to load messages'}
+            </Text>
+          </View>
+        ) : filteredChats.length > 0 ? (
+          <FlatList
+            data={filteredChats}
+            keyExtractor={(item) => String(item.id)}
+            renderItem={renderRow}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+          />
+        ) : (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>No messages yet</Text>
+            <Text style={styles.emptySubtext}>Start a conversation to see messages here</Text>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -277,6 +341,49 @@ const createStyles = (SIZES) => StyleSheet.create({
     color: colors.white,
     fontSize: 12,
     fontWeight: '700',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 40,
+  },
+  errorText: {
+    fontSize: 15,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
+  emptyText: {
+    marginTop: 16,
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  emptySubtext: {
+    marginTop: 8,
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    paddingHorizontal: 32,
   },
 });
 

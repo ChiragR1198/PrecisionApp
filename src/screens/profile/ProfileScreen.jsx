@@ -1,7 +1,9 @@
 import Icon from '@expo/vector-icons/Feather';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
-import { CameraView } from 'expo-camera';
+import { Camera, CameraView } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
@@ -25,7 +27,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
+import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { logout as logoutAction } from '../../store/slices/authSlice';
 
@@ -207,6 +209,8 @@ export const ProfileScreen = () => {
         linkedinUrl: '',
         bio: '',
         companyInformation: '',
+        tel: '',
+        fax: '',
       });
       setProfileImage(null);
       // Force refetch after a small delay to ensure cache is cleared
@@ -223,6 +227,7 @@ export const ProfileScreen = () => {
   const [updateDelegateProfile] = useUpdateDelegateProfileMutation();
   const [updateSponsorProfile] = useUpdateSponsorProfileMutation();
   const updateProfile = isDelegate ? updateDelegateProfile : updateSponsorProfile;
+  const [saveDelegateContact, { isLoading: isSavingContact }] = useSaveDelegateContactMutation();
   
   // Extract profile data from API response
   const profile = useMemo(() => {
@@ -248,34 +253,64 @@ export const ProfileScreen = () => {
     linkedinUrl: '',
     bio: '',
     companyInformation: '',
+    tel: '', // Sponsor only
+    fax: '', // Sponsor only
   });
   
   // Update form data when profile loads - only if profile matches current user
   React.useEffect(() => {
     if (profile && userId && profile.id && String(profile.id) === String(userId)) {
       console.log('Updating form data for user:', userId, 'Profile ID:', profile.id);
-      setFormData({
-        fullName: profile.full_name || `${profile.fname || ''} ${profile.lname || ''}`.trim() || '',
-        email: profile.email || '',
-        phoneNumber: profile.mobile || '',
-        jobTitle: profile.job_title || '',
-        company: profile.company || '',
-        officeNumber: profile.office_number || '',
-        country: profile.country || '',
-        state: profile.state || '',
-        address: profile.address || '',
-        linkedinUrl: profile.linkedin_url || '',
-        bio: profile.bio || '',
-        companyInformation: profile.company_information || '',
-      });
+      
+      if (isDelegate) {
+        // Delegate profile structure
+        setFormData({
+          fullName: profile.full_name || `${profile.fname || ''} ${profile.lname || ''}`.trim() || '',
+          email: profile.email || '',
+          phoneNumber: profile.mobile || '',
+          jobTitle: profile.job_title || '',
+          company: profile.company || '',
+          officeNumber: profile.office_number || '',
+          country: profile.country || '',
+          state: profile.state || '',
+          address: profile.address || '',
+          linkedinUrl: profile.linkedin_url || '',
+          bio: profile.bio || '',
+          companyInformation: profile.company_information || '',
+          tel: '',
+          fax: '',
+        });
+        // Set notification preferences (delegate only)
+        setSmsNotification(profile.sms_notification === 1 || profile.sms_notification === true);
+        setEmailNotification(profile.email_notification === 1 || profile.email_notification === true);
+      } else {
+        // Sponsor profile structure
+        setFormData({
+          fullName: profile.name || '',
+          email: profile.email || '',
+          phoneNumber: profile.mobile || '',
+          jobTitle: profile.job_title || '',
+          company: profile.company || '',
+          officeNumber: '',
+          country: '',
+          state: '',
+          address: profile.address || '',
+          linkedinUrl: '',
+          bio: profile.biography || '',
+          companyInformation: profile.company_information || '',
+          tel: profile.tel || '',
+          fax: profile.fax || '',
+        });
+        // Sponsors don't have notification preferences in API response
+        setSmsNotification(true);
+        setEmailNotification(true);
+      }
+      
       if (profile.image) {
         setProfileImage(profile.image);
       } else {
         setProfileImage(null);
       }
-      // Set notification preferences
-      setSmsNotification(profile.sms_notification === 1 || profile.sms_notification === true);
-      setEmailNotification(profile.email_notification === 1 || profile.email_notification === true);
     } else if (!profile && userId) {
       // If no profile but we have userId, clear form (waiting for new data)
       console.log('Clearing form - waiting for profile for user:', userId);
@@ -292,10 +327,12 @@ export const ProfileScreen = () => {
         linkedinUrl: '',
         bio: '',
         companyInformation: '',
+        tel: '',
+        fax: '',
       });
       setProfileImage(null);
     }
-  }, [profile, userId]);
+  }, [profile, userId, isDelegate]);
   
   const [smsNotification, setSmsNotification] = useState(true);
   const [emailNotification, setEmailNotification] = useState(true);
@@ -305,6 +342,14 @@ export const ProfileScreen = () => {
   const [scanResult, setScanResult] = useState(null);
   const [hasScanPermission, setHasScanPermission] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [isImagePickerModalVisible, setIsImagePickerModalVisible] = useState(false);
+  const [qrImageError, setQrImageError] = useState(false);
+  const [qrImageLoading, setQrImageLoading] = useState(false);
+  const [qrImageUri, setQrImageUri] = useState(null);
+  const qrImageTimeoutRef = React.useRef(null);
+  const qrImageLoadStartRef = React.useRef(false);
+  const qrImageLoadingRef = React.useRef(false);
+  const qrImageRetryCountRef = React.useRef(0);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -347,30 +392,74 @@ export const ProfileScreen = () => {
 
   const handleSaveChanges = async () => {
     try {
-      // Split fullName into fname and lname
-      const nameParts = formData.fullName.trim().split(' ');
-      const fname = nameParts[0] || '';
-      const lname = nameParts.slice(1).join(' ') || '';
+      const formDataToSend = new FormData();
       
-      const updateData = {
-        fname,
-        lname,
-        email: formData.email,
-        mobile: formData.phoneNumber,
-        job_title: formData.jobTitle,
-        company: formData.company,
-        office_number: formData.officeNumber,
-        country: formData.country,
-        state: formData.state,
-        address: formData.address,
-        linkedin_url: formData.linkedinUrl,
-        bio: formData.bio,
-        company_information: formData.companyInformation,
-        sms_notification: smsNotification ? 1 : 0,
-        email_notification: emailNotification ? 1 : 0,
-      };
+      if (isDelegate) {
+        // Delegate profile update structure
+        // Split fullName into fname and lname
+        const nameParts = formData.fullName.trim().split(' ');
+        const fname = nameParts[0] || '';
+        const lname = nameParts.slice(1).join(' ') || '';
+        
+        // Add delegate fields to FormData
+        formDataToSend.append('fname', fname);
+        formDataToSend.append('lname', lname);
+        formDataToSend.append('job_title', formData.jobTitle || '');
+        formDataToSend.append('company', formData.company || '');
+        formDataToSend.append('email', formData.email || '');
+        formDataToSend.append('mobile', formData.phoneNumber || '');
+        formDataToSend.append('bio', formData.bio || '');
+        formDataToSend.append('office_number', formData.officeNumber || '');
+        formDataToSend.append('country', formData.country || '');
+        formDataToSend.append('state', formData.state || '');
+        formDataToSend.append('linkedin_url', formData.linkedinUrl || '');
+        formDataToSend.append('sms_notification', smsNotification ? '1' : '0');
+        formDataToSend.append('email_notification', emailNotification ? '1' : '0');
+        
+        // Add image if selected
+        if (profileImage && profileImage.startsWith('file://')) {
+          const imageUri = profileImage;
+          const filename = imageUri.split('/').pop() || 'profile.jpg';
+          const match = /\.(\w+)$/.exec(filename);
+          const type = match ? `image/${match[1]}` : 'image/jpeg';
+          
+          formDataToSend.append('image', {
+            uri: imageUri,
+            name: filename,
+            type: type,
+          });
+        }
+      } else {
+        // Sponsor profile update structure
+        formDataToSend.append('name', formData.fullName || '');
+        formDataToSend.append('job_title', formData.jobTitle || '');
+        formDataToSend.append('company', formData.company || '');
+        formDataToSend.append('email', formData.email || '');
+        formDataToSend.append('biography', formData.bio || '');
+        formDataToSend.append('mobile', formData.phoneNumber || '');
+        formDataToSend.append('linkedin_url', formData.linkedinUrl || '');
+        formDataToSend.append('tel', formData.tel || '');
+        formDataToSend.append('address', formData.address || '');
+        formDataToSend.append('company_information', formData.companyInformation || '');
+        formDataToSend.append('sms_notification', '0');
+        formDataToSend.append('email_notification', '0');
+        
+        // Add image if selected
+        if (profileImage && profileImage.startsWith('file://')) {
+          const imageUri = profileImage;
+          const filename = imageUri.split('/').pop() || 'profile.jpg';
+          const match = /\.(\w+)$/.exec(filename);
+          const type = match ? `image/${match[1]}` : 'image/jpeg';
+          
+          formDataToSend.append('image', {
+            uri: imageUri,
+            name: filename,
+            type: type,
+          });
+        }
+      }
       
-      await updateProfile(updateData).unwrap();
+      await updateProfile(formDataToSend).unwrap();
       Alert.alert('Success', 'Profile updated successfully!');
       refetchProfile();
     } catch (error) {
@@ -380,69 +469,427 @@ export const ProfileScreen = () => {
   };
 
   const handleChangePhoto = () => {
-    // Implement photo change logic here
-    console.log('Change photo pressed');
+    setIsImagePickerModalVisible(true);
   };
 
-  const handleOpenQRModal = () => {
+  const handleImagePickerClose = () => {
+    setIsImagePickerModalVisible(false);
+  };
+
+  const handlePickImage = async (source) => {
+    setIsImagePickerModalVisible(false);
+    
+    try {
+      let result;
+      
+      if (source === 'camera') {
+        // Request camera permissions
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Denied', 'Camera permission is required to take photos.');
+          return;
+        }
+        
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.8,
+        });
+      } else {
+        // Request media library permissions
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Denied', 'Media library permission is required to select photos.');
+          return;
+        }
+        
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.8,
+        });
+      }
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const selectedImage = result.assets[0].uri;
+        setProfileImage(selectedImage);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      Alert.alert('Error', 'Failed to pick image. Please try again.');
+    }
+  };
+
+  const handleOpenQRModal = async () => {
+    console.log('========================================');
+    console.log('📱 QR MODAL OPENING - DATA CHECK');
+    console.log('========================================');
+    
     setIsQRModalVisible(true);
     setQrMode('code');
     setScanResult(null);
     setHasScanPermission(null);
     setIsScanning(false);
+    setQrImageError(false); // Reset error state when opening modal
+    setQrImageLoading(false); // Reset loading state
+    setQrImageUri(null); // Reset image URI
+    qrImageLoadStartRef.current = false; // Reset load start flag
+    qrImageLoadingRef.current = false; // Reset loading ref
+    qrImageRetryCountRef.current = 0; // Reset retry count
+    
+    // Clear any existing timeout
+    if (qrImageTimeoutRef.current) {
+      clearTimeout(qrImageTimeoutRef.current);
+      qrImageTimeoutRef.current = null;
+    }
+    
+    // Log all available data sources
+    console.log('📊 Profile Data:', JSON.stringify(profile, null, 2));
+    console.log('📊 Profile qr_image:', profile?.qr_image);
+    console.log('📊 User Data (Redux):', JSON.stringify(user, null, 2));
+    console.log('📊 User qr_image (Redux):', user?.qr_image);
+    console.log('📊 Current qrImageUri state:', qrImageUri);
+    
+    // Try to get QR image from multiple sources: profile, user (Redux), or AsyncStorage
+    let imageUrl = profile?.qr_image || user?.qr_image;
+    
+    // If not found in Redux, try loading from AsyncStorage (from login response)
+    if (!imageUrl) {
+      try {
+        const storedUser = await AsyncStorage.getItem('auth_user');
+        console.log('📦 AsyncStorage auth_user (raw):', storedUser);
+        if (storedUser) {
+          const parsedUser = JSON.parse(storedUser);
+          console.log('📦 AsyncStorage auth_user (parsed):', JSON.stringify(parsedUser, null, 2));
+          imageUrl = parsedUser?.qr_image;
+          console.log('📦 AsyncStorage qr_image:', imageUrl);
+        } else {
+          console.log('⚠️ No auth_user found in AsyncStorage');
+        }
+      } catch (error) {
+        console.error('❌ Error loading QR image from AsyncStorage:', error);
+      }
+    }
+    
+    // Final decision
+    console.log('✅ Final QR Image URL to use:', imageUrl);
+    console.log('========================================');
+    
+    // Set image URI directly from URL
+    if (imageUrl) {
+      setQrImageUri(imageUrl);
+    } else {
+      console.log('⚠️ No QR image URL found from any source!');
+    }
   };
 
   const handleCloseQRModal = () => {
     setIsQRModalVisible(false);
+    // Clear timeout when closing modal
+    if (qrImageTimeoutRef.current) {
+      clearTimeout(qrImageTimeoutRef.current);
+      qrImageTimeoutRef.current = null;
+    }
   };
 
-  const handleAddScannedContact = () => {
+  const handleAddScannedContact = async () => {
     if (!scanResult) return;
-    // TODO: Implement add contact API endpoint
-    console.log('Add contact:', scanResult);
-    const savedContact = {
-      name: scanResult.name,
-      phone: scanResult.phone,
-      email: scanResult.email,
-      initials: scanResult.initials,
-    };
-    setIsScanning(false);
-    setIsQRModalVisible(false);
-    Alert.alert('Contact saved', `${savedContact.name} was added to Contacts.`, [
-      { text: 'OK' },
-      { text: 'View Contacts', onPress: () => router.push('/contacts') },
-    ]);
+    
+    // Only allow delegate users to save contacts
+    if (!isDelegate) {
+      Alert.alert('Error', 'Only delegate users can save contacts.');
+      return;
+    }
+
+    try {
+      console.log('Saving contact to API:', scanResult);
+      
+      // Prepare contact data for API
+      const contactData = {
+        name: scanResult.name || '',
+        email: scanResult.email || '',
+        phone: scanResult.phone || '',
+        company: scanResult.company || '',
+        role: scanResult.role || '',
+        initials: scanResult.initials || '',
+      };
+
+      console.log('Contact data being sent:', contactData);
+
+      // Call the API to save contact
+      const response = await saveDelegateContact(contactData).unwrap();
+      
+      console.log('Contact saved successfully:', response);
+      
+      setIsScanning(false);
+      setIsQRModalVisible(false);
+      
+      Alert.alert(
+        'Contact Saved', 
+        `${scanResult.name} was added to Contacts.`, 
+        [
+          { text: 'OK' },
+          { text: 'View Contacts', onPress: () => router.push('/contacts') },
+        ]
+      );
+    } catch (error) {
+      // Handle 404 errors specifically
+      if (error?.status === 'PARSING_ERROR' || error?.status === 404) {
+        const is404 = error?.data?.includes?.('404') || error?.data?.includes?.('Page Not Found');
+        if (is404) {
+          Alert.alert(
+            'Endpoint Not Found (404)', 
+            'The save contact endpoint is not available on the server.\n\n' +
+            'This endpoint may not be deployed to the staging server yet.\n\n' +
+            'Please contact your backend team to deploy the endpoint:\n' +
+            '/delegate/save-contact',
+            [{ text: 'OK' }]
+          );
+        } else {
+          Alert.alert(
+            'Endpoint Not Found', 
+            'The save contact endpoint was not found on the server. Please check the API configuration.'
+          );
+        }
+      } else {
+        // Try to extract error message from HTML response
+        let errorMessage = 'Failed to save contact. Please try again.';
+        if (error?.data?.message) {
+          errorMessage = error.data.message;
+        } else if (error?.message && !error.message.includes('<!DOCTYPE')) {
+          errorMessage = error.message;
+        } else if (error?.data && typeof error.data === 'string' && error.data.includes('404')) {
+          errorMessage = 'The API endpoint was not found (404). The endpoint may not be deployed to the staging server yet.';
+        }
+        
+        Alert.alert('Error', errorMessage);
+      }
+    }
   };
 
   const requestScannerPermission = async () => {
-    const { status } = await CameraView.requestCameraPermissionsAsync();
+    const { status } = await Camera.requestCameraPermissionsAsync();
     setHasScanPermission(status === 'granted');
     setIsScanning(status === 'granted');
     setScanResult(null);
   };
 
   const handleBarCodeScanned = ({ data }) => {
+    console.log('========================================');
+    console.log('📷 QR CODE SCANNED - DATA ANALYSIS');
+    console.log('========================================');
+    
     setIsScanning(false);
-    try {
-      const parsed = JSON.parse(data);
-      setScanResult({
-        initials: parsed.initials || 'SJ',
-        name: parsed.name || 'Sarah Johnson',
-        role: parsed.role || 'Marketing Manager',
-        company: parsed.company || 'Tech Solutions Inc.',
-        email: parsed.email || 'sarah.johnson@techsolutions.com',
-        phone: parsed.phone || '+1 (555) 123-4567',
+    
+    // Console log the raw QR code data
+    console.log('📄 Raw QR Data:', data);
+    console.log('📄 Data Type:', typeof data);
+    console.log('📄 Data Length:', data?.length);
+    console.log('📄 Is VCARD:', data?.startsWith('BEGIN:VCARD'));
+    console.log('📄 First 100 characters:', data?.substring(0, 100));
+    
+    if (data.startsWith('BEGIN:VCARD')) {
+      console.log('✅ Processing VCARD format...');
+      const parsed = parseVCard(data);
+      console.log('📋 Parsed VCARD Contact (Full):', JSON.stringify(parsed, null, 2));
+      console.log('📋 Parsed Contact Details:', {
+        name: parsed.name,
+        phone: parsed.phone,
+        email: parsed.email,
+        company: parsed.company,
+        role: parsed.role,
+        initials: parsed.initials,
       });
-    } catch (error) {
-      setScanResult({
-        initials: 'QR',
-        name: 'Unknown Contact',
-        role: 'Scanned via QR',
-        company: data,
-        email: 'N/A',
-        phone: 'N/A',
-      });
+      setScanResult(parsed);
+      console.log('✅ Scan result set to state');
+    } else {
+      // Try to parse plain text QR code
+      console.log('⚠️ Processing non-VCARD QR code...');
+      const parsedText = parsePlainTextQR(data);
+      console.log('📋 Parsed Plain Text Result:', JSON.stringify(parsedText, null, 2));
+      console.log('📄 QR Code Content (Full):', data);
+      setScanResult(parsedText);
+      console.log('✅ Parsed result set to state');
     }
+    console.log('========================================');
+  };
+
+  // Parse plain text QR code to extract contact information
+  const parsePlainTextQR = (text) => {
+    console.log('--- Parsing Plain Text QR ---');
+    console.log('Text:', text);
+    
+    // Try to extract name and company/event from patterns like:
+    // "Name (Event Name)" or "Name - Company" or just "Name"
+    let name = '';
+    let company = '';
+    let role = '';
+    let email = '';
+    let phone = '';
+    
+    // Extract email (pattern: text with @ symbol)
+    const emailPattern = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+    const emailMatch = text.match(emailPattern);
+    if (emailMatch && emailMatch.length > 0) {
+      email = emailMatch[0].trim();
+      console.log('✅ Email found:', email);
+      // Remove email from text for further parsing
+      text = text.replace(emailPattern, '').trim();
+    }
+    
+    // Extract phone number (pattern: + followed by digits, or digits with spaces/dashes)
+    const phonePatterns = [
+      /\+?[\d\s\-\(\)]{10,}/g, // International format: +1234567890 or (123) 456-7890
+      /\d{10,}/g, // Simple 10+ digits
+    ];
+    
+    for (const pattern of phonePatterns) {
+      const phoneMatch = text.match(pattern);
+      if (phoneMatch && phoneMatch.length > 0) {
+        // Take the longest match (most likely to be a phone number)
+        const potentialPhone = phoneMatch.sort((a, b) => b.length - a.length)[0];
+        // Validate it's likely a phone number (at least 10 digits)
+        const digitsOnly = potentialPhone.replace(/\D/g, '');
+        if (digitsOnly.length >= 10) {
+          phone = potentialPhone.trim();
+          console.log('✅ Phone found:', phone);
+          // Remove phone from text for further parsing
+          text = text.replace(phone, '').trim();
+          break;
+        }
+      }
+    }
+    
+    // Pattern 1: "Name (Event/Company)"
+    const pattern1 = /^(.+?)\s*\((.+?)\)\s*$/;
+    const match1 = text.match(pattern1);
+    if (match1) {
+      name = match1[1].trim();
+      company = match1[2].trim();
+      console.log('✅ Pattern 1 matched - Name:', name, 'Company:', company);
+    } else {
+      // Pattern 2: "Name - Company" or "Name | Company"
+      const pattern2 = /^(.+?)\s*[-|]\s*(.+?)$/;
+      const match2 = text.match(pattern2);
+      if (match2) {
+        name = match2[1].trim();
+        company = match2[2].trim();
+        console.log('✅ Pattern 2 matched - Name:', name, 'Company:', company);
+      } else {
+        // Pattern 3: Just use the whole text as name (after removing email/phone)
+        name = text.trim();
+        company = '';
+        console.log('⚠️ No pattern matched - Using full text as name:', name);
+      }
+    }
+    
+    // Extract initials from name
+    const initials = name
+      ? name.split(' ').map(n => n[0]).filter(Boolean).join('').toUpperCase().substring(0, 2)
+      : 'QR';
+    
+    const result = {
+      initials,
+      name: name || 'Unknown Contact',
+      role: role || 'Scanned via QR',
+      company: company || 'N/A',
+      email: email || 'N/A',
+      phone: phone || 'N/A',
+    };
+    
+    console.log('Final Parsed Result:', result);
+    console.log('--- End Parsing Plain Text QR ---');
+    
+    return result;
+  };
+
+  const parseVCard = (vcard) => {
+    console.log('--- Parsing VCARD ---');
+    console.log('VCARD Raw String:', vcard);
+    const lines = vcard.split(/\r?\n/);
+    console.log('VCARD Lines Count:', lines.length);
+    console.log('VCARD Lines:', lines);
+  
+    let contact = {
+      name: '',
+      phone: '',
+      email: '',
+      company: '',
+      role: '',
+    };
+  
+    lines.forEach((line, index) => {
+      // ✅ Use FN first (formatted name)
+      if (line.startsWith('FN:')) {
+        let rawName = line.replace('FN:', '').trim();
+        console.log(`Line ${index} - Found FN:`, rawName);
+  
+        // remove ()
+        rawName = rawName.replace(/\(\)/g, '');
+  
+        // normalize spaces
+        rawName = rawName.replace(/\s+/g, ' ').trim();
+  
+        contact.name = rawName;
+        console.log(`Line ${index} - Processed Name:`, contact.name);
+      }
+  
+      // fallback only if FN missing
+      if (!contact.name && line.startsWith('N:')) {
+        const parts = line.replace('N:', '').split(';');
+        contact.name = `${parts[1] || ''} ${parts[0] || ''}`.trim();
+        console.log(`Line ${index} - Found N (fallback):`, contact.name);
+      }
+  
+      if (line.startsWith('TEL')) {
+        const phoneValue = line.split(':')[1]?.trim();
+        // Use first phone number found, or if empty, assign the value
+        if (!contact.phone || contact.phone === '') {
+          contact.phone = phoneValue || '';
+        }
+        console.log(`Line ${index} - Found TEL:`, phoneValue, '| Assigned phone:', contact.phone);
+      }
+  
+      if (line.startsWith('EMAIL')) {
+        const emailValue = line.split(':')[1]?.trim();
+        contact.email = emailValue;
+        console.log(`Line ${index} - Found EMAIL:`, emailValue);
+      }
+  
+      if (line.startsWith('ORG')) {
+        const companyValue = line.split(':')[1]?.trim();
+        contact.company = companyValue;
+        console.log(`Line ${index} - Found ORG:`, companyValue);
+      }
+  
+      if (line.startsWith('TITLE')) {
+        const roleValue = line.split(':')[1]?.trim();
+        contact.role = roleValue;
+        console.log(`Line ${index} - Found TITLE:`, roleValue);
+      }
+    });
+  
+    console.log('Parsed Contact Object:', contact);
+  
+    const initials = contact.name
+      ? contact.name.split(' ').map(n => n[0]).join('').toUpperCase()
+      : 'VC';
+  
+    const result = {
+      initials,
+      name: contact.name || 'Unknown Contact',
+      role: contact.role || '',
+      company: contact.company || '',
+      email: contact.email || 'N/A',
+      phone: contact.phone || 'N/A',
+    };
+    
+    console.log('Final Parsed Result:', result);
+    console.log('--- End Parsing VCARD ---');
+    
+    return result;
   };
 
   React.useEffect(() => {
@@ -453,6 +900,50 @@ export const ProfileScreen = () => {
       setIsScanning(false);
     }
   }, [qrMode, isQRModalVisible]);
+
+  // Reset QR image error when profile or user data changes
+  React.useEffect(() => {
+    if (profile?.qr_image || user?.qr_image) {
+      setQrImageError(false);
+      setQrImageLoading(false);
+    }
+  }, [profile?.qr_image, user?.qr_image]);
+
+  // Load QR image from AsyncStorage on mount or when user changes
+  React.useEffect(() => {
+    const loadQRImageFromStorage = async () => {
+      // Only load if we don't already have it from Redux
+      if (!user?.qr_image && !profile?.qr_image) {
+        try {
+          const storedUser = await AsyncStorage.getItem('auth_user');
+          if (storedUser) {
+            const parsedUser = JSON.parse(storedUser);
+            if (parsedUser?.qr_image && !qrImageUri) {
+              console.log('📱 Loading QR image from AsyncStorage on mount:', parsedUser.qr_image);
+              setQrImageUri(parsedUser.qr_image);
+            }
+          }
+        } catch (error) {
+          console.error('❌ Error loading QR image from AsyncStorage:', error);
+        }
+      }
+    };
+    
+    loadQRImageFromStorage();
+  }, [userId]); // Reload when user changes
+
+  // Cleanup timeout on unmount
+  React.useEffect(() => {
+    return () => {
+      if (qrImageTimeoutRef.current) {
+        clearTimeout(qrImageTimeoutRef.current);
+        qrImageTimeoutRef.current = null;
+      }
+      qrImageLoadStartRef.current = false;
+      qrImageLoadingRef.current = false;
+      qrImageRetryCountRef.current = 0;
+    };
+  }, []);
 
   const handleLogout = async () => {
     Alert.alert(
@@ -563,7 +1054,7 @@ export const ProfileScreen = () => {
                 )}
               </View>
               <TouchableOpacity
-                style={[styles.cameraButton, { bottom: Math.max(insets.bottom, 0) }]}
+                style={styles.cameraButton}
                 onPress={handleChangePhoto}
                 activeOpacity={0.8}
               >
@@ -642,36 +1133,52 @@ export const ProfileScreen = () => {
                 iconSize={SIZES.iconSize}
               />
               
-              <FormField
-                label="Office Number"
-                value={formData.officeNumber}
-                onChangeText={(value) => handleInputChange('officeNumber', value)}
-                placeholder="Office Phone Number"
-                icon={PhoneIcon}
-                styles={styles}
-                iconSize={SIZES.iconSize}
-                keyboardType="phone-pad"
-              />
-              
-              <FormField
-                label="Country"
-                value={formData.country}
-                onChangeText={(value) => handleInputChange('country', value)}
-                placeholder="Country"
-                icon={MapPinIcon}
-                styles={styles}
-                iconSize={SIZES.iconSize}
-              />
-              
-              <FormField
-                label="State"
-                value={formData.state}
-                onChangeText={(value) => handleInputChange('state', value)}
-                placeholder="State/Province"
-                icon={MapPinIcon}
-                styles={styles}
-                iconSize={SIZES.iconSize}
-              />
+              {/* Delegate-only fields */}
+              {isDelegate && (
+                <>
+                  <FormField
+                    label="Office Number"
+                    value={formData.officeNumber}
+                    onChangeText={(value) => handleInputChange('officeNumber', value)}
+                    placeholder="Office Phone Number"
+                    icon={PhoneIcon}
+                    styles={styles}
+                    iconSize={SIZES.iconSize}
+                    keyboardType="phone-pad"
+                  />
+                  
+                  <FormField
+                    label="Country"
+                    value={formData.country}
+                    onChangeText={(value) => handleInputChange('country', value)}
+                    placeholder="Country"
+                    icon={MapPinIcon}
+                    styles={styles}
+                    iconSize={SIZES.iconSize}
+                  />
+                  
+                  <FormField
+                    label="State"
+                    value={formData.state}
+                    onChangeText={(value) => handleInputChange('state', value)}
+                    placeholder="State/Province"
+                    icon={MapPinIcon}
+                    styles={styles}
+                    iconSize={SIZES.iconSize}
+                  />
+                  
+                  <FormField
+                    label="LinkedIn URL"
+                    value={formData.linkedinUrl}
+                    onChangeText={(value) => handleInputChange('linkedinUrl', value)}
+                    placeholder="https://linkedin.com/in/yourprofile"
+                    icon={LinkIcon}
+                    styles={styles}
+                    iconSize={SIZES.iconSize}
+                    keyboardType="url"
+                  />
+                </>
+              )}
               
               <FormField
                 label="Address"
@@ -683,22 +1190,38 @@ export const ProfileScreen = () => {
                 iconSize={SIZES.iconSize}
               />
               
-              <FormField
-                label="LinkedIn URL"
-                value={formData.linkedinUrl}
-                onChangeText={(value) => handleInputChange('linkedinUrl', value)}
-                placeholder="https://linkedin.com/in/yourprofile"
-                icon={LinkIcon}
-                styles={styles}
-                iconSize={SIZES.iconSize}
-                keyboardType="url"
-              />
+              {/* Sponsor-only fields */}
+              {!isDelegate && (
+                <>
+                  <FormField
+                    label="Tel"
+                    value={formData.tel}
+                    onChangeText={(value) => handleInputChange('tel', value)}
+                    placeholder="Telephone Number"
+                    icon={PhoneIcon}
+                    styles={styles}
+                    iconSize={SIZES.iconSize}
+                    keyboardType="phone-pad"
+                  />
+                  
+                  <FormField
+                    label="Fax"
+                    value={formData.fax}
+                    onChangeText={(value) => handleInputChange('fax', value)}
+                    placeholder="Fax Number"
+                    icon={PhoneIcon}
+                    styles={styles}
+                    iconSize={SIZES.iconSize}
+                    keyboardType="phone-pad"
+                  />
+                </>
+              )}
               
               <FormField
-                label="Bio"
+                label={isDelegate ? "Bio" : "Biography"}
                 value={formData.bio}
                 onChangeText={(value) => handleInputChange('bio', value)}
-                placeholder="Tell us about yourself..."
+                placeholder={isDelegate ? "Tell us about yourself..." : "Biography"}
                 icon={FileTextIcon}
                 styles={styles}
                 iconSize={SIZES.iconSize}
@@ -717,7 +1240,43 @@ export const ProfileScreen = () => {
                 multiline={true}
                 numberOfLines={4}
               />
+            </View>
 
+            {/* Settings Section - Delegate only */}
+            {isDelegate && (
+              <View style={styles.notificationSection}>
+                <Text style={styles.sectionTitle}>Notification Settings</Text>
+                
+                <View style={styles.profileCard}>
+                  <NotificationCard
+                    title="SMS Notifications"
+                    subtitle="Text Messages"
+                    description="Receive important updates via SMS"
+                    isEnabled={smsNotification}
+                    onToggle={setSmsNotification}
+                    styles={styles}
+                    SIZES={SIZES}
+                    icon={SmsIcon}
+                  />
+                  
+                  <View style={styles.notificationDivider} />
+                  
+                  <NotificationCard
+                    title="Email Notifications"
+                    subtitle="Email Updates"
+                    description="Receive notifications via email"
+                    isEnabled={emailNotification}
+                    onToggle={setEmailNotification}
+                    styles={styles}
+                    SIZES={SIZES}
+                    icon={EmailNotificationIcon}
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* Save Changes Button */}
+            <View style={styles.saveButtonSection}>
               <TouchableOpacity
                 style={styles.saveButton}
                 onPress={handleSaveChanges}
@@ -759,37 +1318,6 @@ export const ProfileScreen = () => {
                 </View>
               </View>
             )} */}
-          </View>
-
-          {/* Settings Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Notification Settings</Text>
-            
-            <View style={styles.profileCard}>
-              <NotificationCard
-                title="SMS Notifications"
-                subtitle="Text Messages"
-                description="Receive important updates via SMS"
-                isEnabled={smsNotification}
-                onToggle={setSmsNotification}
-                styles={styles}
-                SIZES={SIZES}
-                icon={SmsIcon}
-              />
-              
-              <View style={styles.notificationDivider} />
-              
-              <NotificationCard
-                title="Email Notifications"
-                subtitle="Email Updates"
-                description="Receive notifications via email"
-                isEnabled={emailNotification}
-                onToggle={setEmailNotification}
-                styles={styles}
-                SIZES={SIZES}
-                icon={EmailNotificationIcon}
-              />
-            </View>
           </View>
 
           {/* Logout Button */}
@@ -844,43 +1372,188 @@ export const ProfileScreen = () => {
             {qrMode === 'code' ? (
               <View style={styles.qrCodePreview}>
                 <View style={styles.qrSquare}>
-                  <Icon name="grid" size={48} color={colors.text} />
-                  <Text style={styles.qrCodeLabel}>QR CODE</Text>
+                  {qrImageLoading ? (
+                    <View style={styles.qrLoadingContainer}>
+                      <ActivityIndicator size="large" color={colors.primary} />
+                      <Text style={styles.qrLoadingText}>Loading QR code...</Text>
+                    </View>
+                  ) : (qrImageUri || profile?.qr_image || user?.qr_image) && !qrImageError ? (
+                    <Image
+                      key={`qr-${qrImageRetryCountRef.current}-${qrImageUri || profile?.qr_image || user?.qr_image}`}
+                      source={{ 
+                        uri: qrImageUri || profile?.qr_image || user?.qr_image || '',
+                      }}
+                      style={styles.qrCodeImage}
+                      resizeMode="contain"
+                      onError={(error) => {
+                        console.log('========================================');
+                        console.log('❌ QR CODE IMAGE ERROR');
+                        console.log('========================================');
+                        console.log('❌ Error object:', JSON.stringify(error, null, 2));
+                        console.log('❌ QR image URL (qrImageUri):', qrImageUri);
+                        console.log('❌ QR image URL (profile):', profile?.qr_image);
+                        console.log('❌ QR image URL (user):', user?.qr_image);
+                        console.log('❌ Final URL used:', qrImageUri || profile?.qr_image || user?.qr_image);
+                        console.log('========================================');
+                        if (qrImageTimeoutRef.current) {
+                          clearTimeout(qrImageTimeoutRef.current);
+                          qrImageTimeoutRef.current = null;
+                        }
+                        qrImageLoadStartRef.current = false;
+                        qrImageLoadingRef.current = false;
+                        
+                        // Retry once if first attempt fails
+                        if (qrImageRetryCountRef.current === 0) {
+                          console.log('🔄 Retrying QR code image after error...');
+                          qrImageRetryCountRef.current = 1;
+                          setTimeout(() => {
+                            setQrImageError(false);
+                            setQrImageLoading(true);
+                          }, 500);
+                        } else {
+                          console.log('❌ QR code image failed after retry - showing error');
+                          setQrImageError(true);
+                          setQrImageLoading(false);
+                        }
+                      }}
+                      onLoadStart={() => {
+                        console.log('========================================');
+                        console.log('🔄 QR CODE IMAGE LOADING START');
+                        console.log('========================================');
+                        console.log('🔄 QR image URL (qrImageUri):', qrImageUri);
+                        console.log('🔄 QR image URL (profile):', profile?.qr_image);
+                        console.log('🔄 QR image URL (user):', user?.qr_image);
+                        console.log('🔄 Final URL being loaded:', qrImageUri || profile?.qr_image || user?.qr_image);
+                        console.log('========================================');
+                        qrImageLoadStartRef.current = true;
+                        qrImageLoadingRef.current = true;
+                        setQrImageError(false);
+                        setQrImageLoading(true);
+                        
+                        // Set timeout for image loading (30 seconds for real device - network can be very slow)
+                        if (qrImageTimeoutRef.current) {
+                          clearTimeout(qrImageTimeoutRef.current);
+                        }
+                        qrImageTimeoutRef.current = setTimeout(() => {
+                          console.log('========================================');
+                          console.log('⏱️ QR CODE IMAGE LOADING TIMEOUT (30s)');
+                          console.log('========================================');
+                          console.log('⏱️ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
+                          console.log('⏱️ Load start ref:', qrImageLoadStartRef.current);
+                          console.log('⏱️ Loading ref:', qrImageLoadingRef.current);
+                          console.log('⏱️ Retry count:', qrImageRetryCountRef.current);
+                          if (qrImageLoadStartRef.current && qrImageLoadingRef.current) {
+                            // Retry once if first attempt fails
+                            if (qrImageRetryCountRef.current === 0) {
+                              console.log('🔄 Retrying QR code image load...');
+                              qrImageRetryCountRef.current = 1;
+                              qrImageLoadStartRef.current = false;
+                              qrImageLoadingRef.current = false;
+                              setQrImageLoading(false);
+                              // Force re-render to retry loading
+                              setTimeout(() => {
+                                setQrImageError(false);
+                                setQrImageLoading(true);
+                              }, 100);
+                            } else {
+                              console.log('⚠️ Image still loading after timeout and retry - showing error');
+                              qrImageLoadStartRef.current = false;
+                              qrImageLoadingRef.current = false;
+                              setQrImageError(true);
+                              setQrImageLoading(false);
+                            }
+                          }
+                          qrImageTimeoutRef.current = null;
+                          console.log('========================================');
+                        }, 30000);
+                      }}
+                      onLoad={() => {
+                        console.log('========================================');
+                        console.log('✅ QR CODE IMAGE LOADED SUCCESSFULLY');
+                        console.log('========================================');
+                        console.log('✅ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
+                        console.log('✅ Retry count:', qrImageRetryCountRef.current);
+                        console.log('========================================');
+                        qrImageLoadStartRef.current = false;
+                        qrImageLoadingRef.current = false;
+                        qrImageRetryCountRef.current = 0; // Reset retry count on success
+                        if (qrImageTimeoutRef.current) {
+                          clearTimeout(qrImageTimeoutRef.current);
+                          qrImageTimeoutRef.current = null;
+                        }
+                        setQrImageLoading(false);
+                      }}
+                      onLoadEnd={() => {
+                        console.log('========================================');
+                        console.log('🏁 QR CODE IMAGE LOAD ENDED');
+                        console.log('========================================');
+                        console.log('🏁 Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
+                        console.log('🏁 Load start ref:', qrImageLoadStartRef.current);
+                        console.log('🏁 Loading ref:', qrImageLoadingRef.current);
+                        // If load ended but we're still in loading state, it might have failed
+                        if (qrImageLoadStartRef.current && qrImageLoadingRef.current) {
+                          // Give a small delay to see if onLoad or onError fires
+                          setTimeout(() => {
+                            if (qrImageLoadStartRef.current && qrImageLoadingRef.current) {
+                              console.log('⚠️ QR code image load ended but still in loading state - marking as error');
+                              qrImageLoadStartRef.current = false;
+                              qrImageLoadingRef.current = false;
+                              setQrImageError(true);
+                              setQrImageLoading(false);
+                            }
+                          }, 300);
+                        }
+                        if (qrImageTimeoutRef.current) {
+                          clearTimeout(qrImageTimeoutRef.current);
+                          qrImageTimeoutRef.current = null;
+                        }
+                        console.log('========================================');
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <Icon name="grid" size={48} color={colors.text} />
+                      <Text style={styles.qrCodeLabel}>QR CODE</Text>
+                    </>
+                  )}
                 </View>
                 <Text style={styles.qrHint}>Show to attendees to share your contact</Text>
               </View>
             ) : (
               <>
-                <View style={styles.qrScanArea}>
-                  {hasScanPermission === null && (
-                    <Text style={styles.qrScanText}>Requesting camera permission...</Text>
-                  )}
-                  {hasScanPermission === false && (
-                    <View style={styles.permissionWrap}>
-                      <Text style={styles.permissionText}>Camera permission required</Text>
-                      <TouchableOpacity style={styles.scanButton} onPress={requestScannerPermission} activeOpacity={0.85}>
-                        <Text style={styles.scanButtonText}>Allow Camera</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                  {hasScanPermission && isScanning && !scanResult && (
-                    <CameraView
-                      style={StyleSheet.absoluteFillObject}
-                      barcodeScannerSettings={{
-                        barcodeTypes: ["qr"],
-                      }}
-                      onBarcodeScanned={handleBarCodeScanned}
-                    />
-                  )}
-                  {hasScanPermission && !isScanning && !scanResult && (
-                    <>
-                      <Icon name="maximize" size={28} color={colors.text} />
-                      <Text style={styles.qrScanText}>Align QR code within frame</Text>
-                      <TouchableOpacity style={styles.scanButtonOverlay} onPress={() => setIsScanning(true)} activeOpacity={0.85}>
-                        <Text style={styles.scanButtonText}>Start Scan</Text>
-                      </TouchableOpacity>
-                    </>
-                  )}
+                <View style={styles.qrScanAreaContainer}>
+                  <View style={styles.qrScanArea}>
+                    {hasScanPermission === null && (
+                      <Text style={styles.qrScanText}>Requesting camera permission...</Text>
+                    )}
+                    {hasScanPermission === false && (
+                      <View style={styles.permissionWrap}>
+                        <Text style={styles.permissionText}>Camera permission required</Text>
+                        <TouchableOpacity style={styles.scanButton} onPress={requestScannerPermission} activeOpacity={0.85}>
+                          <Text style={styles.scanButtonText}>Allow Camera</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    {hasScanPermission && isScanning && !scanResult && (
+                      <CameraView
+                        style={StyleSheet.absoluteFillObject}
+                        barcodeScannerSettings={{
+                          barcodeTypes: ["qr"],
+                        }}
+                        onBarcodeScanned={handleBarCodeScanned}
+                      />
+                    )}
+                    {hasScanPermission && !isScanning && !scanResult && (
+                      <>
+                        <Icon name="maximize" size={28} color={colors.text} />
+                        <Text style={styles.qrScanText}>Align QR code within frame</Text>
+                        <TouchableOpacity style={styles.scanButtonOverlay} onPress={() => setIsScanning(true)} activeOpacity={0.85}>
+                          <Text style={styles.scanButtonText}>Start Scan</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                  <Text style={styles.qrHint}>Scan QR code to add contact</Text>
                 </View>
                 {scanResult && (
                   <View style={styles.scanResultCard}>
@@ -903,11 +1576,16 @@ export const ProfileScreen = () => {
                       <Text style={styles.scanContactText}>{scanResult.phone}</Text>
                     </View>
                     <TouchableOpacity
-                      style={styles.addContactButton}
+                      style={[styles.addContactButton, isSavingContact && styles.addContactButtonDisabled]}
                       activeOpacity={0.85}
                       onPress={handleAddScannedContact}
+                      disabled={isSavingContact}
                     >
-                      <Text style={styles.addContactText}>Add to Contacts</Text>
+                      {isSavingContact ? (
+                        <ActivityIndicator size="small" color={colors.white} />
+                      ) : (
+                        <Text style={styles.addContactText}>Add to Contacts</Text>
+                      )}
                     </TouchableOpacity>
                   </View>
                 )}
@@ -915,6 +1593,52 @@ export const ProfileScreen = () => {
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* Image Picker Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isImagePickerModalVisible}
+        onRequestClose={handleImagePickerClose}
+      >
+        <Pressable style={styles.imagePickerBackdrop} onPress={handleImagePickerClose}>
+          <View style={styles.imagePickerContainer}>
+            <Pressable onPress={(e) => e.stopPropagation()}>
+              <View style={styles.imagePickerCard}>
+                <Text style={styles.imagePickerTitle}>Select Photo</Text>
+                
+                <TouchableOpacity
+                  style={styles.imagePickerOption}
+                  onPress={() => handlePickImage('camera')}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="camera" size={24} color={colors.primary} />
+                  <Text style={styles.imagePickerOptionText}>Take Photo</Text>
+                </TouchableOpacity>
+                
+                <View style={styles.imagePickerDivider} />
+                
+                <TouchableOpacity
+                  style={styles.imagePickerOption}
+                  onPress={() => handlePickImage('gallery')}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="image" size={24} color={colors.primary} />
+                  <Text style={styles.imagePickerOptionText}>Choose from Gallery</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={styles.imagePickerCancel}
+                  onPress={handleImagePickerClose}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.imagePickerCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </View>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );
@@ -966,9 +1690,14 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
    borderWidth: 4,
    borderColor: colors.white,
   },
+  profileImage: {
+    width: '100%',
+    height: '100%',
+  },
   cameraButton: {
     position: 'absolute',
     right: 0,
+    bottom: 0,
     backgroundColor: colors.white,
     alignItems: 'center',
     justifyContent: 'center',
@@ -980,7 +1709,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     shadowOpacity: 1,
     shadowRadius: SIZES.cameraButtonSize,
     elevation: 4,
-    // bottom will be set dynamically based on safe area insets
   },
   changePhotoText: {
     color: colors.white,
@@ -1056,16 +1784,33 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   qrCodePreview: {
     alignItems: 'center',
     gap: 10,
+    minHeight: 220,
+    justifyContent: 'center',
   },
   qrSquare: {
-    width: 190,
-    height: 190,
+    width: 220,
+    height: 220,
     borderRadius: 16,
     borderWidth: 2,
     borderColor: colors.gray200,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surface,
+    overflow: 'hidden',
+  },
+  qrCodeImage: {
+    width: '100%',
+    height: '100%',
+  },
+  qrLoadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  qrLoadingText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 8,
   },
   qrCodeLabel: {
     marginTop: 8,
@@ -1075,15 +1820,22 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   qrHint: {
     color: colors.textMuted,
   },
+  qrScanAreaContainer: {
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 220,
+    justifyContent: 'center',
+  },
   qrScanArea: {
+    width: 220,
     height: 220,
-    borderRadius: 20,
+    borderRadius: 16,
     borderWidth: 3,
     borderColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
     backgroundColor: colors.gray50,
+    overflow: 'hidden',
   },
   scanButtonOverlay: {
     marginTop: 16,
@@ -1164,6 +1916,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.white,
     fontWeight: '700',
   },
+  addContactButtonDisabled: {
+    opacity: 0.6,
+  },
   permissionWrap: {
     alignItems: 'center',
   },
@@ -1173,7 +1928,10 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   section: {
     marginBottom: SIZES.sectionSpacing,
-    paddingHorizontal: SIZES.paddingHorizontal,
+    paddingHorizontal: SIZES.paddingHorizontal + 5,
+  },
+  notificationSection: {
+    marginBottom: SIZES.sectionSpacing,
   },
   sectionTitle: {
     fontSize: SIZES.title,
@@ -1371,6 +2129,58 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   eventItemLast: {
     borderBottomWidth: 0,
+  },
+  imagePickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  imagePickerContainer: {
+    width: '100%',
+  },
+  imagePickerCard: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+    paddingHorizontal: 20,
+  },
+  imagePickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  imagePickerOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+  },
+  imagePickerOptionText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text,
+    marginLeft: 16,
+  },
+  imagePickerDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginVertical: 8,
+  },
+  imagePickerCancel: {
+    marginTop: 8,
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  imagePickerCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#EF4444',
   },
 });
 

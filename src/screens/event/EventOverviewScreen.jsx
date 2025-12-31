@@ -1,14 +1,15 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, ImageBackground, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-import { useGetDelegateEventsQuery } from '../../store/api';
-import { useAppSelector } from '../../store/hooks';
+import { useGetDelegateEventsQuery, useGetSponsorEventsQuery } from '../../store/api';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { clearAuth } from '../../store/slices/authSlice';
 
 const CalendarIcon = ({ color = colors.white, size = 20 }) => (
   <Icon name="calendar" size={size} color={color} />
@@ -136,10 +137,30 @@ export const EventOverviewScreen = () => {
   const params = useLocalSearchParams();
   const [isAboutExpanded, setIsAboutExpanded] = useState(false);
 
+  const dispatch = useAppDispatch();
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
-  const { data: eventsData, isLoading, error, refetch } = useGetDelegateEventsQuery(undefined, {
-    skip: !isAuthenticated || !user,
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  
+  // Fetch events based on user type
+  // Delegate: use /delegate/events
+  // Sponsor: use /sponsor/events
+  const { data: delegateEventsData, isLoading: delegateLoading, error: delegateError, refetch: delegateRefetch } = useGetDelegateEventsQuery(undefined, {
+    skip: !isAuthenticated || !user || !isDelegate, // Skip for sponsors
+    refetchOnMountOrArgChange: true,
   });
+  
+  const { data: sponsorEventsData, isLoading: sponsorLoading, error: sponsorError, refetch: sponsorRefetch } = useGetSponsorEventsQuery(undefined, {
+    skip: !isAuthenticated || !user || isDelegate, // Skip for delegates
+    refetchOnMountOrArgChange: true,
+  });
+  
+  // Use appropriate data based on user type
+  const eventsData = isDelegate ? delegateEventsData : sponsorEventsData;
+  const isLoading = isDelegate ? delegateLoading : sponsorLoading;
+  const error = isDelegate ? delegateError : sponsorError;
+  const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
+  
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -148,15 +169,63 @@ export const EventOverviewScreen = () => {
     if (error?.status) return `Error ${error.status}`;
     return 'Failed to load events.';
   }, [error]);
+  
+  // Check for auth errors and redirect to login
+  useEffect(() => {
+    if (error && (error.status === 401 || error.status === 'NO_TOKEN' || error.status === 403 || error.status === 'AUTH_REQUIRED')) {
+      // Token expired or invalid - redirect to login
+      console.log('🚪 EventOverview: Auth error detected - redirecting to login. Status:', error.status);
+      dispatch(clearAuth());
+      // Use setTimeout to ensure navigation happens after component is mounted
+      setTimeout(() => {
+        try {
+          router.replace('/login');
+        } catch (navError) {
+          console.warn('⚠️ Navigation error:', navError);
+        }
+      }, 100);
+    }
+  }, [error, dispatch]);
+  
   const [shouldAnimateStats, setShouldAnimateStats] = useState(false);
   const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);
   
   const initialSelectedIndex = Number.isFinite(Number(params?.selectedEventIndex)) ? Number(params.selectedEventIndex) : 0;
   const [selectedEventIndex, setSelectedEventIndex] = useState(initialSelectedIndex);
 
+  // Get events from API (both delegate and sponsor)
   const events = useMemo(() => {
-    const data = eventsData?.data || eventsData || [];
-    return Array.isArray(data) ? data : [];
+    if (!eventsData) return [];
+    
+    // Handle different API response structures
+    let eventsList = [];
+    
+    // Case 1: eventsData.data is an array (most common)
+    if (Array.isArray(eventsData.data)) {
+      eventsList = eventsData.data;
+    }
+    // Case 2: eventsData itself is an array
+    else if (Array.isArray(eventsData)) {
+      eventsList = eventsData;
+    }
+    // Case 3: eventsData.data is a single object
+    else if (eventsData.data && typeof eventsData.data === 'object' && !Array.isArray(eventsData.data)) {
+      eventsList = [eventsData.data];
+    }
+    // Case 4: eventsData is a single object
+    else if (eventsData && typeof eventsData === 'object' && !Array.isArray(eventsData) && eventsData.id) {
+      eventsList = [eventsData];
+    }
+    
+    // Remove duplicates based on event ID
+    const seenIds = new Set();
+    return eventsList.filter((event) => {
+      if (!event || !event.id) return false;
+      const eventId = String(event.id);
+      if (seenIds.has(eventId)) return false;
+      seenIds.add(eventId);
+      return true;
+    });
   }, [eventsData]);
 
   // Transform API event data to display format

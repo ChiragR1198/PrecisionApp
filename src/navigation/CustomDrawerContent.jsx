@@ -50,10 +50,17 @@ export const CustomDrawerContent = (props) => {
   const logoutMutation = isDelegate ? delegateLogout : sponsorLogout;
 
   // Fetch profile data - only if user is authenticated and logged in
+  // Force fresh data fetch - no cache
   const shouldSkipDelegate = !isAuthenticated || !user || !isDelegate;
   const shouldSkipSponsor = !isAuthenticated || !user || isDelegate;
-  const { data: delegateProfileData } = useGetDelegateProfileQuery(undefined, { skip: shouldSkipDelegate });
-  const { data: sponsorProfileData } = useGetSponsorProfileQuery(undefined, { skip: shouldSkipSponsor });
+  const { data: delegateProfileData } = useGetDelegateProfileQuery(undefined, { 
+    skip: shouldSkipDelegate,
+    refetchOnMountOrArgChange: true, // Force fresh data on mount
+  });
+  const { data: sponsorProfileData } = useGetSponsorProfileQuery(undefined, { 
+    skip: shouldSkipSponsor,
+    refetchOnMountOrArgChange: true, // Force fresh data on mount
+  });
   const profileData = isDelegate ? delegateProfileData : sponsorProfileData;
   const profile = useMemo(() => {
     return profileData?.data || profileData || null;
@@ -110,10 +117,13 @@ export const CustomDrawerContent = (props) => {
           </View>
           <View style={styles.profileText}>
             <Text style={styles.profileName} numberOfLines={1}>
-              {profile?.full_name || `${profile?.fname || ''} ${profile?.lname || ''}`.trim() || 'User'}
+              {isDelegate 
+                ? (profile?.full_name || `${profile?.fname || ''} ${profile?.lname || ''}`.trim() || 'User')
+                : (profile?.name || 'User')
+              }
             </Text>
             <Text style={styles.profileRole} numberOfLines={1}>
-              {profile?.job_title || 'Delegate'}
+              {profile?.job_title || (isDelegate ? 'Delegate' : 'Sponsor')}
             </Text>
           </View>
         </View>

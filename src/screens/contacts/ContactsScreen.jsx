@@ -2,6 +2,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useNavigation } from '@react-navigation/native';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   SectionList,
   StatusBar,
   StyleSheet,
@@ -14,7 +15,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
-import { useGetContactsQuery } from '../../store/api';
+import { useGetDelegateContactsQuery } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
 
 const DeleteIcon = ({ size = 18, color = '#EF4444' }) => <FontAwesome name="trash" size={size} color={color} />;
 
@@ -23,7 +25,17 @@ export const ContactsScreen = () => {
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
   
-  const { data: contactsData, isLoading, error, refetch } = useGetContactsQuery();
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+  
+  // Only fetch contacts if user is authenticated and is a delegate
+  const shouldSkip = !isAuthenticated || !user || !isDelegate;
+  
+  const { data: contactsData, isLoading, error, refetch } = useGetDelegateContactsQuery(undefined, {
+    skip: shouldSkip,
+    refetchOnMountOrArgChange: true,
+  });
   
   const contacts = useMemo(() => {
     const data = contactsData?.data || contactsData || [];
@@ -117,35 +129,56 @@ export const ContactsScreen = () => {
       />
 
       <View style={styles.body}>
-        <View style={styles.searchWrap}>
-          <SearchBar
-            placeholder="Search contacts"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            containerStyle={styles.searchContainer}
-          />
-          <Text style={styles.countText}>{`${filteredContacts.length} contacts`}</Text>
-        </View>
-
-        <SectionList
-          sections={sections}
-          keyExtractor={(item) => item.id}
-          renderItem={renderContact}
-          renderSectionHeader={renderSectionHeader}
-          stickySectionHeadersEnabled={false}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.listContent,
-            { paddingHorizontal: SIZES.paddingHorizontal },
-            sections.length === 0 && { flex: 1 },
-          ]}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>No contacts yet</Text>
-              <Text style={styles.emptySubtitle}>Scan a QR code and add it to your contacts.</Text>
+        {!isDelegate ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>Contacts Not Available</Text>
+            <Text style={styles.emptySubtitle}>Only delegate users can view and manage contacts.</Text>
+          </View>
+        ) : isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading contacts...</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>Error Loading Contacts</Text>
+            <Text style={styles.emptySubtitle}>
+              {error?.data?.message || error?.message || 'Failed to load contacts. Please try again.'}
+            </Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.searchWrap}>
+              <SearchBar
+                placeholder="Search contacts"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                containerStyle={styles.searchContainer}
+              />
+              <Text style={styles.countText}>{`${filteredContacts.length} contacts`}</Text>
             </View>
-          }
-        />
+
+            <SectionList
+              sections={sections}
+              keyExtractor={(item) => item.id?.toString() || `${item.name}-${item.phone}`}
+              renderItem={renderContact}
+              renderSectionHeader={renderSectionHeader}
+              stickySectionHeadersEnabled={false}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={[
+                styles.listContent,
+                { paddingHorizontal: SIZES.paddingHorizontal },
+                sections.length === 0 && { flex: 1 },
+              ]}
+              ListEmptyComponent={
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyTitle}>No contacts yet</Text>
+                  <Text style={styles.emptySubtitle}>Scan a QR code and add it to your contacts.</Text>
+                </View>
+              }
+            />
+          </>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -242,7 +275,17 @@ const createStyles = (SIZES, isTablet) =>
       color: colors.textMuted,
       textAlign: 'center',
     },
+    loadingContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingVertical: 40,
+    },
+    loadingText: {
+      marginTop: 16,
+      fontSize: 14,
+      color: colors.textMuted,
+    },
   });
 
 export default ContactsScreen;
-

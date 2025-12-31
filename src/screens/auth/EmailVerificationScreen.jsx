@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
-import { useVerifyEmailMutation } from '../../store/api';
+import { useVerifyForgotPasswordOtpMutation } from '../../store/api';
 import { useLocalSearchParams } from 'expo-router';
 
 // Icon Components
@@ -111,7 +111,7 @@ export const EmailVerificationScreen = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [canResend, setCanResend] = useState(false);
   const params = useLocalSearchParams();
-  const [verifyEmail] = useVerifyEmailMutation();
+  const [verifyEmail] = useVerifyForgotPasswordOtpMutation();
 
   // Timer countdown
   useEffect(() => {
@@ -198,7 +198,14 @@ export const EmailVerificationScreen = () => {
       const email = params?.email || '';
       const otp = verificationCode.join('');
       await verifyEmail({ email, otp, user_type: 'delegate' }).unwrap();
-      router.push({ pathname: '/reset-password', params: { email, otp } });
+      // Delay navigation to ensure root layout is mounted
+      setTimeout(() => {
+        try {
+          router.push({ pathname: '/reset-password', params: { email, otp } });
+        } catch (navError) {
+          console.warn('⚠️ Navigation error:', navError);
+        }
+      }, 100);
     } catch (error) {
       console.error('Error verifying code:', error);
     } finally {
