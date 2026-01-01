@@ -1,10 +1,11 @@
 import * as NavigationBar from 'expo-navigation-bar';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as SystemUI from 'expo-system-ui';
 import React, { useEffect } from 'react';
-import { ActivityIndicator, AppState, Platform, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Provider } from 'react-redux';
 import { useAuth } from '../src/hooks/useAuth';
 import { store } from '../src/store';
@@ -37,6 +38,7 @@ function RootLayoutNav() {
   const segments = useSegments();
   const router = useRouter();
   const navigationState = useRootNavigationState();
+  const insets = useSafeAreaInsets();
 
   // Configure navigation bar and status bar visibility
   useEffect(() => {
@@ -44,7 +46,10 @@ function RootLayoutNav() {
       // Ensure navigation bar is visible (works for both gesture and button navigation)
       // This will show navigation bar on all Android devices regardless of navigation mode
       NavigationBar.setVisibilityAsync('visible').catch(console.error);
-      NavigationBar.setButtonStyleAsync('dark').catch(console.error);
+      // Set navigation bar background to black using SystemUI (works with edge-to-edge)
+      SystemUI.setBackgroundColorAsync('#000000').catch(console.error);
+      // Set button style to light (white buttons on black background)
+      NavigationBar.setButtonStyleAsync('light').catch(console.error);
     }
   }, []);
 
@@ -75,7 +80,7 @@ function RootLayoutNav() {
   if (isLoading) {
     return (
       <>
-        <StatusBar style="dark" translucent={false} />
+        <StatusBar style="light" translucent={false} />
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
           <ActivityIndicator size="large" color="#8A3490" />
         </View>
@@ -85,7 +90,7 @@ function RootLayoutNav() {
 
   return (
     <>
-      <StatusBar style="dark" translucent={false} />
+      <StatusBar style="light" translucent={false} />
       <Stack
         screenOptions={{
           headerShown: false,
@@ -102,6 +107,10 @@ function RootLayoutNav() {
         <Stack.Screen name="email-verification" options={{ headerShown: false }} />
         <Stack.Screen name="reset-password" options={{ headerShown: false }} />
       </Stack>
+      {/* Black background for navigation bar area (edge-to-edge mode) */}
+      {Platform.OS === 'android' && insets.bottom > 0 && (
+        <View style={[styles.navBarBackground, { height: insets.bottom }]} />
+      )}
     </>
   );
 }
@@ -113,12 +122,17 @@ export default function RootLayout() {
       // Ensure navigation bar is visible (works for both gesture and button navigation)
       // This will show navigation bar on all Android devices regardless of navigation mode
       NavigationBar.setVisibilityAsync('visible').catch(console.error);
-      NavigationBar.setButtonStyleAsync('dark').catch(console.error);
+      // Set navigation bar background to black using SystemUI (works with edge-to-edge)
+      SystemUI.setBackgroundColorAsync('#000000').catch(console.error);
+      // Set button style to light (white buttons on black background)
+      NavigationBar.setButtonStyleAsync('light').catch(console.error);
       
       // Also configure on app state changes
       const handleAppStateChange = (nextAppState) => {
         if (nextAppState === 'active') {
           NavigationBar.setVisibilityAsync('visible').catch(console.error);
+          SystemUI.setBackgroundColorAsync('#000000').catch(console.error);
+          NavigationBar.setButtonStyleAsync('light').catch(console.error);
         }
       };
       
@@ -140,5 +154,16 @@ export default function RootLayout() {
     </Provider>
   );
 }
+
+const styles = StyleSheet.create({
+  navBarBackground: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#000000',
+    pointerEvents: 'none', // Allow touches to pass through
+  },
+});
 
 

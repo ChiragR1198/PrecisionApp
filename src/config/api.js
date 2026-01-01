@@ -23,7 +23,9 @@ export const API_ENDPOINTS = {
   AUTH_DELEGATE_RESET_PASSWORD: '/auth/delegate-reset-password',
   AUTH_DELEGATE_CHANGE_PASSWORD: '/auth/delegate-change-password',
   
-  // Password Change (Sponsor)
+  // Password Reset (Sponsor)
+  AUTH_SPONSOR_FORGOT_PASSWORD: '/auth/sponsor-forgot-password',
+  AUTH_SPONSOR_RESET_PASSWORD: '/auth/sponsor-reset-password',
   AUTH_SPONSOR_CHANGE_PASSWORD: '/auth/sponsor-change-password',
 
   // ============ DELEGATE ENDPOINTS ============

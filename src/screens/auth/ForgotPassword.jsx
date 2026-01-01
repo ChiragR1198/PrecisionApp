@@ -1,6 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useRef, useState } from 'react';
 import {
   Image,
@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
-import { useDelegateForgotPasswordMutation } from '../../store/api';
+import { useDelegateForgotPasswordMutation, useSponsorForgotPasswordMutation } from '../../store/api';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -116,7 +116,13 @@ export const ForgotPasswordScreen = () => {
   });
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [forgotPassword] = useDelegateForgotPasswordMutation();
+  const [error, setError] = useState('');
+  const params = useLocalSearchParams();
+  const userType = params?.user_type || 'delegate'; // Default to delegate if not provided
+  const isSponsor = userType === 'sponsor';
+  const [delegateForgotPassword] = useDelegateForgotPasswordMutation();
+  const [sponsorForgotPassword] = useSponsorForgotPasswordMutation();
+  const forgotPassword = isSponsor ? sponsorForgotPassword : delegateForgotPassword;
 
   React.useEffect(() => {
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -187,6 +193,7 @@ export const ForgotPasswordScreen = () => {
 
   const handleInputChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
+    if (error) setError('');
   };
 
   // "Send Reset Link" button should always be ON (enabled and not greyed out)
@@ -195,6 +202,7 @@ export const ForgotPasswordScreen = () => {
 
   const handleSendResetLink = async () => {
     setIsLoading(true);
+    setError('');
     try {
       const email = formData.email.trim();
       await forgotPassword({ email }).unwrap();
@@ -202,13 +210,16 @@ export const ForgotPasswordScreen = () => {
       // Delay navigation to ensure root layout is mounted
       setTimeout(() => {
         try {
-          router.push({ pathname: '/email-verification', params: { email } });
+          router.push({ pathname: '/email-verification', params: { email, user_type: userType } });
         } catch (navError) {
           console.warn('⚠️ Navigation error:', navError);
         }
       }, 100);
     } catch (error) {
       console.error('Error sending reset link:', error);
+      const errorMessage = error?.data?.message || error?.message || 'Failed to send reset link. Please try again.';
+      setError(errorMessage);
+      setIsSubmitted(false);
     } finally {
       setIsLoading(false);
     }
@@ -287,6 +298,13 @@ export const ForgotPasswordScreen = () => {
                     />
                   ))}
                 </View>
+
+                {/* Error Message */}
+                {error ? (
+                  <View style={styles.errorContainer}>
+                    <Text style={styles.errorText}>{error}</Text>
+                  </View>
+                ) : null}
 
                 {/* Button & Footer */}
                 <View style={styles.footer}>
@@ -620,5 +638,17 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT, platform) => StyleSheet.cr
     color: colors.textMuted,
     flexShrink: 1,
     lineHeight: SIZES.notificationSize * 1.4,
+  },
+  errorContainer: {
+    width: '100%',
+    marginTop: 8,
+    marginBottom: 8,
+    paddingHorizontal: 4,
+  },
+  errorText: {
+    fontSize: SIZES.subtitleSize - 1,
+    fontWeight: '400',
+    color: '#EF4444',
+    textAlign: 'center',
   },
 });

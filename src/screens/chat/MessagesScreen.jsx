@@ -205,7 +205,7 @@ export const MessagesScreen = () => {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
         title="Messages"
         leftIcon="menu"

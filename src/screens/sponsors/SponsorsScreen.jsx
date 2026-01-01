@@ -421,7 +421,7 @@ export const SponsorsScreen = () => {
 
   // The content and contentWrap styles are restructured to ensure FlatList fills and scrolls
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
         title={isDelegate ? 'Delegate' : 'Event Sponsors'}
         leftIcon="menu"

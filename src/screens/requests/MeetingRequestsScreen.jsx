@@ -325,7 +325,7 @@ export const MeetingRequestsScreen = () => {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
 
       <Header
         title="Meeting Requests"

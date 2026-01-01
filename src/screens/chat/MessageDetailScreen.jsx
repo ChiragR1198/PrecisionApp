@@ -2,27 +2,27 @@ import { useNavigation } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  useWindowDimensions,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Image,
+    KeyboardAvoidingView,
+    Platform,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useWindowDimensions,
+    View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
-  useGetDelegateChatMessagesQuery,
-  useGetSponsorChatMessagesQuery,
-  useSendDelegateMessageMutation,
-  useSendSponsorMessageMutation,
+    useGetDelegateChatMessagesQuery,
+    useGetSponsorChatMessagesQuery,
+    useSendDelegateMessageMutation,
+    useSendSponsorMessageMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
@@ -335,7 +335,7 @@ export const MessageDetailScreen = () => {
 
   if (!thread) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header
           leftIcon="arrow-left"
           onLeftPress={handleBack}
@@ -352,7 +352,7 @@ export const MessageDetailScreen = () => {
   const threadAvatar = thread.avatar || thread.user_image || null;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <Header
         leftIcon="arrow-left"
         onLeftPress={handleBack}

@@ -25,7 +25,9 @@ import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import {
   useGetDelegateAttendeesQuery,
+  useGetDelegateMeetingRequestsQuery,
   useGetSponsorAllAttendeesQuery,
+  useGetSponsorMeetingRequestsQuery,
   useGetSponsorServicesQuery,
   useSendDelegateMeetingRequestMutation,
   useSendSponsorMeetingRequestMutation
@@ -84,14 +86,19 @@ const AttendeeRow = React.memo(function AttendeeRow({
         </Text>
       </View>
       <TouchableOpacity
-        style={styles.requestButton}
+        style={[styles.requestButton, item.hasRequest && styles.requestButtonDisabled]}
         activeOpacity={0.85}
         onPress={(e) => {
           e.stopPropagation();
-          onOpenRequest(item);
+          if (!item.hasRequest) {
+            onOpenRequest(item);
+          }
         }}
+        disabled={item.hasRequest}
       >
-        <Text style={styles.requestButtonText}>Request</Text>
+        <Text style={[styles.requestButtonText, item.hasRequest && styles.requestButtonTextDisabled]}>
+          {item.hasRequest ? 'Requested' : 'Request'}
+        </Text>
       </TouchableOpacity>
     </TouchableOpacity>
   );
@@ -140,6 +147,56 @@ export const AttendeesScreen = () => {
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
   const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
+  
+  // Fetch meeting requests to check which attendees already have requests
+  const { 
+    data: delegateMeetingRequestsData 
+  } = useGetDelegateMeetingRequestsQuery(undefined, {
+    skip: !isAuthenticated || !user || !isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+  
+  const { 
+    data: sponsorMeetingRequestsData 
+  } = useGetSponsorMeetingRequestsQuery(undefined, {
+    skip: !isAuthenticated || !user || isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+  
+  const meetingRequestsData = isDelegate ? delegateMeetingRequestsData : sponsorMeetingRequestsData;
+  
+  // --- Begin requestedAttendeeIds block ---
+  // Extract requested attendee IDs from meeting requests
+  const requestedAttendeeIds = useMemo(() => {
+    if (!meetingRequestsData) return new Set();
+    
+    // Handle different response formats
+    let requests = [];
+    if (Array.isArray(meetingRequestsData?.data)) {
+      requests = meetingRequestsData.data;
+    } else if (Array.isArray(meetingRequestsData)) {
+      requests = meetingRequestsData;
+    } else if (Array.isArray(meetingRequestsData?.data?.data)) {
+      requests = meetingRequestsData.data.data;
+    }
+    
+    // Extract attendee IDs based on user type
+    const ids = requests
+      .map((request) => {
+        if (isDelegate) {
+          // For delegates, get sponsor_id (the sponsor they requested)
+          return request?.sponsor_id || request?.sponsorId;
+        } else {
+          // For sponsors, get delegate_id (the delegate they requested)
+          return request?.delegate_id || request?.delegateId;
+        }
+      })
+      .filter((id) => id != null)
+      .map((id) => Number(id));
+    
+    return new Set(ids);
+  }, [meetingRequestsData, isDelegate]);
+  // --- End requestedAttendeeIds block ---
   
   // Fetch sponsor services for filter
   const eventId = user?.event_id || user?.events?.[0]?.id || 27;
@@ -292,16 +349,19 @@ export const AttendeesScreen = () => {
         _roleKey: roleKey,
         _companyKey: companyKey,
         _searchText: `${nameKey} ${roleKey} ${companyKey}`,
+        // Check if request already sent
+        hasRequest: requestedAttendeeIds.has(Number(id)),
         // Keep raw available (used only when navigating/details)
         raw: attendee,
       };
     });
-  }, [attendees]);
+  }, [attendees, requestedAttendeeIds]);
 
   // Important perf detail:
   // - Sorting can be O(n log n); don't re-sort on every search keystroke.
   // - We sort only when DATA or sortBy changes, then apply cheap filter for search.
   const sortedData = useMemo(() => {
+    if (!DATA || DATA.length === 0) return [];
     const sorted = [...DATA];
     switch (sortBy) {
       case 'Name (Z to A)':
@@ -510,7 +570,7 @@ export const AttendeesScreen = () => {
   // Show loading state
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
           title="Attendees" 
           leftIcon="menu" 
@@ -528,7 +588,7 @@ export const AttendeesScreen = () => {
   // Show error state
   if (error) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
           title="Attendees" 
           leftIcon="menu" 
@@ -547,7 +607,7 @@ export const AttendeesScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <Header 
         title="Attendees" 
         leftIcon="menu" 
@@ -605,6 +665,7 @@ export const AttendeesScreen = () => {
               updateCellsBatchingPeriod={50}
               windowSize={7}
               getItemLayout={getItemLayout}
+              extraData={sortBy}
             />
           ) : (
             <View style={styles.emptyState}>
@@ -709,10 +770,11 @@ export const AttendeesScreen = () => {
         visible={isModalVisible || !!selectedAttendee}
         onRequestClose={closeModal}
       >
-        <View style={styles.modalBackdrop2}>
-          <Animated.View style={[styles.modalOverlay, { opacity: modalAnim }]}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
-          </Animated.View>
+        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
+          <Pressable 
+            style={StyleSheet.absoluteFill} 
+            onPress={closeModal}
+          />
           <Animated.View
             style={[
               styles.modalCard2,
@@ -791,7 +853,7 @@ export const AttendeesScreen = () => {
               </>
             )}
           </Animated.View>
-        </View>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -925,10 +987,17 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 10,
   },
+  requestButtonDisabled: {
+    backgroundColor: colors.gray200 || '#E5E7EB',
+    opacity: 0.7,
+  },
   requestButtonText: {
     color: colors.white,
     fontWeight: '600',
     fontSize: SIZES.body,
+  },
+  requestButtonTextDisabled: {
+    color: colors.textMuted || '#6B7280',
   },
   separator: {
     height: 1,
@@ -1099,7 +1168,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   modalBackdrop2: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(0,0,0,0.6)',
   },
   modalOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1110,6 +1179,19 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 20,
+    paddingBottom: 34, // Add extra padding at bottom for safe area
+    width: '100%',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+      },
+      android: {
+        elevation: 5,
+      },
+    }),
   },
   modalHeader2: {
     flexDirection: 'row',

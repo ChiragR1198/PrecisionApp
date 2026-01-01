@@ -346,7 +346,7 @@ export const EventOverviewScreen = () => {
   // Show loading state
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -359,7 +359,7 @@ export const EventOverviewScreen = () => {
   // Show error state
   if (error) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
         <View style={styles.errorContainer}>
           <Icon name="alert-circle" size={48} color={colors.textMuted} />
@@ -375,7 +375,7 @@ export const EventOverviewScreen = () => {
   // Show empty state
   if (events.length === 0) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
         <View style={styles.errorContainer}>
           <Icon name="calendar" size={48} color={colors.textMuted} />
@@ -386,7 +386,7 @@ export const EventOverviewScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.content}>

@@ -81,7 +81,7 @@ const FormField = ({
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            {isVisible ? <EyeOffIcon size={iconSize} /> : <EyeIcon size={iconSize} />}
+            {!isVisible ? <EyeOffIcon size={iconSize} /> : <EyeIcon size={iconSize} />}
           </TouchableOpacity>
         ) : (
           <View style={styles.inputIcon}>

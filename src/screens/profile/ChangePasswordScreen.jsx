@@ -285,7 +285,7 @@ export const ChangePasswordScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
         title="Change Password"
         leftIcon="menu"

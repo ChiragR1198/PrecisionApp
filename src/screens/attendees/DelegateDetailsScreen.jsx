@@ -18,7 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-import { useSendDelegateMeetingRequestMutation } from '../../store/api';
+import { useSendDelegateMeetingRequestMutation, useSendSponsorMeetingRequestMutation } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const UserIcon = ({ color = colors.white, size = 18 }) => (
@@ -50,11 +50,20 @@ const ExternalLinkIcon = ({ color = colors.textMuted, size = 16 }) => (
 );
 
 export const DelegateDetailsScreen = () => {
+
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const [priority, setPriority] = useState('1st');
   const { user } = useAppSelector((state) => state.auth);
-  const [createMeetingRequest] = useSendDelegateMeetingRequestMutation();
+
+  // Determine user type
+  const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+  const isDelegate = loginType === 'delegate';
+
+  // Use appropriate mutation based on user type
+  const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
+  const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
+  const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
 
   // Get delegate data from params
   const delegate = useMemo(() => {
@@ -109,9 +118,9 @@ export const DelegateDetailsScreen = () => {
 
   const handleSendMeetingRequest = async () => {
     try {
-      // Validate sponsor_id
+      // Validate attendee ID
       if (!delegate.id || delegate.id === '') {
-        Alert.alert('Error', 'Invalid sponsor ID');
+        Alert.alert('Error', `Invalid ${isDelegate ? 'sponsor' : 'delegate'} ID`);
         return;
       }
 
@@ -124,15 +133,24 @@ export const DelegateDetailsScreen = () => {
       const date = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
       const time = now.toTimeString().split(' ')[0]; // Format: HH:MM:SS
 
-      // Prepare payload
-      const payload = {
-        sponsor_id: Number(delegate.id),
-        event_id: Number(user?.event_id || 27),
-        priority: priorityValue,
-        date: date,
-        time: time,
-        message: '',
-      };
+      // Use different parameter names based on user type
+      const payload = isDelegate
+        ? {
+            sponsor_id: Number(delegate.id),
+            event_id: Number(user?.event_id || 27),
+            priority: priorityValue,
+            date: date,
+            time: time,
+            message: '',
+          }
+        : {
+            delegate_id: Number(delegate.id),
+            event_id: Number(user?.event_id || 27),
+            priority: priorityValue,
+            date: date,
+            time: time,
+            message: '',
+          };
 
       await createMeetingRequest(payload).unwrap();
 
@@ -144,6 +162,31 @@ export const DelegateDetailsScreen = () => {
   };
 
   const handleStartChat = () => {
+    if (!delegate || !delegate.id) {
+      Alert.alert('Error', 'Invalid delegate information');
+      return;
+    }
+
+    // Construct thread object for MessageDetailScreen
+    const thread = {
+      id: delegate.id,
+      user_id: delegate.id,
+      name: delegate.name || delegate.full_name || 'Unknown',
+      user_name: delegate.name || delegate.full_name || 'Unknown',
+      avatar: delegate.image || null,
+      user_image: delegate.image || null,
+      user_type: isDelegate ? 'sponsor' : 'delegate', // If current user is delegate, chatting with sponsor, and vice versa
+      // Optional: include last message if available
+      last_message: null,
+      last_message_date: null,
+    };
+
+    router.push({
+      pathname: '/message-detail',
+      params: {
+        thread: JSON.stringify(thread),
+      },
+    });
   };
 
   const handleCopyEmail = () => {
@@ -202,7 +245,7 @@ export const DelegateDetailsScreen = () => {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
         title="Delegate Details" 
         leftIcon="arrow-left" 

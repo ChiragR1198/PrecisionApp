@@ -1,6 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
@@ -17,8 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
-import { useVerifyForgotPasswordOtpMutation } from '../../store/api';
-import { useLocalSearchParams } from 'expo-router';
+import { useDelegateForgotPasswordMutation, useSponsorForgotPasswordMutation, useVerifyForgotPasswordOtpMutation } from '../../store/api';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -107,11 +106,17 @@ export const EmailVerificationScreen = () => {
   const scrollViewRef = useRef(null);
 
   const [verificationCode, setVerificationCode] = useState(['', '', '', '', '', '']);
-  const [timeLeft, setTimeLeft] = useState(300); // 5 minutes in seconds
+  const [timeLeft, setTimeLeft] = useState(600); // 10 minutes in seconds
   const [isLoading, setIsLoading] = useState(false);
   const [canResend, setCanResend] = useState(false);
+  const [error, setError] = useState('');
   const params = useLocalSearchParams();
+  const userType = params?.user_type || 'delegate'; // Default to delegate if not provided
+  const isSponsor = userType === 'sponsor';
   const [verifyEmail] = useVerifyForgotPasswordOtpMutation();
+  const [delegateForgotPassword] = useDelegateForgotPasswordMutation();
+  const [sponsorForgotPassword] = useSponsorForgotPasswordMutation();
+  const forgotPassword = isSponsor ? sponsorForgotPassword : delegateForgotPassword;
 
   // Timer countdown
   useEffect(() => {
@@ -193,41 +198,54 @@ export const EmailVerificationScreen = () => {
   ]);
 
   const handleVerifyCode = async () => {
+    const otp = verificationCode.join('');
+    if (otp.length !== 6) {
+      setError('Please enter a complete 6-digit code');
+      return;
+    }
+    
     setIsLoading(true);
+    setError('');
     try {
       const email = params?.email || '';
-      const otp = verificationCode.join('');
-      await verifyEmail({ email, otp, user_type: 'delegate' }).unwrap();
+      await verifyEmail({ email, otp, user_type: userType }).unwrap();
       // Delay navigation to ensure root layout is mounted
       setTimeout(() => {
         try {
-          router.push({ pathname: '/reset-password', params: { email, otp } });
+          router.push({ pathname: '/reset-password', params: { email, otp, user_type: userType } });
         } catch (navError) {
           console.warn('⚠️ Navigation error:', navError);
         }
       }, 100);
     } catch (error) {
       console.error('Error verifying code:', error);
+      const errorMessage = error?.data?.message || error?.message || 'Invalid verification code. Please try again.';
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleResendCode = async () => {
+    const email = params?.email || '';
+    if (!email) {
+      setError('Email address is required');
+      return;
+    }
+
     setIsLoading(true);
+    setError('');
     try {
-      // Implement resend logic here
-      console.log('Resending verification code');
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await forgotPassword({ email }).unwrap();
       
       // Reset timer
-      setTimeLeft(300);
+      setTimeLeft(600);
       setCanResend(false);
       setVerificationCode(['', '', '', '', '', '']);
     } catch (error) {
       console.error('Error resending code:', error);
+      const errorMessage = error?.data?.message || error?.message || 'Failed to resend code. Please try again.';
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -284,7 +302,7 @@ export const EmailVerificationScreen = () => {
             {/* Email Display Box */}
             <View style={styles.emailBox}>
               <Text style={styles.emailLabel}>Code sent to:</Text>
-              <Text style={styles.emailAddress}>user@example.com</Text>
+              <Text style={styles.emailAddress}>{params?.email || 'user@example.com'}</Text>
             </View>
 
             {/* Verification Code Input */}
@@ -292,11 +310,21 @@ export const EmailVerificationScreen = () => {
               <Text style={styles.verificationLabel}>Enter verification code</Text>
               <VerificationCodeInput
                 code={verificationCode}
-                setCode={setVerificationCode}
+                setCode={(newCode) => {
+                  setVerificationCode(newCode);
+                  if (error) setError('');
+                }}
                 styles={styles}
                 inputSize={SIZES.codeInputSize}
               />
             </View>
+
+            {/* Error Message */}
+            {error ? (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            ) : null}
 
             {/* Timer */}
             {timeLeft > 0 && (
@@ -344,7 +372,7 @@ export const EmailVerificationScreen = () => {
             <View style={styles.infoBox}>
               <InfoIcon size={16} />
               <Text style={styles.infoText}>
-                Check your spam folder if you don't see the email. The verification code is valid for 5 minutes.
+                Check your spam folder if you don't see the email. The verification code is valid for 10 minutes.
               </Text>
             </View>
           </View>
@@ -568,5 +596,17 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT, platform) => StyleSheet.cr
     flex: 1,
     marginLeft: 12,
     lineHeight: (SIZES.labelSize - 2) * 1.4,
+  },
+  errorContainer: {
+    width: '100%',
+    marginTop: 12,
+    marginBottom: 8,
+    paddingHorizontal: 4,
+  },
+  errorText: {
+    fontSize: SIZES.subtitleSize - 1,
+    fontWeight: '400',
+    color: '#EF4444',
+    textAlign: 'center',
   },
 });

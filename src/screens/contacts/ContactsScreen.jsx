@@ -118,9 +118,7 @@ export const ContactsScreen = () => {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
         title="Contacts"
         leftIcon="menu"

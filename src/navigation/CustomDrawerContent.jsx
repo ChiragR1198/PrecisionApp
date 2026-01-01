@@ -6,7 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../constants/theme';
 import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSponsorLogoutMutation } from '../store/api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
@@ -41,6 +41,7 @@ const getIcon = (name, size, color) => {
 export const CustomDrawerContent = (props) => {
   const { state, navigation } = props;
   const dispatch = useAppDispatch();
+  const insets = useSafeAreaInsets();
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const { selectedEventId, selectedEventIndex } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -96,12 +97,12 @@ export const CustomDrawerContent = (props) => {
   }, [isDelegate]);
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'left']}>
+    <SafeAreaView style={styles.safeArea} edges={['left']}>
       <LinearGradient
         colors={colors.gradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={[styles.header, { minHeight: sizes.headerHeight }]}
+        style={[styles.header, { minHeight: sizes.headerHeight + insets.top, paddingTop: insets.top }]}
       >
         <View style={styles.profileRow}>
           <View style={[styles.avatar, { width: sizes.avatar, height: sizes.avatar, borderRadius: sizes.avatar / 2 }]}>

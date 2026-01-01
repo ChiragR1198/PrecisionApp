@@ -866,7 +866,7 @@ export const ProfileScreen = () => {
   // Show loading state
   if (isLoadingProfile) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
           title="Profile" 
           leftIcon="menu" 
@@ -884,7 +884,7 @@ export const ProfileScreen = () => {
   // Show error state
   if (profileError && !profile) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
           title="Profile" 
           leftIcon="menu" 
@@ -905,7 +905,7 @@ export const ProfileScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <Header 
         title="Profile" 
         leftIcon="menu" 
@@ -932,7 +932,7 @@ export const ProfileScreen = () => {
                 {profileImage ? (
                   <Image
                     source={{ uri: profileImage }}
-                    style={[styles.profileImage, { width: SIZES.profilePictureSize, height: SIZES.profilePictureSize, borderRadius: SIZES.profilePictureSize / 2 }]}
+                    style={[styles.profileImage, { width: SIZES.profilePictureSize, height: SIZES.profilePictureSize, borderRadius: SIZES.profilePictureSize / 2, }]}
                     resizeMode="cover"
                   />
                 ) : (

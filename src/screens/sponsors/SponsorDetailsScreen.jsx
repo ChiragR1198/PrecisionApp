@@ -128,7 +128,33 @@ export const SponsorDetailsScreen = () => {
     if (!parsed.logoBg && parsed.id) {
       parsed.logoBg = getColorFromString(String(parsed.id), LOGO_COLORS);
     }
-    
+
+    // Clean about text if it contains HTML (in case raw data is passed)
+    if (parsed.about && typeof parsed.about === 'string' && parsed.about.includes('<')) {
+      parsed.about = parsed.about
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+      // If cleaned text is empty or just DOCTYPE, set to empty
+      if (
+        !parsed.about ||
+        parsed.about.length < 10 ||
+        parsed.about.toLowerCase().includes('doctype')
+      ) {
+        parsed.about = '';
+      }
+    }
+
     return parsed;
   }, [params]);
 
@@ -241,7 +267,7 @@ export const SponsorDetailsScreen = () => {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
         title={isDelegate ? 'Delegate Details' : 'Sponsors Details'} 
         leftIcon="arrow-left" 
@@ -335,7 +361,7 @@ export const SponsorDetailsScreen = () => {
           </View>
 
           {/* About Section */}
-          {sponsor.about && (
+          {sponsor.about && sponsor.about.trim() && (
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <InfoIcon />

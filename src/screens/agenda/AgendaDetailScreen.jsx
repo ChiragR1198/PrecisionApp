@@ -125,7 +125,7 @@ export const AgendaDetailScreen = () => {
     };
   }, [selectedAgendaItem]);
 
-  const descriptionText = agendaItem.description || 'No description available.';
+  const descriptionText = agendaItem.description || '';
 
   // Description expand state and long-desc boolean.
   const [isDescExpanded, setIsDescExpanded] = useState(false);
@@ -185,7 +185,7 @@ export const AgendaDetailScreen = () => {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
           title="Agenda Detail" 
           leftIcon="arrow-left" 
@@ -202,7 +202,7 @@ export const AgendaDetailScreen = () => {
 
   if (error) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
           title="Agenda Detail" 
           leftIcon="arrow-left" 
@@ -218,7 +218,7 @@ export const AgendaDetailScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <Header 
         title="Agenda Detail" 
         leftIcon="arrow-left" 
@@ -246,10 +246,12 @@ export const AgendaDetailScreen = () => {
             
             <Text style={styles.eventTitle}>{agendaItem.title}</Text>
             
-            <View style={styles.timeContainer}>
-              <ClockIcon />
-              <Text style={styles.timeText}>{agendaItem.time}</Text>
-            </View>
+            {agendaItem.time && (
+              <View style={styles.timeContainer}>
+                <ClockIcon />
+                <Text style={styles.timeText}>{agendaItem.time}</Text>
+              </View>
+            )}
           </View>
         </LinearGradient>
 
@@ -257,25 +259,33 @@ export const AgendaDetailScreen = () => {
           {/* Details Card */}
           <View style={styles.detailsCard}>
             {/* Date and Location */}
-            <View style={styles.detailRow}>
-              <View style={styles.iconBackground}>
-                <CalendarIcon />
+            {agendaItem.date && (
+              <View style={styles.detailRow}>
+                <View style={styles.iconBackground}>
+                  <CalendarIcon />
+                </View>
+                <View style={styles.detailTextContainer}>
+                  <Text style={styles.detailTitle}>{agendaItem.date}</Text>
+                  {agendaItem.dayName && (
+                    <Text style={styles.detailSubtitle}>{agendaItem.dayName}</Text>
+                  )}
+                </View>
               </View>
-              <View style={styles.detailTextContainer}>
-                <Text style={styles.detailTitle}>{agendaItem.date}</Text>
-                <Text style={styles.detailSubtitle}>{agendaItem.dayName}</Text>
-              </View>
-            </View>
+            )}
 
-            <View style={styles.detailRow}>
-              <View style={styles.iconBackground}>
-                <MapPinIcon />
+            {agendaItem.location && (
+              <View style={styles.detailRow}>
+                <View style={styles.iconBackground}>
+                  <MapPinIcon />
+                </View>
+                <View style={styles.detailTextContainer}>
+                  <Text style={styles.detailTitle}>{agendaItem.location}</Text>
+                  {agendaItem.locationDetails && (
+                    <Text style={styles.detailSubtitle}>{agendaItem.locationDetails}</Text>
+                  )}
+                </View>
               </View>
-              <View style={styles.detailTextContainer}>
-                <Text style={styles.detailTitle}>{agendaItem.location}</Text>
-                <Text style={styles.detailSubtitle}>{agendaItem.locationDetails}</Text>
-              </View>
-            </View>
+            )}
 
             {/* Speakers Section - Only show if speakers exist */}
             {agendaItem.speakers && agendaItem.speakers.length > 0 && (
@@ -287,25 +297,27 @@ export const AgendaDetailScreen = () => {
               </View>
             )}
 
-            {/* Description Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Description</Text>
-              <Text style={styles.descriptionText}>
-                {isDescExpanded ? descriptionText : descriptionText.substring(0, 200) + (descriptionText.length > 200 ? '...' : '')}
-              </Text>
+            {/* Description Section - Only show if description exists */}
+            {agendaItem.description && agendaItem.description.trim() !== '' && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Description</Text>
+                <Text style={styles.descriptionText}>
+                  {isDescExpanded ? descriptionText : descriptionText.substring(0, 200) + (descriptionText.length > 200 ? '...' : '')}
+                </Text>
 
-              {isLongDescription ? (
-                <TouchableOpacity
-                  style={{ marginTop: 12 }}
-                  activeOpacity={0.8}
-                  onPress={() => setIsDescExpanded((v) => !v)}
-                >
-                  <Text style={styles.readMore}>
-                    {isDescExpanded ? 'Show Less' : 'Read More'}
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
+                {isLongDescription ? (
+                  <TouchableOpacity
+                    style={{ marginTop: 12 }}
+                    activeOpacity={0.8}
+                    onPress={() => setIsDescExpanded((v) => !v)}
+                  >
+                    <Text style={styles.readMore}>
+                      {isDescExpanded ? 'Show Less' : 'Read More'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            )}
 
             {/* Key Topics Section */}
             {/* <View style={styles.section}>

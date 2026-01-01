@@ -414,7 +414,7 @@ export const DashboardScreen = () => {
   // Show loading state
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header
           title="Dashboard"
           leftIcon="menu"
@@ -432,7 +432,7 @@ export const DashboardScreen = () => {
   // Show error state
   if (error) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header
           title="Dashboard"
           leftIcon="menu"
@@ -453,7 +453,7 @@ export const DashboardScreen = () => {
   // Show empty state
   if (EVENTS.length === 0) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header
           title="Dashboard"
           leftIcon="menu"
@@ -469,7 +469,7 @@ export const DashboardScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <Header
         title="Dashboard"

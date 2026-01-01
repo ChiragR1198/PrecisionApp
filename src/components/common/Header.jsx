@@ -2,13 +2,14 @@ import Icon from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { memo, useMemo } from 'react';
 import {
-    Platform,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../constants/theme';
 
 // Ensure font scaling is disabled for Header text components
@@ -38,6 +39,7 @@ export const Header = memo(({
   iconSize,
 }) => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   
   const isTablet = SCREEN_WIDTH >= 768;
   const isAndroid = Platform.OS === 'android';
@@ -54,7 +56,7 @@ export const Header = memo(({
     iconSize: iconSize || getValue({ android: 22, ios: 23, tablet: 25, default: 22 }),
     titleSize: getValue({ android: 18, ios: 19, tablet: 20, default: 18 }),
     subtitleSize: getValue({ android: 10, ios: 11, tablet: 11, default: 10 }),
-    minHeight: getValue({ android: 80, ios: 82, tablet: 85, default: 80 }),
+    minHeight: getValue({ android: 60, ios: 82, tablet: 85, default: 80 }),
     paddingHorizontal: getValue({ android: 16, ios: 18, tablet: 20, default: 16 }),
   }), [isTablet, iconSize]);
   const Left = () => {
@@ -105,9 +107,11 @@ export const Header = memo(({
 
   const headerStyles = useMemo(() => ({
     ...styles.gradient,
-    minHeight: SIZES.minHeight,
+    minHeight: SIZES.minHeight + insets.top,
+    paddingTop: insets.top,
     paddingHorizontal: SIZES.paddingHorizontal,
-  }), [SIZES]);
+    paddingBottom: 0,
+  }), [SIZES, insets.top]);
 
   if (showGradient) {
     return (
@@ -166,7 +170,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     marginTop: 2,
-    color: 'rgba(255,255,255,0.85)',
+    color: colors.textMuted,
   },
 });
 

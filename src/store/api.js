@@ -207,7 +207,9 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   // If unauthorized (401), token is invalid/expired - redirect to login
   // Tokens are valid for 30 days, so no refresh needed
   // For 403 (Forbidden), don't refresh - it's a permission issue, not token expiry
-  if (result.error && result.error.status === 401) {
+  // IMPORTANT: Don't convert 401 to AUTH_REQUIRED for login/auth endpoints
+  // For login endpoints, 401 means wrong credentials - return actual error message
+  if (result.error && result.error.status === 401 && !isAuthEndpoint) {
     console.log('🚫 Unauthorized (401) - Token invalid/expired. Clearing auth and redirecting to login...');
     
     // Clear all auth data
@@ -538,6 +540,24 @@ export const api = createApi({
         url: API_ENDPOINTS.AUTH_DELEGATE_RESET_PASSWORD,
         method: 'POST',
         body: { email, otp, new_password, confirm_password, user_type },
+      }),
+    }),
+
+    // 15a. Sponsor Forgot Password
+    sponsorForgotPassword: builder.mutation({
+      query: ({ email }) => ({
+        url: API_ENDPOINTS.AUTH_SPONSOR_FORGOT_PASSWORD,
+        method: 'POST',
+        body: { email },
+      }),
+    }),
+
+    // 15b. Sponsor Reset Password
+    sponsorResetPassword: builder.mutation({
+      query: ({ email, otp, new_password, confirm_password }) => ({
+        url: API_ENDPOINTS.AUTH_SPONSOR_RESET_PASSWORD,
+        method: 'POST',
+        body: { email, otp, new_password, confirm_password },
       }),
     }),
 
@@ -943,6 +963,8 @@ export const {
   useVerifyForgotPasswordOtpMutation,
   useDelegateResetPasswordMutation,
   useDelegateChangePasswordMutation,
+  useSponsorForgotPasswordMutation,
+  useSponsorResetPasswordMutation,
   useSponsorChangePasswordMutation,
 
   // Delegate Endpoints

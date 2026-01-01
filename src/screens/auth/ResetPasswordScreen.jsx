@@ -1,6 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useRef, useState } from 'react';
 import {
   Image,
@@ -17,8 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
-import { useDelegateResetPasswordMutation } from '../../store/api';
-import { useLocalSearchParams } from 'expo-router';
+import { useDelegateResetPasswordMutation, useSponsorResetPasswordMutation } from '../../store/api';
 
 // Icon Components
 const ArrowLeftIcon = ({ color = colors.textSecondary, size = 18 }) => (
@@ -101,12 +100,13 @@ const FormField = ({
       <Text style={styles.label}>{field.label}</Text>
       <View style={styles.inputContainer}>
         <TextInput
+          key={isPassword ? `pwd-${showPassword}` : field.id}
           style={styles.input}
           placeholder={field.placeholder}
           placeholderTextColor={colors.textPlaceholder}
           value={value}
           onChangeText={onChangeText}
-          secureTextEntry={isPassword && !isVisible}
+          secureTextEntry={isPassword ? !showPassword : false}
           keyboardType={field.type === 'email' ? 'email-address' : 'default'}
           autoCapitalize={field.type === 'email' ? 'none' : 'words'}
           autoCorrect={false}
@@ -120,7 +120,7 @@ const FormField = ({
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            {isVisible ? <EyeOffIcon size={iconSize} /> : <EyeIcon size={iconSize} />}
+            {!isVisible ? <EyeOffIcon size={iconSize} /> : <EyeIcon size={iconSize} />}
           </TouchableOpacity>
         ) : (
           <View style={styles.inputIcon}>
@@ -166,8 +166,13 @@ export const ResetPasswordScreen = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
   const params = useLocalSearchParams();
-  const [resetPassword] = useDelegateResetPasswordMutation();
+  const userType = params?.user_type || 'delegate'; // Default to delegate if not provided
+  const isSponsor = userType === 'sponsor';
+  const [delegateResetPassword] = useDelegateResetPasswordMutation();
+  const [sponsorResetPassword] = useSponsorResetPasswordMutation();
+  const resetPassword = isSponsor ? sponsorResetPassword : delegateResetPassword;
 
   React.useEffect(() => {
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -235,13 +240,21 @@ export const ResetPasswordScreen = () => {
 
   const handleInputChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
+    if (error) setError('');
   };
 
   const handleResetPassword = async () => {
-    if (!formData.password.trim() || !formData.confirmPassword.trim()) return;
-    if (formData.password !== formData.confirmPassword) return;
+    if (!formData.password.trim() || !formData.confirmPassword.trim()) {
+      setError('Please fill in all fields');
+      return;
+    }
+    if (formData.password !== formData.confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
 
     setIsLoading(true);
+    setError('');
     try {
       const email = params?.email || '';
       const otp = params?.otp || '';
@@ -261,6 +274,8 @@ export const ResetPasswordScreen = () => {
       }, 100);
     } catch (error) {
       console.error('Error resetting password:', error);
+      const errorMessage = error?.data?.message || error?.message || 'Failed to reset password. Please try again.';
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -357,6 +372,13 @@ export const ResetPasswordScreen = () => {
 
             {/* Password Requirements */}
             <PasswordRequirements password={formData.password} styles={styles} />
+
+            {/* Error Message */}
+            {error ? (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            ) : null}
 
             {/* Button & Footer */}
             <View style={styles.footer}>
@@ -509,7 +531,8 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT, platform) => StyleSheet.cr
     justifyContent: 'center',
     width: 24,
     height: 24,
-    zIndex: 1,
+    zIndex: 10,
+    pointerEvents: 'auto',
   },
   helperText: {
     fontSize: SIZES.helperTextSize,
@@ -604,5 +627,17 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT, platform) => StyleSheet.cr
   loginLink: {
     color: colors.primary,
     fontWeight: '600',
+  },
+  errorContainer: {
+    width: '100%',
+    marginTop: 12,
+    marginBottom: 8,
+    paddingHorizontal: 4,
+  },
+  errorText: {
+    fontSize: SIZES.subtitleSize - 1,
+    fontWeight: '400',
+    color: '#EF4444',
+    textAlign: 'center',
   },
 });

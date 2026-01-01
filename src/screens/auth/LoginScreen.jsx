@@ -46,12 +46,13 @@ const FormField = ({
       <Text style={styles.label}>{field.label}</Text>
       <View style={styles.inputContainer}>
         <TextInput
+          key={isPassword ? `pwd-${isPasswordVisible}` : field.id}
           style={styles.input}
           placeholder={field.placeholder}
           placeholderTextColor={colors.textPlaceholder}
           value={value}
           onChangeText={onChangeText}
-          secureTextEntry={isPassword && !isVisible}
+          secureTextEntry={isPassword ? !isPasswordVisible : false}
           keyboardType={field.type === 'email' ? 'email-address' : 'default'}
           autoCapitalize={
             field.type === 'email' || field.type === 'password' ? 'none' : 'words'
@@ -67,7 +68,7 @@ const FormField = ({
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            {isVisible ? <EyeIcon size={iconSize} /> : <EyeOffIcon size={iconSize} />}
+            {!isVisible ? <EyeOffIcon size={iconSize} /> : <EyeIcon size={iconSize} />}
           </TouchableOpacity>
         ) : (
           <View style={styles.inputIcon}>
@@ -158,7 +159,7 @@ export const LoginScreen = () => {
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    userType: 'delegate', // Default to delegate
+    userType: 'sponsor',
   });
   const [passwordVisibility, setPasswordVisibility] = useState({});
   const [error, setError] = useState('');
@@ -276,7 +277,7 @@ export const LoginScreen = () => {
   };
 
   const handleForgotPassword = () => {
-    router.push('/forgot-password');
+    router.push({ pathname: '/forgot-password', params: { user_type: formData.userType } });
   };
 
   // Render
