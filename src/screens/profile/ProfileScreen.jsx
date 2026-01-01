@@ -413,6 +413,7 @@ export const ProfileScreen = () => {
         formDataToSend.append('country', formData.country || '');
         formDataToSend.append('state', formData.state || '');
         formDataToSend.append('linkedin_url', formData.linkedinUrl || '');
+        formDataToSend.append('company_information', formData.companyInformation || '');
         formDataToSend.append('sms_notification', smsNotification ? '1' : '0');
         formDataToSend.append('email_notification', emailNotification ? '1' : '0');
         
@@ -533,11 +534,7 @@ export const ProfileScreen = () => {
     setHasScanPermission(null);
     setIsScanning(false);
     setQrImageError(false); // Reset error state when opening modal
-    setQrImageLoading(false); // Reset loading state
     setQrImageUri(null); // Reset image URI
-    qrImageLoadStartRef.current = false; // Reset load start flag
-    qrImageLoadingRef.current = false; // Reset loading ref
-    qrImageRetryCountRef.current = 0; // Reset retry count
     
     // Clear any existing timeout
     if (qrImageTimeoutRef.current) {
@@ -580,8 +577,10 @@ export const ProfileScreen = () => {
     // Set image URI directly from URL
     if (imageUrl) {
       setQrImageUri(imageUrl);
+      setQrImageLoading(true); // Will be set to false when image loads
     } else {
       console.log('⚠️ No QR image URL found from any source!');
+      setQrImageLoading(false);
     }
   };
 
@@ -677,24 +676,20 @@ export const ProfileScreen = () => {
   };
 
   const handleBarCodeScanned = ({ data }) => {
-    console.log('========================================');
-    console.log('📷 QR CODE SCANNED - DATA ANALYSIS');
-    console.log('========================================');
-    
     setIsScanning(false);
     
     // Console log the raw QR code data
-    console.log('📄 Raw QR Data:', data);
-    console.log('📄 Data Type:', typeof data);
-    console.log('📄 Data Length:', data?.length);
-    console.log('📄 Is VCARD:', data?.startsWith('BEGIN:VCARD'));
-    console.log('📄 First 100 characters:', data?.substring(0, 100));
+    console.log('=== QR Code Scan Details ===');
+    console.log('Raw QR Data:', data);
+    console.log('Data Type:', typeof data);
+    console.log('Data Length:', data?.length);
+    console.log('Is VCARD:', data?.startsWith('BEGIN:VCARD'));
     
     if (data.startsWith('BEGIN:VCARD')) {
-      console.log('✅ Processing VCARD format...');
+      console.log('Processing VCARD format...');
       const parsed = parseVCard(data);
-      console.log('📋 Parsed VCARD Contact (Full):', JSON.stringify(parsed, null, 2));
-      console.log('📋 Parsed Contact Details:', {
+      console.log('Parsed VCARD Contact:', parsed);
+      console.log('Parsed Contact Details:', {
         name: parsed.name,
         phone: parsed.phone,
         email: parsed.email,
@@ -703,106 +698,22 @@ export const ProfileScreen = () => {
         initials: parsed.initials,
       });
       setScanResult(parsed);
-      console.log('✅ Scan result set to state');
     } else {
-      // Try to parse plain text QR code
-      console.log('⚠️ Processing non-VCARD QR code...');
-      const parsedText = parsePlainTextQR(data);
-      console.log('📋 Parsed Plain Text Result:', JSON.stringify(parsedText, null, 2));
-      console.log('📄 QR Code Content (Full):', data);
-      setScanResult(parsedText);
-      console.log('✅ Parsed result set to state');
+      // fallback for normal QR text
+      console.log('Processing non-VCARD QR code...');
+      const fallbackResult = {
+        initials: 'QR',
+        name: 'Unknown Contact',
+        role: 'Scanned via QR',
+        company: data,
+        email: 'N/A',
+        phone: 'N/A',
+      };
+      console.log('Fallback QR Result:', fallbackResult);
+      console.log('QR Code Content:', data);
+      setScanResult(fallbackResult);
     }
-    console.log('========================================');
-  };
-
-  // Parse plain text QR code to extract contact information
-  const parsePlainTextQR = (text) => {
-    console.log('--- Parsing Plain Text QR ---');
-    console.log('Text:', text);
-    
-    // Try to extract name and company/event from patterns like:
-    // "Name (Event Name)" or "Name - Company" or just "Name"
-    let name = '';
-    let company = '';
-    let role = '';
-    let email = '';
-    let phone = '';
-    
-    // Extract email (pattern: text with @ symbol)
-    const emailPattern = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
-    const emailMatch = text.match(emailPattern);
-    if (emailMatch && emailMatch.length > 0) {
-      email = emailMatch[0].trim();
-      console.log('✅ Email found:', email);
-      // Remove email from text for further parsing
-      text = text.replace(emailPattern, '').trim();
-    }
-    
-    // Extract phone number (pattern: + followed by digits, or digits with spaces/dashes)
-    const phonePatterns = [
-      /\+?[\d\s\-\(\)]{10,}/g, // International format: +1234567890 or (123) 456-7890
-      /\d{10,}/g, // Simple 10+ digits
-    ];
-    
-    for (const pattern of phonePatterns) {
-      const phoneMatch = text.match(pattern);
-      if (phoneMatch && phoneMatch.length > 0) {
-        // Take the longest match (most likely to be a phone number)
-        const potentialPhone = phoneMatch.sort((a, b) => b.length - a.length)[0];
-        // Validate it's likely a phone number (at least 10 digits)
-        const digitsOnly = potentialPhone.replace(/\D/g, '');
-        if (digitsOnly.length >= 10) {
-          phone = potentialPhone.trim();
-          console.log('✅ Phone found:', phone);
-          // Remove phone from text for further parsing
-          text = text.replace(phone, '').trim();
-          break;
-        }
-      }
-    }
-    
-    // Pattern 1: "Name (Event/Company)"
-    const pattern1 = /^(.+?)\s*\((.+?)\)\s*$/;
-    const match1 = text.match(pattern1);
-    if (match1) {
-      name = match1[1].trim();
-      company = match1[2].trim();
-      console.log('✅ Pattern 1 matched - Name:', name, 'Company:', company);
-    } else {
-      // Pattern 2: "Name - Company" or "Name | Company"
-      const pattern2 = /^(.+?)\s*[-|]\s*(.+?)$/;
-      const match2 = text.match(pattern2);
-      if (match2) {
-        name = match2[1].trim();
-        company = match2[2].trim();
-        console.log('✅ Pattern 2 matched - Name:', name, 'Company:', company);
-      } else {
-        // Pattern 3: Just use the whole text as name (after removing email/phone)
-        name = text.trim();
-        company = '';
-        console.log('⚠️ No pattern matched - Using full text as name:', name);
-      }
-    }
-    
-    // Extract initials from name
-    const initials = name
-      ? name.split(' ').map(n => n[0]).filter(Boolean).join('').toUpperCase().substring(0, 2)
-      : 'QR';
-    
-    const result = {
-      initials,
-      name: name || 'Unknown Contact',
-      role: role || 'Scanned via QR',
-      company: company || 'N/A',
-      email: email || 'N/A',
-      phone: phone || 'N/A',
-    };
-    
-    console.log('Final Parsed Result:', result);
-    console.log('--- End Parsing Plain Text QR ---');
-    
-    return result;
+    console.log('=== End QR Code Scan ===');
   };
 
   const parseVCard = (vcard) => {
@@ -908,29 +819,6 @@ export const ProfileScreen = () => {
       setQrImageLoading(false);
     }
   }, [profile?.qr_image, user?.qr_image]);
-
-  // Load QR image from AsyncStorage on mount or when user changes
-  React.useEffect(() => {
-    const loadQRImageFromStorage = async () => {
-      // Only load if we don't already have it from Redux
-      if (!user?.qr_image && !profile?.qr_image) {
-        try {
-          const storedUser = await AsyncStorage.getItem('auth_user');
-          if (storedUser) {
-            const parsedUser = JSON.parse(storedUser);
-            if (parsedUser?.qr_image && !qrImageUri) {
-              console.log('📱 Loading QR image from AsyncStorage on mount:', parsedUser.qr_image);
-              setQrImageUri(parsedUser.qr_image);
-            }
-          }
-        } catch (error) {
-          console.error('❌ Error loading QR image from AsyncStorage:', error);
-        }
-      }
-    };
-    
-    loadQRImageFromStorage();
-  }, [userId]); // Reload when user changes
 
   // Cleanup timeout on unmount
   React.useEffect(() => {
@@ -1180,7 +1068,7 @@ export const ProfileScreen = () => {
                 </>
               )}
               
-              <FormField
+              {/* <FormField
                 label="Address"
                 value={formData.address}
                 onChangeText={(value) => handleInputChange('address', value)}
@@ -1188,7 +1076,7 @@ export const ProfileScreen = () => {
                 icon={MapPinIcon}
                 styles={styles}
                 iconSize={SIZES.iconSize}
-              />
+              /> */}
               
               {/* Sponsor-only fields */}
               {!isDelegate && (
@@ -1372,144 +1260,44 @@ export const ProfileScreen = () => {
             {qrMode === 'code' ? (
               <View style={styles.qrCodePreview}>
                 <View style={styles.qrSquare}>
-                  {qrImageLoading ? (
-                    <View style={styles.qrLoadingContainer}>
-                      <ActivityIndicator size="large" color={colors.primary} />
-                      <Text style={styles.qrLoadingText}>Loading QR code...</Text>
-                    </View>
-                  ) : (qrImageUri || profile?.qr_image || user?.qr_image) && !qrImageError ? (
-                    <Image
-                      key={`qr-${qrImageRetryCountRef.current}-${qrImageUri || profile?.qr_image || user?.qr_image}`}
-                      source={{ 
-                        uri: qrImageUri || profile?.qr_image || user?.qr_image || '',
-                      }}
-                      style={styles.qrCodeImage}
-                      resizeMode="contain"
-                      onError={(error) => {
-                        console.log('========================================');
-                        console.log('❌ QR CODE IMAGE ERROR');
-                        console.log('========================================');
-                        console.log('❌ Error object:', JSON.stringify(error, null, 2));
-                        console.log('❌ QR image URL (qrImageUri):', qrImageUri);
-                        console.log('❌ QR image URL (profile):', profile?.qr_image);
-                        console.log('❌ QR image URL (user):', user?.qr_image);
-                        console.log('❌ Final URL used:', qrImageUri || profile?.qr_image || user?.qr_image);
-                        console.log('========================================');
-                        if (qrImageTimeoutRef.current) {
-                          clearTimeout(qrImageTimeoutRef.current);
-                          qrImageTimeoutRef.current = null;
-                        }
-                        qrImageLoadStartRef.current = false;
-                        qrImageLoadingRef.current = false;
-                        
-                        // Retry once if first attempt fails
-                        if (qrImageRetryCountRef.current === 0) {
-                          console.log('🔄 Retrying QR code image after error...');
-                          qrImageRetryCountRef.current = 1;
-                          setTimeout(() => {
-                            setQrImageError(false);
-                            setQrImageLoading(true);
-                          }, 500);
-                        } else {
-                          console.log('❌ QR code image failed after retry - showing error');
+                  {(qrImageUri || profile?.qr_image || user?.qr_image) && !qrImageError ? (
+                    <>
+                      <Image
+                        key={`qr-${qrImageUri || profile?.qr_image || user?.qr_image}`}
+                        source={{ 
+                          uri: qrImageUri || profile?.qr_image || user?.qr_image || '',
+                        }}
+                        style={styles.qrCodeImage}
+                        resizeMode="contain"
+                        onLoad={() => {
+                          console.log('✅ QR CODE IMAGE LOADED SUCCESSFULLY');
+                          console.log('✅ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
+                          if (qrImageTimeoutRef.current) {
+                            clearTimeout(qrImageTimeoutRef.current);
+                            qrImageTimeoutRef.current = null;
+                          }
+                          setQrImageLoading(false);
+                          setQrImageError(false);
+                        }}
+                        onError={(error) => {
+                          console.log('❌ QR CODE IMAGE ERROR');
+                          console.log('❌ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
+                          console.log('❌ Error details:', error);
+                          if (qrImageTimeoutRef.current) {
+                            clearTimeout(qrImageTimeoutRef.current);
+                            qrImageTimeoutRef.current = null;
+                          }
                           setQrImageError(true);
                           setQrImageLoading(false);
-                        }
-                      }}
-                      onLoadStart={() => {
-                        console.log('========================================');
-                        console.log('🔄 QR CODE IMAGE LOADING START');
-                        console.log('========================================');
-                        console.log('🔄 QR image URL (qrImageUri):', qrImageUri);
-                        console.log('🔄 QR image URL (profile):', profile?.qr_image);
-                        console.log('🔄 QR image URL (user):', user?.qr_image);
-                        console.log('🔄 Final URL being loaded:', qrImageUri || profile?.qr_image || user?.qr_image);
-                        console.log('========================================');
-                        qrImageLoadStartRef.current = true;
-                        qrImageLoadingRef.current = true;
-                        setQrImageError(false);
-                        setQrImageLoading(true);
-                        
-                        // Set timeout for image loading (30 seconds for real device - network can be very slow)
-                        if (qrImageTimeoutRef.current) {
-                          clearTimeout(qrImageTimeoutRef.current);
-                        }
-                        qrImageTimeoutRef.current = setTimeout(() => {
-                          console.log('========================================');
-                          console.log('⏱️ QR CODE IMAGE LOADING TIMEOUT (30s)');
-                          console.log('========================================');
-                          console.log('⏱️ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
-                          console.log('⏱️ Load start ref:', qrImageLoadStartRef.current);
-                          console.log('⏱️ Loading ref:', qrImageLoadingRef.current);
-                          console.log('⏱️ Retry count:', qrImageRetryCountRef.current);
-                          if (qrImageLoadStartRef.current && qrImageLoadingRef.current) {
-                            // Retry once if first attempt fails
-                            if (qrImageRetryCountRef.current === 0) {
-                              console.log('🔄 Retrying QR code image load...');
-                              qrImageRetryCountRef.current = 1;
-                              qrImageLoadStartRef.current = false;
-                              qrImageLoadingRef.current = false;
-                              setQrImageLoading(false);
-                              // Force re-render to retry loading
-                              setTimeout(() => {
-                                setQrImageError(false);
-                                setQrImageLoading(true);
-                              }, 100);
-                            } else {
-                              console.log('⚠️ Image still loading after timeout and retry - showing error');
-                              qrImageLoadStartRef.current = false;
-                              qrImageLoadingRef.current = false;
-                              setQrImageError(true);
-                              setQrImageLoading(false);
-                            }
-                          }
-                          qrImageTimeoutRef.current = null;
-                          console.log('========================================');
-                        }, 30000);
-                      }}
-                      onLoad={() => {
-                        console.log('========================================');
-                        console.log('✅ QR CODE IMAGE LOADED SUCCESSFULLY');
-                        console.log('========================================');
-                        console.log('✅ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
-                        console.log('✅ Retry count:', qrImageRetryCountRef.current);
-                        console.log('========================================');
-                        qrImageLoadStartRef.current = false;
-                        qrImageLoadingRef.current = false;
-                        qrImageRetryCountRef.current = 0; // Reset retry count on success
-                        if (qrImageTimeoutRef.current) {
-                          clearTimeout(qrImageTimeoutRef.current);
-                          qrImageTimeoutRef.current = null;
-                        }
-                        setQrImageLoading(false);
-                      }}
-                      onLoadEnd={() => {
-                        console.log('========================================');
-                        console.log('🏁 QR CODE IMAGE LOAD ENDED');
-                        console.log('========================================');
-                        console.log('🏁 Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
-                        console.log('🏁 Load start ref:', qrImageLoadStartRef.current);
-                        console.log('🏁 Loading ref:', qrImageLoadingRef.current);
-                        // If load ended but we're still in loading state, it might have failed
-                        if (qrImageLoadStartRef.current && qrImageLoadingRef.current) {
-                          // Give a small delay to see if onLoad or onError fires
-                          setTimeout(() => {
-                            if (qrImageLoadStartRef.current && qrImageLoadingRef.current) {
-                              console.log('⚠️ QR code image load ended but still in loading state - marking as error');
-                              qrImageLoadStartRef.current = false;
-                              qrImageLoadingRef.current = false;
-                              setQrImageError(true);
-                              setQrImageLoading(false);
-                            }
-                          }, 300);
-                        }
-                        if (qrImageTimeoutRef.current) {
-                          clearTimeout(qrImageTimeoutRef.current);
-                          qrImageTimeoutRef.current = null;
-                        }
-                        console.log('========================================');
-                      }}
-                    />
+                        }}
+                      />
+                      {qrImageLoading && (
+                        <View style={styles.qrLoadingOverlay}>
+                          <ActivityIndicator size="large" color={colors.primary} />
+                          <Text style={styles.qrLoadingText}>Loading QR code...</Text>
+                        </View>
+                      )}
+                    </>
                   ) : (
                     <>
                       <Icon name="grid" size={48} color={colors.text} />
@@ -1803,6 +1591,17 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     height: '100%',
   },
   qrLoadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  qrLoadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: colors.white,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
