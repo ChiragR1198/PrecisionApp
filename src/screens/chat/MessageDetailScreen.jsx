@@ -1,30 +1,33 @@
-import { useNavigation } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
-    useGetDelegateChatMessagesQuery,
-    useGetSponsorChatMessagesQuery,
-    useSendDelegateMessageMutation,
-    useSendSponsorMessageMutation,
+  api,
+  useGetDelegateChatMessagesQuery,
+  useGetSponsorChatMessagesQuery,
+  useSendDelegateMessageMutation,
+  useSendSponsorMessageMutation,
 } from '../../store/api';
-import { useAppSelector } from '../../store/hooks';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { websocketManager } from '../../utils/websocket';
 
 // Format date string to time (e.g., "2:30 PM")
 const formatMessageTime = (dateString) => {
@@ -57,6 +60,8 @@ export const MessageDetailScreen = () => {
   const initializedRef = useRef(false);
   const threadIdRef = useRef(null);
   const lastProcessedMessagesRef = useRef(null);
+  const flatListRef = useRef(null);
+  const previousMessagesLengthRef = useRef(0);
 
   const [sendDelegateMessage, { isLoading: delegateSending }] = useSendDelegateMessageMutation();
   const [sendSponsorMessage, { isLoading: sponsorSending }] = useSendSponsorMessageMutation();
@@ -101,6 +106,8 @@ export const MessageDetailScreen = () => {
     // Disable cache - always fetch fresh data
     keepUnusedDataFor: 0,
     refetchOnMountOrArgChange: true,
+    // No polling - WebSocket handles real-time updates
+    pollingInterval: 0,
   });
 
   const {
@@ -113,12 +120,128 @@ export const MessageDetailScreen = () => {
     // Disable cache - always fetch fresh data
     keepUnusedDataFor: 0,
     refetchOnMountOrArgChange: true,
+    // No polling - WebSocket handles real-time updates
+    pollingInterval: 0,
   });
 
   const messagesData = isDelegate ? delegateMessagesData : sponsorMessagesData;
   const isLoadingMessages = isDelegate ? isLoadingDelegateMessages : isLoadingSponsorMessages;
   const messagesError = isDelegate ? delegateMessagesError : sponsorMessagesError;
   const refetchMessages = isDelegate ? refetchDelegateMessages : refetchSponsorMessages;
+  const isFocused = useIsFocused();
+  const dispatch = useAppDispatch();
+
+  // Mark chat as read when screen comes into focus
+  // This ensures unread count is only cleared when user actually opens the chat
+  const hasMarkedAsRead = useRef(false);
+  const currentChatKey = useRef(null);
+  
+  useEffect(() => {
+    if (isFocused && toId && thread) {
+      // Use same format as MessagesScreen: userId_userType
+      const userId = String(toId);
+      const userType = thread.user_type || 'delegate';
+      const chatKey = `${userId}_${userType}`;
+      
+      // Mark as read only once per chat open (when chat changes or first time)
+      if (!hasMarkedAsRead.current || currentChatKey.current !== chatKey) {
+        console.log('💬 Chat detail screen opened - marking chat as read');
+        hasMarkedAsRead.current = true;
+        currentChatKey.current = chatKey;
+        
+        // Mark this chat as read in AsyncStorage
+        const markChatAsRead = async () => {
+          try {
+            console.log('💬 Marking chat as read:', {
+              toId,
+              userId,
+              userType,
+              threadUserType: thread.user_type,
+              chatKey,
+            });
+            
+            const stored = await AsyncStorage.getItem('read_chats');
+            const readChats = stored ? JSON.parse(stored) : {};
+            readChats[chatKey] = true;
+            await AsyncStorage.setItem('read_chats', JSON.stringify(readChats));
+            console.log('✅ Chat marked as read:', chatKey);
+            console.log('✅ All read chats:', readChats);
+          } catch (error) {
+            console.error('❌ Error marking chat as read:', error);
+          }
+        };
+        
+        markChatAsRead();
+        
+        // Initial refetch only once when chat is opened
+        if (refetchMessages) {
+          refetchMessages();
+        }
+        
+        // Invalidate messages list tag to trigger refetch in MessagesScreen (only once)
+        setTimeout(() => {
+          console.log('💬 Invalidating messages list to update unread count');
+          dispatch(api.util.invalidateTags(['Messages']));
+        }, 500);
+      }
+    } else {
+      // Reset flag when screen loses focus
+      hasMarkedAsRead.current = false;
+      currentChatKey.current = null;
+    }
+  }, [isFocused, toId, thread, refetchMessages, dispatch]);
+
+  // Setup WebSocket for real-time message updates in chat detail
+  useEffect(() => {
+    if (!isFocused || !toId || !user) return;
+
+    const userId = String(user.id || user.user_id || user.delegate_id || user.sponsor_id);
+    const userType = (user.login_type || user.user_type || '').toLowerCase();
+
+    if (!userId || !userType) {
+      console.warn('⚠️ Missing userId or userType for WebSocket connection');
+      return;
+    }
+
+    // Connect WebSocket if not already connected
+    websocketManager.connect(userId, userType);
+
+    // Listen for new messages in this chat
+    const unsubscribeNewMessage = websocketManager.on('new_message', (data) => {
+      console.log('💬 New message in chat via WebSocket:', data);
+      // Check if message is for current chat
+      const messageToId = String(data.to_id || data.toId || '');
+      const messageFromId = String(data.from_id || data.fromId || '');
+      const currentToId = String(toId);
+      
+      if (messageToId === currentToId || messageFromId === currentToId) {
+        // Refetch messages for this chat only when WebSocket message arrives
+        if (refetchMessages) {
+          refetchMessages();
+        }
+      }
+    });
+
+    // Listen for message updates
+    const unsubscribeMessageUpdate = websocketManager.on('message_update', (data) => {
+      console.log('💬 Message update via WebSocket:', data);
+      const messageToId = String(data.to_id || data.toId || '');
+      const messageFromId = String(data.from_id || data.fromId || '');
+      const currentToId = String(toId);
+      
+      if (data.message_id || messageToId === currentToId || messageFromId === currentToId) {
+        if (refetchMessages) {
+          refetchMessages();
+        }
+      }
+    });
+
+    // Cleanup
+    return () => {
+      unsubscribeNewMessage();
+      unsubscribeMessageUpdate();
+    };
+  }, [isFocused, toId, user, refetchMessages]);
 
   // Initialize messages from API data
   useEffect(() => {
@@ -140,47 +263,164 @@ export const MessageDetailScreen = () => {
       threadIdRef.current = currentThreadId;
     }
     
-    // If API data is available and we haven't processed it yet
+    // Log API response for debugging
+    if (messagesData) {
+      console.log('💬 MessageDetailScreen: API Response:', JSON.stringify(messagesData, null, 2));
+    }
+    
+    // Handle different response formats
+    let messagesArray = [];
     if (messagesData?.success && Array.isArray(messagesData.data)) {
-      // Create a stable key using count and first/last message IDs
-      const dataLength = messagesData.data.length;
-      const firstId = dataLength > 0 ? String(messagesData.data[0].id) : '';
-      const lastId = dataLength > 0 ? String(messagesData.data[dataLength - 1].id) : '';
-      const dataKey = `${currentThreadId}-${dataLength}-${firstId}-${lastId}`;
+      messagesArray = messagesData.data;
+    } else if (Array.isArray(messagesData?.data)) {
+      messagesArray = messagesData.data;
+    } else if (Array.isArray(messagesData)) {
+      messagesArray = messagesData;
+    } else if (messagesData?.data && typeof messagesData.data === 'object') {
+      // If data is an object, try to extract array from it
+      const dataObj = messagesData.data;
+      if (Array.isArray(dataObj.messages)) {
+        messagesArray = dataObj.messages;
+      } else if (Array.isArray(dataObj.data)) {
+        messagesArray = dataObj.data;
+      }
+    }
+    
+    // Always process messages when API data is available
+    if (messagesData && !isLoadingMessages) {
+      const dataLength = messagesArray.length;
       
-      // Only process if this is new data
-      if (lastProcessedMessagesRef.current !== dataKey) {
+      // Create a more accurate key using last message ID and timestamp to detect new messages
+      const lastMessage = dataLength > 0 ? messagesArray[dataLength - 1] : null;
+      const lastMessageId = lastMessage ? String(lastMessage.id || '') : '';
+      const lastMessageTime = lastMessage ? (lastMessage.date || lastMessage.created_at || lastMessage.timestamp || '') : '';
+      const dataKey = `${currentThreadId}-${dataLength}-${lastMessageId}-${lastMessageTime}`;
+      
+      // Always update if data changed (new messages detected by different key)
+      if (lastProcessedMessagesRef.current !== dataKey || !initializedRef.current) {
         if (dataLength > 0) {
+          console.log(`💬 MessageDetailScreen: Processing ${dataLength} messages (Key: ${dataKey})`);
           // Map API messages to local format
-          const mappedMessages = messagesData.data.map((msg) => {
-            // Determine sender: prioritize is_send field, fallback to from_id comparison
+          // Log first message to see API structure
+          if (messagesArray.length > 0) {
+            console.log('💬 ========== API RESPONSE DEBUG ==========');
+            console.log('💬 First message from API:', JSON.stringify(messagesArray[0], null, 2));
+            console.log('💬 Current User ID:', currentUserId, typeof currentUserId);
+            console.log('💬 Current User Object:', JSON.stringify(user, null, 2));
+            console.log('💬 Total messages:', messagesArray.length);
+            console.log('💬 =========================================');
+          }
+          
+          const mappedMessages = messagesArray.map((msg, index) => {
+            // Determine sender: check all possible fields
             let sender = 'them'; // default to 'them'
-            if (msg.is_send === '1' || msg.is_send === 1) {
-              sender = 'me';
-            } else if (msg.is_send === '0' || msg.is_send === 0) {
-              sender = 'them';
-            } else if (currentUserId && msg.from_id) {
-              // Fallback: compare from_id with current user id
-              sender = String(msg.from_id) === String(currentUserId) ? 'me' : 'them';
+            let detectionMethod = 'default';
+            
+            // Method 1: Check is_send field (most common)
+            if (msg.is_send !== undefined && msg.is_send !== null) {
+              const isSendValue = String(msg.is_send).toLowerCase();
+              if (isSendValue === '1' || isSendValue === 'true' || msg.is_send === 1 || msg.is_send === true) {
+                sender = 'me';
+                detectionMethod = 'is_send=1';
+              } else if (isSendValue === '0' || isSendValue === 'false' || msg.is_send === 0 || msg.is_send === false) {
+                sender = 'them';
+                detectionMethod = 'is_send=0';
+              }
+            }
+            // Method 2: Check from_id vs current user id (try both string and number comparison)
+            if (sender === 'them' && currentUserId && (msg.from_id !== undefined && msg.from_id !== null)) {
+              const fromIdStr = String(msg.from_id).trim();
+              const fromIdNum = Number(msg.from_id);
+              const currentUserIdStr = String(currentUserId).trim();
+              const currentUserIdNum = Number(currentUserId);
+              
+              // Try multiple comparison methods
+              if (fromIdStr === currentUserIdStr || 
+                  fromIdNum === currentUserIdNum || 
+                  String(fromIdNum) === String(currentUserIdNum) ||
+                  String(fromIdStr) === String(currentUserIdStr)) {
+                sender = 'me';
+                detectionMethod = 'from_id match';
+              } else {
+                detectionMethod = `from_id mismatch (${fromIdStr} vs ${currentUserIdStr})`;
+              }
+            }
+            // Method 3: Check from_user_id (alternative field name) - only if still 'them'
+            if (sender === 'them' && currentUserId && msg.from_user_id) {
+              const fromUserIdStr = String(msg.from_user_id).trim();
+              const currentUserIdStr = String(currentUserId).trim();
+              if (fromUserIdStr === currentUserIdStr || Number(msg.from_user_id) === Number(currentUserId)) {
+                sender = 'me';
+                detectionMethod = 'from_user_id match';
+              }
+            }
+            // Method 4: Check user_id vs current user id - only if still 'them'
+            if (sender === 'them' && currentUserId && msg.user_id) {
+              const userIdStr = String(msg.user_id).trim();
+              const currentUserIdStr = String(currentUserId).trim();
+              if (userIdStr === currentUserIdStr || Number(msg.user_id) === Number(currentUserId)) {
+                sender = 'me';
+                detectionMethod = 'user_id match';
+              }
+            }
+            // Method 5: Check to_id (if message was sent to current user, it's from them) - only if still 'them'
+            if (sender === 'them' && currentUserId && msg.to_id) {
+              const toIdStr = String(msg.to_id).trim();
+              const currentUserIdStr = String(currentUserId).trim();
+              if (toIdStr === currentUserIdStr || Number(msg.to_id) === Number(currentUserId)) {
+                // Message was sent TO current user, so it's FROM them
+                sender = 'them';
+                detectionMethod = 'to_id match (received)';
+              } else {
+                // Message was sent to someone else, so it's FROM me
+                sender = 'me';
+                detectionMethod = 'to_id mismatch (sent)';
+              }
+            }
+            // Method 6: Check sender_id - only if still 'them'
+            if (sender === 'them' && currentUserId && msg.sender_id) {
+              const senderIdStr = String(msg.sender_id).trim();
+              const currentUserIdStr = String(currentUserId).trim();
+              if (senderIdStr === currentUserIdStr || Number(msg.sender_id) === Number(currentUserId)) {
+                sender = 'me';
+                detectionMethod = 'sender_id match';
+              }
+            }
+            
+            // Always log for debugging (first 5 messages to see pattern)
+            if (index < 5) {
+              console.log(`💬 [${index + 1}] Sender: ${sender} | Method: ${detectionMethod}`, {
+                is_send: msg.is_send,
+                from_id: msg.from_id,
+                currentUserId: currentUserId,
+                match: msg.from_id && currentUserId ? `${String(msg.from_id)} === ${String(currentUserId)} = ${String(msg.from_id) === String(currentUserId)}` : 'N/A',
+                text: (msg.message || msg.text || '').substring(0, 40),
+              });
             }
             
             return {
-              id: String(msg.id),
+              id: String(msg.id || msg.message_id || `msg-${index}-${Date.now()}`),
               sender: sender,
-              text: msg.message || '',
-              time: formatMessageTime(msg.date),
+              text: msg.message || msg.text || msg.content || '',
+              time: formatMessageTime(msg.date || msg.created_at || msg.timestamp || msg.time),
             };
           });
           
+          console.log(`💬 MessageDetailScreen: Setting ${mappedMessages.length} messages`);
           setMessages(mappedMessages);
           lastProcessedMessagesRef.current = dataKey;
           initializedRef.current = true;
         } else {
-          // Empty array
-          setMessages([]);
-          lastProcessedMessagesRef.current = dataKey;
-          initializedRef.current = true;
+          // Empty array - only set if we haven't initialized yet
+          if (!initializedRef.current) {
+            console.log('💬 MessageDetailScreen: No messages found');
+            setMessages([]);
+            lastProcessedMessagesRef.current = dataKey;
+            initializedRef.current = true;
+          }
         }
+      } else {
+        console.log('💬 MessageDetailScreen: No changes detected (same dataKey)');
       }
     } else if (!isLoadingMessages && !initializedRef.current) {
       // No API data yet, use fallback from thread
@@ -207,7 +447,7 @@ export const MessageDetailScreen = () => {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toId, isLoadingMessages, currentUserId]);
+  }, [toId, isLoadingMessages, currentUserId, messagesData]);
 
   // Handle send message
   const handleSendMessage = useCallback(async () => {
@@ -268,18 +508,25 @@ export const MessageDetailScreen = () => {
         : await sendSponsorMessage(requestData).unwrap();
 
       if (result?.success && result?.data) {
+        console.log('✅ Message sent successfully:', result.data);
         // Add sent message to local state optimistically
         const sentMessage = {
-          id: String(result.data.id),
+          id: String(result.data.id || Date.now()),
           sender: 'me',
-          text: result.data.message,
-          time: formatMessageTime(result.data.date),
+          text: result.data.message || messageText,
+          time: formatMessageTime(result.data.date || new Date().toISOString()),
         };
         setMessages((prev) => [...prev, sentMessage]);
         setInputValue('');
-        // Refetch messages to get updated conversation
-        refetchMessages();
+        // Refetch messages immediately to get updated conversation
+        setTimeout(() => {
+          if (refetchMessages) {
+            console.log('🔄 Refetching messages after send...');
+            refetchMessages();
+          }
+        }, 500);
       } else {
+        console.error('❌ Failed to send message:', result);
         Alert.alert('Error', result?.message || 'Failed to send message');
       }
     } catch (error) {
@@ -311,18 +558,22 @@ export const MessageDetailScreen = () => {
 
   const renderMessage = ({ item }) => {
     const isMe = item.sender === 'me';
+    console.log(`💬 Rendering message: sender="${item.sender}", isMe=${isMe}, text="${item.text.substring(0, 20)}"`);
+    
     return (
-      <View style={[styles.messageRow, isMe && styles.messageRowMe]}>
-        <View
-          style={[
-            styles.bubble,
-            isMe ? styles.bubbleMe : styles.bubbleThem,
-            { maxWidth: SIZES.bubbleMaxWidth },
-          ]}
-        >
-          <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.text}</Text>
+      <View style={[styles.messageRow, isMe ? styles.messageRowMe : styles.messageRowThem]}>
+        <View style={styles.messageContainer}>
+          <View
+            style={[
+              styles.bubble,
+              isMe ? styles.bubbleMe : styles.bubbleThem,
+              { maxWidth: SIZES.bubbleMaxWidth },
+            ]}
+          >
+            <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.text}</Text>
+          </View>
+          <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>{item.time}</Text>
         </View>
-        <Text style={styles.messageTime}>{item.time}</Text>
       </View>
     );
   };
@@ -398,13 +649,22 @@ export const MessageDetailScreen = () => {
           </View>
         ) : messages.length > 0 ? (
           <FlatList
+            ref={flatListRef}
             data={messages}
             keyExtractor={(item) => String(item.id)}
             renderItem={renderMessage}
-            contentContainerStyle={[styles.messagesContent, { paddingHorizontal: SIZES.paddingHorizontal }]}
+            contentContainerStyle={styles.messagesContent}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="interactive"
+            onContentSizeChange={() => {
+              // Auto-scroll when content size changes (new messages)
+              if (flatListRef.current && messages.length > previousMessagesLengthRef.current) {
+                setTimeout(() => {
+                  flatListRef.current?.scrollToEnd({ animated: true });
+                }, 100);
+              }
+            }}
           />
         ) : (
           <View style={styles.emptyContainer}>
@@ -493,11 +753,17 @@ const createStyles = (SIZES) =>
     },
     messageRow: {
       marginBottom: 16,
-      alignSelf: 'flex-start',
+      width: '100%',
+      paddingHorizontal: SIZES.paddingHorizontal,
+    },
+    messageRowThem: {
+      alignItems: 'flex-start',
     },
     messageRowMe: {
-      alignSelf: 'flex-end',
       alignItems: 'flex-end',
+    },
+    messageContainer: {
+      maxWidth: '80%',
     },
     bubble: {
       paddingHorizontal: 16,
@@ -525,6 +791,10 @@ const createStyles = (SIZES) =>
       marginTop: 4,
       fontSize: 11,
       color: colors.textMuted,
+      alignSelf: 'flex-start',
+    },
+    messageTimeMe: {
+      alignSelf: 'flex-end',
     },
     inputBar: {
       flexDirection: 'row',

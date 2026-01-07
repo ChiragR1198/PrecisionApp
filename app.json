@@ -58,6 +58,14 @@
       ],
       "expo-web-browser",
       [
+        "expo-notifications",
+        {
+          "icon": "./src/assets/images/app-icon.png",
+          "color": "#2563EB",
+          "sounds": []
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "android": {

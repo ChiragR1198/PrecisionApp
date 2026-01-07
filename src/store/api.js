@@ -749,6 +749,16 @@ export const api = createApi({
       invalidatesTags: ['Contacts'],
     }),
 
+    // 20. Delete Contact (Delegate)
+    deleteDelegateContact: builder.mutation({
+      query: ({ contact_id }) => ({
+        url: API_ENDPOINTS.DELEGATE_DELETE_CONTACT,
+        method: 'POST',
+        body: { contact_id },
+      }),
+      invalidatesTags: ['Contacts'],
+    }),
+
     // 20. Get Messages with specific user (Delegate)
     getDelegateChatMessages: builder.query({
       query: (toId) => {
@@ -948,6 +958,16 @@ export const api = createApi({
       // Don't cache - always fetch fresh data
       keepUnusedDataFor: 0,
     }),
+
+    // 14. Delete Contact (Sponsor)
+    deleteSponsorContact: builder.mutation({
+      query: ({ contact_id }) => ({
+        url: API_ENDPOINTS.SPONSOR_DELETE_CONTACT,
+        method: 'POST',
+        body: { contact_id },
+      }),
+      invalidatesTags: ['Contacts'],
+    }),
   }),
 });
 
@@ -981,6 +1001,7 @@ export const {
   useUpdateDelegateProfileMutation,
   useGetDelegateContactsQuery,
   useSaveDelegateContactMutation,
+  useDeleteDelegateContactMutation,
   useSendDelegateMessageMutation,
   useGetDelegateMessagesQuery,
   useGetDelegateChatMessagesQuery,
@@ -1000,4 +1021,5 @@ export const {
   useSendSponsorMessageMutation,
   useGetSponsorMessagesQuery,
   useGetSponsorChatMessagesQuery,
+  useDeleteSponsorContactMutation,
 } = api;

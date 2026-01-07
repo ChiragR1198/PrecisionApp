@@ -150,20 +150,23 @@ export const AttendeesScreen = () => {
   
   // Fetch meeting requests to check which attendees already have requests
   const { 
-    data: delegateMeetingRequestsData 
+    data: delegateMeetingRequestsData,
+    refetch: refetchDelegateMeetingRequests
   } = useGetDelegateMeetingRequestsQuery(undefined, {
     skip: !isAuthenticated || !user || !isDelegate,
     refetchOnMountOrArgChange: true,
   });
   
   const { 
-    data: sponsorMeetingRequestsData 
+    data: sponsorMeetingRequestsData,
+    refetch: refetchSponsorMeetingRequests
   } = useGetSponsorMeetingRequestsQuery(undefined, {
     skip: !isAuthenticated || !user || isDelegate,
     refetchOnMountOrArgChange: true,
   });
   
   const meetingRequestsData = isDelegate ? delegateMeetingRequestsData : sponsorMeetingRequestsData;
+  const refetchMeetingRequests = isDelegate ? refetchDelegateMeetingRequests : refetchSponsorMeetingRequests;
   
   // --- Begin requestedAttendeeIds block ---
   // Extract requested attendee IDs from meeting requests
@@ -197,6 +200,42 @@ export const AttendeesScreen = () => {
     return new Set(ids);
   }, [meetingRequestsData, isDelegate]);
   // --- End requestedAttendeeIds block ---
+  
+  // Map attendee IDs to their priority values from meeting requests
+  const attendeePriorityMap = useMemo(() => {
+    if (!meetingRequestsData) return new Map();
+    
+    // Handle different response formats
+    let requests = [];
+    if (Array.isArray(meetingRequestsData?.data)) {
+      requests = meetingRequestsData.data;
+    } else if (Array.isArray(meetingRequestsData)) {
+      requests = meetingRequestsData;
+    } else if (Array.isArray(meetingRequestsData?.data?.data)) {
+      requests = meetingRequestsData.data.data;
+    }
+    
+    const priorityMap = new Map();
+    requests.forEach((request) => {
+      let attendeeId;
+      if (isDelegate) {
+        attendeeId = request?.sponsor_id || request?.sponsorId;
+      } else {
+        attendeeId = request?.delegate_id || request?.delegateId;
+      }
+      
+      if (attendeeId != null) {
+        const priority = request?.priority;
+        if (priority != null) {
+          // Convert number priority (1, 2) to string format ('1st', '2nd')
+          const priorityText = priority === 1 ? '1st' : priority === 2 ? '2nd' : '1st';
+          priorityMap.set(Number(attendeeId), priorityText);
+        }
+      }
+    });
+    
+    return priorityMap;
+  }, [meetingRequestsData, isDelegate]);
   
   // Fetch sponsor services for filter
   const eventId = user?.event_id || user?.events?.[0]?.id || 27;
@@ -237,6 +276,8 @@ export const AttendeesScreen = () => {
   const [selectedAttendee, setSelectedAttendee] = useState(null);
   const [selectedPriority, setSelectedPriority] = useState('1st');
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [isSendingRequest, setIsSendingRequest] = useState(false);
+  const [isRequestSuccess, setIsRequestSuccess] = useState(false);
   const modalAnim = useRef(new Animated.Value(0)).current;
   
 
@@ -403,13 +444,20 @@ export const AttendeesScreen = () => {
   }, [searchQueryDebounced, sortedData]);
 
   const openModal = useCallback((attendee) => {
-    setSelectedPriority('1st');
+    // Get priority from existing request or default to '1st'
+    const attendeeId = attendee?.id ? Number(attendee.id) : null;
+    const existingPriority = attendeeId ? attendeePriorityMap.get(attendeeId) : null;
+    setSelectedPriority(existingPriority || '1st');
     setSelectedAttendee(attendee);
+    setIsSendingRequest(false);
+    setIsRequestSuccess(false);
     setIsModalVisible(true);
-  }, []);
+  }, [attendeePriorityMap]);
 
   const closeModal = useCallback(() => {
     setIsModalVisible(false);
+    setIsSendingRequest(false);
+    setIsRequestSuccess(false);
   }, []);
 
   useEffect(() => {
@@ -442,6 +490,10 @@ export const AttendeesScreen = () => {
         return;
       }
 
+      // Show loader
+      setIsSendingRequest(true);
+      setIsRequestSuccess(false);
+
       const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
       const priorityValue = priorityMap[selectedPriority] || 1;
 
@@ -471,10 +523,18 @@ export const AttendeesScreen = () => {
 
       await createMeetingRequest(requestData).unwrap();
 
-      Alert.alert('Success', 'Meeting request sent successfully');
-      closeModal();
+      // Refetch meeting requests to update priority map
+      if (refetchMeetingRequests) {
+        refetchMeetingRequests();
+      }
+
+      // Show success message
+      setIsSendingRequest(false);
+      setIsRequestSuccess(true);
     } catch (e) {
       console.error('Error sending meeting request:', e);
+      setIsSendingRequest(false);
+      setIsRequestSuccess(false);
       Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
     }
   };
@@ -799,57 +859,87 @@ export const AttendeesScreen = () => {
 
             {selectedAttendee && (
               <>
-                <View style={styles.modalContactRow}>
-                  <View style={styles.modalAvatar}>
-                    {selectedAttendee.image ? (
-                      <Image 
-                        source={{ uri: selectedAttendee.image }} 
-                        style={styles.avatarImage} 
-                      />
-                    ) : (
-                      <View style={[styles.avatarImage, { backgroundColor: colors.gray200, alignItems: 'center', justifyContent: 'center' }]}>
-                        <UserIcon size={24} color={colors.textMuted} />
-                      </View>
-                    )}
-                  </View>
-                  <View style={styles.modalContactInfo}>
-                    <Text style={styles.modalContactName}>
-                      {isDelegate
-                        ? selectedAttendee.name
-                        : (selectedAttendee.full_name || selectedAttendee.name)}
+                {isRequestSuccess ? (
+                  // Success State
+                  <View style={styles.successContainer}>
+                    <View style={styles.successIconContainer}>
+                      <Icon name="check-circle" size={64} color={colors.primary} />
+                    </View>
+                    <Text style={styles.successTitle}>Request Sent Successfully!</Text>
+                    <Text style={styles.successMessage}>
+                      Your meeting request has been sent to {isDelegate ? selectedAttendee.name : (selectedAttendee.full_name || selectedAttendee.name)}.
                     </Text>
-                    <Text style={styles.modalContactCompany}>{selectedAttendee.company}</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.priorityLabel}>Select Priority</Text>
-                <View style={styles.priorityRow}>
-                  {['1st', '2nd'].map((level) => {
-                    const isActive = selectedPriority === level;
-                    return (
+                    <View style={styles.successButtonContainer}>
                       <TouchableOpacity
-                        key={level}
-                        style={[styles.priorityChip, isActive && styles.priorityChipActive]}
-                        onPress={() => setSelectedPriority(level)}
-                        activeOpacity={0.85}
+                        style={[styles.modalButton, styles.primaryButton, styles.successButton]}
+                        onPress={closeModal}
                       >
-                        <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>{level}</Text>
+                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Close</Text>
                       </TouchableOpacity>
-                    );
-                  })}
-                </View>
-                <View style={styles.separator3}/>
-                <View style={styles.modalButtonRow}>
-                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeModal}>
-                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.modalButton, styles.primaryButton]}
-                    onPress={handleSendMeetingRequest}
-                  >
-                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
-                  </TouchableOpacity>
-                </View>
+                    </View>
+                  </View>
+                ) : isSendingRequest ? (
+                  // Loading State
+                  <View style={styles.loadingContainerModal}>
+                    <ActivityIndicator size="large" color={colors.primary} />
+                    <Text style={styles.loadingTextModal}>Sending request...</Text>
+                  </View>
+                ) : (
+                  // Normal Form State
+                  <>
+                    <View style={styles.modalContactRow}>
+                      <View style={styles.modalAvatar}>
+                        {selectedAttendee.image ? (
+                          <Image 
+                            source={{ uri: selectedAttendee.image }} 
+                            style={styles.avatarImage} 
+                          />
+                        ) : (
+                          <View style={[styles.avatarImage, { backgroundColor: colors.gray200, alignItems: 'center', justifyContent: 'center' }]}>
+                            <UserIcon size={24} color={colors.textMuted} />
+                          </View>
+                        )}
+                      </View>
+                      <View style={styles.modalContactInfo}>
+                        <Text style={styles.modalContactName}>
+                          {isDelegate
+                            ? selectedAttendee.name
+                            : (selectedAttendee.full_name || selectedAttendee.name)}
+                        </Text>
+                        <Text style={styles.modalContactCompany}>{selectedAttendee.company}</Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.priorityLabel}>Select Priority</Text>
+                    <View style={styles.priorityRow}>
+                      {['1st', '2nd'].map((level) => {
+                        const isActive = selectedPriority === level;
+                        return (
+                          <TouchableOpacity
+                            key={level}
+                            style={[styles.priorityChip, isActive && styles.priorityChipActive]}
+                            onPress={() => setSelectedPriority(level)}
+                            activeOpacity={0.85}
+                          >
+                            <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>{level}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                    <View style={styles.separator3}/>
+                    <View style={styles.modalButtonRow}>
+                      <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeModal}>
+                        <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.modalButton, styles.primaryButton]}
+                        onPress={handleSendMeetingRequest}
+                      >
+                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
               </>
             )}
           </Animated.View>
@@ -1303,6 +1393,46 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   primaryButtonText: {
     color: colors.white,
+  },
+  successContainer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  successIconContainer: {
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  successMessage: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 16,
+    lineHeight: 20,
+  },
+  successButtonContainer: {
+    width: '100%',
+    marginTop: 8,
+  },
+  successButton: {
+    flex: 0,
+  },
+  loadingContainerModal: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+  },
+  loadingTextModal: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+    fontWeight: '600',
   },
 });
 

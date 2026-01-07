@@ -1,16 +1,17 @@
-import { useNavigation } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    FlatList,
-    Image,
-    Platform,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -18,6 +19,8 @@ import { SearchBar } from '../../components/common/SearchBar';
 import { colors } from '../../constants/theme';
 import { useGetDelegateMessagesQuery, useGetSponsorMessagesQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { requestNotificationPermissions, setupNotificationListener, showMessageNotification } from '../../utils/notifications';
+import { websocketManager } from '../../utils/websocket';
 
 // Format date string to relative time (e.g., "2:30 PM", "Yesterday", "Monday")
 const formatMessageTime = (dateString) => {
@@ -66,24 +69,167 @@ export const MessagesScreen = () => {
   const isDelegate = loginType === 'delegate';
   const isSponsor = loginType === 'sponsor';
   
-  // Fetch messages based on user type - no cache, always fresh data
-  const { data: delegateMessagesData, isLoading: delegateLoading, error: delegateError } = useGetDelegateMessagesQuery(undefined, {
+  // Fetch messages based on user type - WebSocket is used for real-time updates, so no polling needed
+  const { 
+    data: delegateMessagesData, 
+    isLoading: delegateLoading, 
+    error: delegateError,
+    refetch: refetchDelegateMessages,
+  } = useGetDelegateMessagesQuery(undefined, {
     skip: !isDelegate,
     refetchOnMountOrArgChange: true,
     // Disable cache - always fetch fresh data
     keepUnusedDataFor: 0,
+    // No polling - WebSocket handles real-time updates
+    pollingInterval: 0,
   });
   
-  const { data: sponsorMessagesData, isLoading: sponsorLoading, error: sponsorError } = useGetSponsorMessagesQuery(undefined, {
+  const { 
+    data: sponsorMessagesData, 
+    isLoading: sponsorLoading, 
+    error: sponsorError,
+    refetch: refetchSponsorMessages,
+  } = useGetSponsorMessagesQuery(undefined, {
     skip: !isSponsor,
     refetchOnMountOrArgChange: true,
     // Disable cache - always fetch fresh data
     keepUnusedDataFor: 0,
+    // No polling - WebSocket handles real-time updates
+    pollingInterval: 0,
   });
   
   const isLoading = isDelegate ? delegateLoading : sponsorLoading;
   const error = isDelegate ? delegateError : sponsorError;
   const messagesData = isDelegate ? delegateMessagesData : sponsorMessagesData;
+  const refetchMessages = isDelegate ? refetchDelegateMessages : refetchSponsorMessages;
+  const isFocused = useIsFocused();
+  const previousMessagesRef = useRef([]);
+  const [readChats, setReadChats] = useState({}); // Track which chats have been opened
+
+  // Request notification permissions on mount
+  useEffect(() => {
+    requestNotificationPermissions();
+  }, []);
+
+  // Track previous messages count for notifications
+  useEffect(() => {
+    if (messagesData && Array.isArray(messagesData?.data)) {
+      const currentMessages = messagesData.data;
+      const previousMessages = previousMessagesRef.current;
+      
+      // Check for new messages (compare by message count or last message ID)
+      if (previousMessages.length > 0 && currentMessages.length > 0) {
+        currentMessages.forEach((currentThread) => {
+          const previousThread = previousMessages.find(
+            (p) => String(p.user_id || p.id) === String(currentThread.user_id || currentThread.id)
+          );
+          
+          // If thread has new unread messages and we're not on that screen
+          if (previousThread && currentThread.unread_count > previousThread.unread_count) {
+            const senderName = currentThread.user_name || currentThread.name || 'Someone';
+            const messageText = currentThread.last_message || currentThread.message || 'New message';
+            
+            // Show notification for new message
+            showMessageNotification(
+              senderName,
+              messageText,
+              {
+                user_id: currentThread.user_id || currentThread.id,
+                user_type: currentThread.user_type || 'delegate',
+              }
+            );
+          }
+        });
+      }
+      
+      previousMessagesRef.current = currentMessages;
+    }
+  }, [messagesData]);
+
+  // Setup notification listener
+  useEffect(() => {
+    const cleanup = setupNotificationListener((notification) => {
+      // When notification is tapped, navigate to messages
+      console.log('📬 Notification received:', notification);
+      // You can add navigation logic here if needed
+    });
+    
+    return cleanup;
+  }, []);
+
+  // Load read chats from AsyncStorage - reload every time screen comes into focus
+  useEffect(() => {
+    const loadReadChats = async () => {
+      try {
+        const stored = await AsyncStorage.getItem('read_chats');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setReadChats(parsed);
+          console.log('📖 Loaded read chats from storage:', parsed);
+          console.log('📖 Read chats keys:', Object.keys(parsed));
+        } else {
+          console.log('📖 No read chats found in storage');
+          setReadChats({});
+        }
+      } catch (error) {
+        console.error('❌ Error loading read chats:', error);
+        setReadChats({});
+      }
+    };
+    
+    // Load on mount and every time screen comes into focus
+    loadReadChats();
+  }, [isFocused]);
+
+  // Setup WebSocket for real-time message updates
+  const hasInitialRefetch = useRef(false);
+  
+  useEffect(() => {
+    if (!isFocused || !user) return;
+
+    const userId = String(user.id || user.user_id || user.delegate_id || user.sponsor_id);
+    const userType = (user.login_type || user.user_type || '').toLowerCase();
+
+    if (!userId || !userType) {
+      console.warn('⚠️ Missing userId or userType for WebSocket connection');
+      return;
+    }
+
+    // Connect WebSocket when screen is focused
+    websocketManager.connect(userId, userType);
+
+    // Initial refetch only once when screen is first focused
+    if (!hasInitialRefetch.current && refetchMessages) {
+      hasInitialRefetch.current = true;
+      refetchMessages();
+    }
+
+    // Listen for new messages via WebSocket
+    const unsubscribeNewMessage = websocketManager.on('new_message', (data) => {
+      console.log('💬 New message received via WebSocket:', data);
+      // Refetch only when new message arrives via WebSocket
+      if (refetchMessages) {
+        refetchMessages();
+      }
+    });
+
+    // Listen for message list updates
+    const unsubscribeMessageUpdate = websocketManager.on('message_update', (data) => {
+      console.log('💬 Message list update via WebSocket:', data);
+      if (refetchMessages) {
+        refetchMessages();
+      }
+    });
+
+    // Cleanup on unmount or when screen loses focus
+    return () => {
+      unsubscribeNewMessage();
+      unsubscribeMessageUpdate();
+      // Reset initial refetch flag when screen loses focus
+      hasInitialRefetch.current = false;
+      // Don't disconnect WebSocket here - keep it connected for other screens
+    };
+  }, [isFocused, user, refetchMessages]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -115,22 +261,72 @@ export const MessagesScreen = () => {
   // Map API messages to chat thread format
   const chatThreads = useMemo(() => {
     // Only use API data - no static fallback
-    if (!messagesData) return [];
+    if (!messagesData) {
+      console.log('📭 MessagesScreen: No messagesData available');
+      return [];
+    }
     
-    const list = Array.isArray(messagesData?.data) ? messagesData.data : [];
-    return list.map((item) => {
-      const userId = String(item.user_id || item.id || '');
-      const name = item.user_name || item.name || 'Unknown';
-      const avatar = item.user_image || item.image || null;
-      const unreadCount = item.unread_count || item.unreadCount || 0;
-      const lastMessage = item.last_message || item.message || '';
-      const lastMessageDate = item.last_message_date || item.last_message_date || item.date || '';
+    // Log API response for debugging
+    console.log('📭 MessagesScreen: API Response:', JSON.stringify(messagesData, null, 2));
+    
+    // Handle different response formats
+    let list = [];
+    if (Array.isArray(messagesData?.data)) {
+      list = messagesData.data;
+    } else if (Array.isArray(messagesData)) {
+      list = messagesData;
+    } else if (messagesData?.data && typeof messagesData.data === 'object') {
+      // If data is an object, try to extract array from it
+      const dataObj = messagesData.data;
+      if (Array.isArray(dataObj.messages)) {
+        list = dataObj.messages;
+      } else if (Array.isArray(dataObj.data)) {
+        list = dataObj.data;
+      }
+    }
+    
+    console.log('📭 MessagesScreen: Processed list length:', list.length);
+    
+    return list.map((item, index) => {
+      const userId = String(item.user_id || item.id || item.delegate_id || item.sponsor_id || `unknown-${index}`);
+      const name = item.user_name || item.name || item.full_name || item.delegate_name || item.sponsor_name || 'Unknown';
+      const avatar = item.user_image || item.image || item.avatar || null;
+      const apiUnreadCount = item.unread_count || item.unreadCount || 0;
+      
+      // Determine user_type - important for sending messages
+      const userType = item.user_type || (item.delegate_id ? 'delegate' : item.sponsor_id ? 'sponsor' : 'delegate');
+      
+      // Check if this chat has been opened (read) by user
+      // Only show unread count if chat has NOT been opened yet
+      // Ensure userId is string to match MessageDetailScreen format
+      const chatKey = `${String(userId)}_${userType}`;
+      const isChatRead = readChats[chatKey] === true;
+      
+      // If chat was previously read, show 0 unread count
+      // Only show API unread count if chat has never been opened
+      const unreadCount = isChatRead ? 0 : apiUnreadCount;
+      
+      const lastMessage = item.last_message || item.message || item.lastMessage || '';
+      const lastMessageDate = item.last_message_date || item.last_message_date || item.date || item.created_at || '';
       const time = formatMessageTime(lastMessageDate);
+      
+      // Debug logging for all chats with unread messages or if read
+      if (apiUnreadCount > 0 || isChatRead) {
+        console.log(`📖 Chat: ${name} (${chatKey}):`, {
+          userId: String(userId),
+          userType,
+          chatKey,
+          isChatRead,
+          apiUnreadCount,
+          displayUnreadCount: unreadCount,
+          readChatsKeys: Object.keys(readChats),
+        });
+      }
       
       return {
         id: userId,
-        user_id: item.user_id || item.id, // Keep original user_id for API calls
-        user_type: item.user_type || 'delegate', // Keep user_type for determining to_type
+        user_id: item.user_id || item.id || item.delegate_id || item.sponsor_id, // Keep original user_id for API calls
+        user_type: userType, // Keep user_type for determining to_type
         name,
         message: lastMessage,
         time,
@@ -140,7 +336,7 @@ export const MessagesScreen = () => {
         messages: [], // Will be loaded in detail screen
       };
     });
-  }, [messagesData]);
+  }, [messagesData, readChats]);
 
   const filteredChats = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -231,6 +427,12 @@ export const MessagesScreen = () => {
             <Text style={styles.errorText}>
               {error?.data?.message || error?.message || 'Failed to load messages'}
             </Text>
+            <TouchableOpacity
+              style={styles.retryButton}
+              onPress={() => refetchMessages()}
+            >
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </TouchableOpacity>
           </View>
         ) : filteredChats.length > 0 ? (
           <FlatList
@@ -384,6 +586,18 @@ const createStyles = (SIZES) => StyleSheet.create({
     color: colors.textMuted,
     textAlign: 'center',
     paddingHorizontal: 32,
+  },
+  retryButton: {
+    marginTop: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

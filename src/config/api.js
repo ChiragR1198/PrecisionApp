@@ -49,6 +49,7 @@ export const API_ENDPOINTS = {
   // Delegate Contacts
   DELEGATE_CONTACTS: '/delegate/contacts',
   DELEGATE_SAVE_CONTACT: '/delegate/save-contact',
+  DELEGATE_DELETE_CONTACT: '/delegate/delete-contact',
 
   // ============ SPONSOR ENDPOINTS ============
   SPONSOR_EVENTS: '/sponsor/events',
@@ -64,6 +65,9 @@ export const API_ENDPOINTS = {
   SPONSOR_CHAT_SEND_MESSAGE: '/sponsor/chat/send-message',
   SPONSOR_CHAT_MESSAGE_LIST: '/sponsor/chat/all-messages',
   SPONSOR_CHAT_MESSAGES: '/sponsor/chat/messages',
+  
+  // Sponsor Contacts
+  SPONSOR_DELETE_CONTACT: '/sponsor/delete-contact',
 
   // ============ AGENDA ============
   AGENDA_BY_ID: (id) => `/agenda/${id}`,
