@@ -3,8 +3,10 @@ import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useMemo, useState } from 'react';
 import {
-  Alert,
+  ActivityIndicator,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -157,11 +159,14 @@ export const ChangePasswordScreen = () => {
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isPasswordUpdateSuccessModalVisible, setIsPasswordUpdateSuccessModalVisible] = useState(false);
+  const [isPasswordUpdateErrorModalVisible, setIsPasswordUpdateErrorModalVisible] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   
-  const [delegateChangePassword] = useDelegateChangePasswordMutation();
-  const [sponsorChangePassword] = useSponsorChangePasswordMutation();
+  const [delegateChangePassword, { isLoading: isUpdatingDelegatePassword }] = useDelegateChangePasswordMutation();
+  const [sponsorChangePassword, { isLoading: isUpdatingSponsorPassword }] = useSponsorChangePasswordMutation();
   const changePassword = isDelegate ? delegateChangePassword : sponsorChangePassword;
+  const isLoading = isDelegate ? isUpdatingDelegatePassword : isUpdatingSponsorPassword;
   
   // Check if form is valid (for button disable state)
   const isPasswordValid = newPassword.length >= 8 && 
@@ -239,26 +244,29 @@ export const ChangePasswordScreen = () => {
   const handleUpdatePassword = async () => {
     // Validation
     if (!currentPassword.trim()) {
-      Alert.alert('Error', 'Please enter your current password');
+      setErrorMessage('Please enter your current password');
+      setIsPasswordUpdateErrorModalVisible(true);
       return;
     }
     
     if (!newPassword.trim()) {
-      Alert.alert('Error', 'Please enter a new password');
+      setErrorMessage('Please enter a new password');
+      setIsPasswordUpdateErrorModalVisible(true);
       return;
     }
     
     if (!isPasswordValid) {
-      Alert.alert('Error', 'New password does not meet the requirements');
+      setErrorMessage('New password does not meet the requirements');
+      setIsPasswordUpdateErrorModalVisible(true);
       return;
     }
     
     if (newPassword !== confirmPassword) {
-      Alert.alert('Error', 'New password and confirm password do not match');
+      setErrorMessage('New password and confirm password do not match');
+      setIsPasswordUpdateErrorModalVisible(true);
       return;
     }
     
-    setIsLoading(true);
     try {
       await changePassword({
         current_password: currentPassword,
@@ -266,21 +274,16 @@ export const ChangePasswordScreen = () => {
         confirm_password: confirmPassword,
       }).unwrap();
       
-      Alert.alert('Success', 'Password updated successfully', [
-        {
-          text: 'OK',
-          onPress: () => {
-            setCurrentPassword('');
-            setNewPassword('');
-            setConfirmPassword('');
-          },
-        },
-      ]);
+      // Show success modal instead of Alert
+      setIsPasswordUpdateSuccessModalVisible(true);
+      // Clear form fields
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
     } catch (error) {
-      const errorMessage = error?.data?.message || error?.message || 'Failed to update password. Please try again.';
-      Alert.alert('Error', errorMessage);
-    } finally {
-      setIsLoading(false);
+      const errorMsg = error?.data?.message || error?.message || 'Failed to update password. Please try again.';
+      setErrorMessage(errorMsg);
+      setIsPasswordUpdateErrorModalVisible(true);
     }
   };
 
@@ -370,9 +373,14 @@ export const ChangePasswordScreen = () => {
               start={{ x: 0, y: 0 }} 
               end={{ x: 1, y: 0 }}
             >
-              <Text style={styles.updateText}>
-                {isLoading ? 'Updating...' : 'Update Password'}
-              </Text>
+              {isLoading ? (
+                <View style={styles.updateButtonLoadingContainer}>
+                  <ActivityIndicator size="small" color={colors.white} />
+                  <Text style={styles.updateText}>Updating...</Text>
+                </View>
+              ) : (
+                <Text style={styles.updateText}>Update Password</Text>
+              )}
             </LinearGradient>
           </TouchableOpacity>
           <TouchableOpacity activeOpacity={0.85} style={styles.logoutBtn}>
@@ -382,6 +390,76 @@ export const ChangePasswordScreen = () => {
           </View>
         </View>
       </ScrollView>
+
+      {/* Password Update Success Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isPasswordUpdateSuccessModalVisible}
+        onRequestClose={() => setIsPasswordUpdateSuccessModalVisible(false)}
+      >
+        <View style={styles.successModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsPasswordUpdateSuccessModalVisible(false)} />
+          <View style={styles.successModalCard}>
+            <View style={styles.successIconContainer}>
+              <Icon name="check-circle" size={64} color={colors.primary} />
+            </View>
+            <Text style={styles.successTitle}>Password Updated</Text>
+            <Text style={styles.successMessage}>
+              Your password has been updated successfully!
+            </Text>
+            <TouchableOpacity
+              style={styles.successButton}
+              onPress={() => setIsPasswordUpdateSuccessModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={colors.gradient}
+                style={styles.successButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.successButtonText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Password Update Error Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isPasswordUpdateErrorModalVisible}
+        onRequestClose={() => setIsPasswordUpdateErrorModalVisible(false)}
+      >
+        <View style={styles.errorModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsPasswordUpdateErrorModalVisible(false)} />
+          <View style={styles.errorModalCard}>
+            <View style={styles.errorIconContainer}>
+              <Icon name="alert-circle" size={64} color="#EF4444" />
+            </View>
+            <Text style={styles.errorTitle}>Error</Text>
+            <Text style={styles.errorMessage}>
+              {errorMessage}
+            </Text>
+            <TouchableOpacity
+              style={styles.errorButton}
+              onPress={() => setIsPasswordUpdateErrorModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={['#EF4444', '#DC2626']}
+                style={styles.errorButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.errorButtonText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -555,6 +633,122 @@ const createStyles = (SIZES, isTablet) =>
     updateText: {
       color: colors.white,
       fontWeight: '700',
+    },
+    updateButtonLoadingContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+    },
+    successModalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+    },
+    successModalCard: {
+      width: '100%',
+      maxWidth: 340,
+      backgroundColor: colors.white,
+      borderRadius: 20,
+      paddingVertical: 28,
+      paddingHorizontal: 24,
+      alignItems: 'center',
+      shadowColor: '#000',
+      shadowOpacity: 0.15,
+      shadowRadius: 20,
+      shadowOffset: { width: 0, height: 10 },
+      elevation: 10,
+    },
+    successIconContainer: {
+      marginBottom: 16,
+    },
+    successTitle: {
+      fontSize: 22,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: 12,
+      textAlign: 'center',
+    },
+    successMessage: {
+      fontSize: 15,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginBottom: 24,
+      lineHeight: 22,
+      paddingHorizontal: 8,
+    },
+    successButton: {
+      width: '100%',
+      height: 48,
+      borderRadius: radius.md,
+      overflow: 'hidden',
+    },
+    successButtonGradient: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    successButtonText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.white,
+    },
+    errorModalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+    },
+    errorModalCard: {
+      width: '100%',
+      maxWidth: 340,
+      backgroundColor: colors.white,
+      borderRadius: 20,
+      paddingVertical: 28,
+      paddingHorizontal: 24,
+      alignItems: 'center',
+      shadowColor: '#000',
+      shadowOpacity: 0.15,
+      shadowRadius: 20,
+      shadowOffset: { width: 0, height: 10 },
+      elevation: 10,
+    },
+    errorIconContainer: {
+      marginBottom: 16,
+    },
+    errorTitle: {
+      fontSize: 22,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: 12,
+      textAlign: 'center',
+    },
+    errorMessage: {
+      fontSize: 15,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginBottom: 24,
+      lineHeight: 22,
+      paddingHorizontal: 8,
+    },
+    errorButton: {
+      width: '100%',
+      height: 48,
+      borderRadius: radius.md,
+      overflow: 'hidden',
+    },
+    errorButtonGradient: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    errorButtonText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.white,
     },
     logoutBtn: {
       marginTop: 20,

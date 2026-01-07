@@ -224,9 +224,10 @@ export const ProfileScreen = () => {
     }
   }, [userId, refetchProfile]);
   
-  const [updateDelegateProfile] = useUpdateDelegateProfileMutation();
-  const [updateSponsorProfile] = useUpdateSponsorProfileMutation();
+  const [updateDelegateProfile, { isLoading: isUpdatingDelegateProfile }] = useUpdateDelegateProfileMutation();
+  const [updateSponsorProfile, { isLoading: isUpdatingSponsorProfile }] = useUpdateSponsorProfileMutation();
   const updateProfile = isDelegate ? updateDelegateProfile : updateSponsorProfile;
+  const isUpdatingProfile = isDelegate ? isUpdatingDelegateProfile : isUpdatingSponsorProfile;
   const [saveDelegateContact, { isLoading: isSavingContact }] = useSaveDelegateContactMutation();
   
   // Extract profile data from API response
@@ -350,6 +351,9 @@ export const ProfileScreen = () => {
   const qrImageLoadStartRef = React.useRef(false);
   const qrImageLoadingRef = React.useRef(false);
   const qrImageRetryCountRef = React.useRef(0);
+  const [isContactSavedModalVisible, setIsContactSavedModalVisible] = useState(false);
+  const [savedContactName, setSavedContactName] = useState('');
+  const [isProfileUpdateSuccessModalVisible, setIsProfileUpdateSuccessModalVisible] = useState(false);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -461,7 +465,8 @@ export const ProfileScreen = () => {
       }
       
       await updateProfile(formDataToSend).unwrap();
-      Alert.alert('Success', 'Profile updated successfully!');
+      // Show success modal instead of Alert
+      setIsProfileUpdateSuccessModalVisible(true);
       refetchProfile();
     } catch (error) {
       console.error('Error updating profile:', error);
@@ -625,14 +630,9 @@ export const ProfileScreen = () => {
       setIsScanning(false);
       setIsQRModalVisible(false);
       
-      Alert.alert(
-        'Contact Saved', 
-        `${scanResult.name} was added to Contacts.`, 
-        [
-          { text: 'OK' },
-          { text: 'View Contacts', onPress: () => router.push('/contacts') },
-        ]
-      );
+      // Show custom success modal
+      setSavedContactName(scanResult.name);
+      setIsContactSavedModalVisible(true);
     } catch (error) {
       // Handle 404 errors specifically
       if (error?.status === 'PARSING_ERROR' || error?.status === 404) {
@@ -737,7 +737,10 @@ export const ProfileScreen = () => {
         let rawName = line.replace('FN:', '').trim();
         console.log(`Line ${index} - Found FN:`, rawName);
   
-        // remove ()
+        // remove content in round brackets (e.g., "(Precision in Clinical Trials Summit Boston)")
+        rawName = rawName.replace(/\([^)]*\)/g, '');
+  
+        // remove empty brackets
         rawName = rawName.replace(/\(\)/g, '');
   
         // normalize spaces
@@ -750,7 +753,18 @@ export const ProfileScreen = () => {
       // fallback only if FN missing
       if (!contact.name && line.startsWith('N:')) {
         const parts = line.replace('N:', '').split(';');
-        contact.name = `${parts[1] || ''} ${parts[0] || ''}`.trim();
+        let fallbackName = `${parts[1] || ''} ${parts[0] || ''}`.trim();
+        
+        // remove content in round brackets (e.g., "(Precision in Clinical Trials Summit Boston)")
+        fallbackName = fallbackName.replace(/\([^)]*\)/g, '');
+        
+        // remove empty brackets
+        fallbackName = fallbackName.replace(/\(\)/g, '');
+        
+        // normalize spaces
+        fallbackName = fallbackName.replace(/\s+/g, ' ').trim();
+        
+        contact.name = fallbackName;
         console.log(`Line ${index} - Found N (fallback):`, contact.name);
       }
   
@@ -1166,9 +1180,10 @@ export const ProfileScreen = () => {
             {/* Save Changes Button */}
             <View style={styles.saveButtonSection}>
               <TouchableOpacity
-                style={styles.saveButton}
+                style={[styles.saveButton, isUpdatingProfile && styles.saveButtonDisabled]}
                 onPress={handleSaveChanges}
                 activeOpacity={0.9}
+                disabled={isUpdatingProfile}
               >
                 <LinearGradient
                   colors={colors.gradient}
@@ -1176,7 +1191,14 @@ export const ProfileScreen = () => {
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                 >
-                  <Text style={styles.saveButtonText}>Save Changes</Text>
+                  {isUpdatingProfile ? (
+                    <View style={styles.saveButtonLoadingContainer}>
+                      <ActivityIndicator size="small" color={colors.white} />
+                      <Text style={styles.saveButtonText}>Saving...</Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.saveButtonText}>Save Changes</Text>
+                  )}
                 </LinearGradient>
               </TouchableOpacity>
             </View>
@@ -1427,6 +1449,88 @@ export const ProfileScreen = () => {
             </Pressable>
           </View>
         </Pressable>
+      </Modal>
+
+      {/* Contact Saved Success Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isContactSavedModalVisible}
+        onRequestClose={() => setIsContactSavedModalVisible(false)}
+      >
+        <View style={styles.contactSavedModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsContactSavedModalVisible(false)} />
+          <View style={styles.contactSavedModalCard}>
+            <View style={styles.contactSavedIconContainer}>
+              <Icon name="check-circle" size={64} color={colors.primary} />
+            </View>
+            <Text style={styles.contactSavedTitle}>Contact Saved</Text>
+            <Text style={styles.contactSavedMessage}>
+              {savedContactName} was added to Contacts.
+            </Text>
+            <View style={styles.contactSavedButtonRow}>
+              <TouchableOpacity
+                style={styles.contactSavedButtonSecondary}
+                onPress={() => setIsContactSavedModalVisible(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.contactSavedButtonSecondaryText}>OK</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.contactSavedButtonPrimary}
+                onPress={() => {
+                  setIsContactSavedModalVisible(false);
+                  router.push('/contacts');
+                }}
+                activeOpacity={0.8}
+              >
+                <LinearGradient
+                  colors={colors.gradient}
+                  style={styles.contactSavedButtonGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  <Text style={styles.contactSavedButtonPrimaryText}>View Contacts</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Profile Update Success Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isProfileUpdateSuccessModalVisible}
+        onRequestClose={() => setIsProfileUpdateSuccessModalVisible(false)}
+      >
+        <View style={styles.contactSavedModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsProfileUpdateSuccessModalVisible(false)} />
+          <View style={styles.contactSavedModalCard}>
+            <View style={styles.contactSavedIconContainer}>
+              <Icon name="check-circle" size={64} color={colors.primary} />
+            </View>
+            <Text style={styles.contactSavedTitle}>Profile Updated</Text>
+            <Text style={styles.contactSavedMessage}>
+              Your profile has been updated successfully!
+            </Text>
+            <TouchableOpacity
+              style={styles.profileUpdateSuccessButton}
+              onPress={() => setIsProfileUpdateSuccessModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={colors.gradient}
+                style={styles.contactSavedButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.contactSavedButtonPrimaryText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1801,6 +1905,15 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '600',
     color: colors.white,
   },
+  saveButtonLoadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  saveButtonDisabled: {
+    opacity: 0.7,
+  },
   notificationCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
@@ -1980,6 +2093,87 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#EF4444',
+  },
+  contactSavedModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  contactSavedModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: colors.white,
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  contactSavedIconContainer: {
+    marginBottom: 16,
+  },
+  contactSavedTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  contactSavedMessage: {
+    fontSize: 15,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+    paddingHorizontal: 8,
+  },
+  contactSavedButtonRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  contactSavedButtonSecondary: {
+    flex: 1,
+    height: 48,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.white,
+  },
+  contactSavedButtonSecondaryText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  contactSavedButtonPrimary: {
+    flex: 1,
+    height: 48,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+  },
+  contactSavedButtonGradient: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  contactSavedButtonPrimaryText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.white,
+  },
+  profileUpdateSuccessButton: {
+    width: '100%',
+    height: 48,
+    borderRadius: radius.md,
+    overflow: 'hidden',
   },
 });
 

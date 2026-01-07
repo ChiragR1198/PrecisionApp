@@ -1,21 +1,24 @@
+import Icon from '@expo/vector-icons/Feather';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useNavigation } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
+  Pressable,
   SectionList,
-  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
-import { useGetDelegateContactsQuery } from '../../store/api';
+import { useDeleteDelegateContactMutation, useDeleteSponsorContactMutation, useGetDelegateContactsQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const DeleteIcon = ({ size = 18, color = '#EF4444' }) => <FontAwesome name="trash" size={size} color={color} />;
@@ -24,6 +27,11 @@ export const ContactsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const [isDeleteConfirmationModalVisible, setIsDeleteConfirmationModalVisible] = useState(false);
+  const [isDeleteSuccessModalVisible, setIsDeleteSuccessModalVisible] = useState(false);
+  const [isDeleteErrorModalVisible, setIsDeleteErrorModalVisible] = useState(false);
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [errorMessage, setErrorMessage] = useState('');
   
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -36,6 +44,10 @@ export const ContactsScreen = () => {
     skip: shouldSkip,
     refetchOnMountOrArgChange: true,
   });
+
+  const [deleteDelegateContact, { isLoading: isDeletingDelegate }] = useDeleteDelegateContactMutation();
+  const [deleteSponsorContact, { isLoading: isDeletingSponsor }] = useDeleteSponsorContactMutation();
+  const isDeleting = isDeletingDelegate || isDeletingSponsor;
   
   const contacts = useMemo(() => {
     const data = contactsData?.data || contactsData || [];
@@ -83,9 +95,48 @@ export const ContactsScreen = () => {
       }));
   }, [filteredContacts]);
 
-  const handleDelete = (id) => {
-    // TODO: Implement delete contact API endpoint
-    console.log('Delete contact:', id);
+  const handleDelete = (contact) => {
+    if (!contact || !contact.id) {
+      console.error('Invalid contact for deletion');
+      return;
+    }
+
+    // Show confirmation modal
+    setSelectedContact(contact);
+    setIsDeleteConfirmationModalVisible(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!selectedContact || !selectedContact.id) {
+      return;
+    }
+
+    setIsDeleteConfirmationModalVisible(false);
+
+    try {
+      const contactId = selectedContact.id;
+      
+      if (isDelegate) {
+        await deleteDelegateContact({ contact_id: contactId }).unwrap();
+      } else {
+        await deleteSponsorContact({ contact_id: contactId }).unwrap();
+      }
+      
+      // Show success modal
+      setIsDeleteSuccessModalVisible(true);
+      
+      // Refetch contacts to update the list
+      refetch();
+      
+      // Clear selected contact
+      setSelectedContact(null);
+    } catch (error) {
+      console.error('Error deleting contact:', error);
+      const errorMsg = error?.data?.message || error?.message || 'Failed to delete contact. Please try again.';
+      setErrorMessage(errorMsg);
+      setIsDeleteErrorModalVisible(true);
+      setSelectedContact(null);
+    }
   };
 
   const renderContact = ({ item }) => (
@@ -107,7 +158,12 @@ export const ContactsScreen = () => {
         <Text style={styles.contactName}>{item.name}</Text>
         <Text style={styles.contactPhone}>{item.phone}</Text>
       </View>
-      <TouchableOpacity style={styles.deleteButton} onPress={() => handleDelete(item.id)} activeOpacity={0.7}>
+      <TouchableOpacity 
+        style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]} 
+        onPress={() => handleDelete(item)} 
+        activeOpacity={0.7}
+        disabled={isDeleting}
+      >
         <DeleteIcon />
       </TouchableOpacity>
     </View>
@@ -178,6 +234,128 @@ export const ContactsScreen = () => {
           </>
         )}
       </View>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isDeleteConfirmationModalVisible}
+        onRequestClose={() => setIsDeleteConfirmationModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsDeleteConfirmationModalVisible(false)} />
+          <View style={styles.modalCard}>
+            <View style={styles.confirmationIconContainer}>
+              <Icon name="alert-triangle" size={64} color="#FBBF24" />
+            </View>
+            <Text style={styles.modalTitle}>Delete Contact</Text>
+            <Text style={styles.modalMessage}>
+              Are you sure you want to delete {selectedContact?.name}?
+            </Text>
+            <View style={styles.modalButtonRow}>
+              <TouchableOpacity
+                style={styles.modalButtonSecondary}
+                onPress={() => {
+                  setIsDeleteConfirmationModalVisible(false);
+                  setSelectedContact(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalButtonDanger}
+                onPress={handleConfirmDelete}
+                activeOpacity={0.8}
+                disabled={isDeleting}
+              >
+                <LinearGradient
+                  colors={['#EF4444', '#DC2626']}
+                  style={styles.modalButtonGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  {isDeleting ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.modalButtonDangerText}>Delete</Text>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Success Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isDeleteSuccessModalVisible}
+        onRequestClose={() => setIsDeleteSuccessModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsDeleteSuccessModalVisible(false)} />
+          <View style={styles.modalCard}>
+            <View style={styles.successIconContainer}>
+              <Icon name="check-circle" size={64} color={colors.primary} />
+            </View>
+            <Text style={styles.modalTitle}>Contact Deleted</Text>
+            <Text style={styles.modalMessage}>
+              Contact has been deleted successfully!
+            </Text>
+            <TouchableOpacity
+              style={styles.modalButtonPrimary}
+              onPress={() => setIsDeleteSuccessModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={colors.gradient}
+                style={styles.modalButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.modalButtonPrimaryText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Error Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isDeleteErrorModalVisible}
+        onRequestClose={() => setIsDeleteErrorModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsDeleteErrorModalVisible(false)} />
+          <View style={styles.modalCard}>
+            <View style={styles.errorIconContainer}>
+              <Icon name="alert-circle" size={64} color="#EF4444" />
+            </View>
+            <Text style={styles.modalTitle}>Error</Text>
+            <Text style={styles.modalMessage}>
+              {errorMessage}
+            </Text>
+            <TouchableOpacity
+              style={styles.modalButtonDanger}
+              onPress={() => setIsDeleteErrorModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={['#EF4444', '#DC2626']}
+                style={styles.modalButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.modalButtonDangerText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -258,6 +436,9 @@ const createStyles = (SIZES, isTablet) =>
       padding: 6,
       borderRadius: radius.sm,
     },
+    deleteButtonDisabled: {
+      opacity: 0.5,
+    },
     emptyState: {
       alignItems: 'center',
       marginTop: 60,
@@ -283,6 +464,100 @@ const createStyles = (SIZES, isTablet) =>
       marginTop: 16,
       fontSize: 14,
       color: colors.textMuted,
+    },
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+    },
+    modalCard: {
+      width: '100%',
+      maxWidth: 340,
+      backgroundColor: colors.white,
+      borderRadius: 20,
+      paddingVertical: 28,
+      paddingHorizontal: 24,
+      alignItems: 'center',
+      shadowColor: '#000',
+      shadowOpacity: 0.15,
+      shadowRadius: 20,
+      shadowOffset: { width: 0, height: 10 },
+      elevation: 10,
+    },
+    confirmationIconContainer: {
+      marginBottom: 16,
+    },
+    successIconContainer: {
+      marginBottom: 16,
+    },
+    errorIconContainer: {
+      marginBottom: 16,
+    },
+    modalTitle: {
+      fontSize: 22,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: 12,
+      textAlign: 'center',
+    },
+    modalMessage: {
+      fontSize: 15,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginBottom: 24,
+      lineHeight: 22,
+      paddingHorizontal: 8,
+    },
+    modalButtonRow: {
+      flexDirection: 'row',
+      width: '100%',
+      justifyContent: 'space-between',
+    },
+    modalButtonSecondary: {
+      flex: 1,
+      height: 48,
+      borderRadius: radius.md,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.white,
+      marginRight: 6,
+    },
+    modalButtonSecondaryText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.textSecondary,
+    },
+    modalButtonPrimary: {
+      width: '100%',
+      height: 48,
+      borderRadius: radius.md,
+      overflow: 'hidden',
+    },
+    modalButtonDanger: {
+      flex: 1,
+      height: 48,
+      borderRadius: radius.md,
+      overflow: 'hidden',
+      marginLeft: 6,
+    },
+    modalButtonGradient: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    modalButtonPrimaryText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.white,
+    },
+    modalButtonDangerText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.white,
     },
   });
 
