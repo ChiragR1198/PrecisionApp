@@ -14,6 +14,7 @@ import {
     Modal,
     Platform,
     Pressable,
+    RefreshControl,
     ScrollView,
     StyleSheet,
     Switch,
@@ -25,6 +26,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { ErrorState, LoadingState } from '../../components/States';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
@@ -188,6 +190,21 @@ export const ProfileScreen = () => {
   const isLoadingProfile = isDelegate ? isLoadingDelegateProfile : isLoadingSponsorProfile;
   const profileError = isDelegate ? delegateProfileError : sponsorProfileError;
   const refetchProfile = isDelegate ? refetchDelegateProfile : refetchSponsorProfile;
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetchProfile();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchProfile]);
   
   // Track previous user ID and refetch when it changes
   const prevUserIdRef = React.useRef(userId);
@@ -878,7 +895,7 @@ export const ProfileScreen = () => {
   };
 
   // Show loading state
-  if (isLoadingProfile) {
+  if (isLoadingProfile && !refreshing) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
@@ -887,10 +904,7 @@ export const ProfileScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()} 
           iconSize={SIZES.headerIconSize} 
         />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading profile...</Text>
-        </View>
+        <LoadingState message="Loading profile..." />
       </SafeAreaView>
     );
   }
@@ -905,15 +919,10 @@ export const ProfileScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()} 
           iconSize={SIZES.headerIconSize} 
         />
-        <View style={styles.errorContainer}>
-          <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>
-            {profileError?.data?.message || profileError?.message || 'Failed to load profile'}
-          </Text>
-          <TouchableOpacity style={styles.retryButton} onPress={refetchProfile}>
-            <Text style={styles.retryButtonText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
+        <ErrorState 
+          error={profileError?.data?.message || profileError?.message || 'Failed to load profile'} 
+          onRetry={refetchProfile} 
+        />
       </SafeAreaView>
     );
   }
@@ -929,7 +938,15 @@ export const ProfileScreen = () => {
 
       <ScrollView 
         style={styles.scrollView} 
-        contentContainerStyle={styles.scrollContent} 
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        } 
         showsVerticalScrollIndicator={false} 
         bounces={false}
       >

@@ -1,24 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Image,
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { colors } from '../../constants/theme';
 import { useGetDelegateMessagesQuery, useGetSponsorMessagesQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { debounce } from '../../utils/helpers';
 import { requestNotificationPermissions, setupNotificationListener, showMessageNotification } from '../../utils/notifications';
 import { websocketManager } from '../../utils/websocket';
 
@@ -64,6 +66,20 @@ export const MessagesScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  
+  // Debounce search input for performance
+  const debouncedSetSearch = useCallback(
+    debounce((value) => {
+      setDebouncedSearchQuery(value);
+    }, 300),
+    []
+  );
+  
+  const handleSearchChange = useCallback((text) => {
+    setSearchQuery(text);
+    debouncedSetSearch(text);
+  }, [debouncedSetSearch]);
   const { user } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
@@ -105,6 +121,21 @@ export const MessagesScreen = () => {
   const isFocused = useIsFocused();
   const previousMessagesRef = useRef([]);
   const [readChats, setReadChats] = useState({}); // Track which chats have been opened
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetchMessages();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchMessages]);
 
   // Request notification permissions on mount
   useEffect(() => {
@@ -262,12 +293,8 @@ export const MessagesScreen = () => {
   const chatThreads = useMemo(() => {
     // Only use API data - no static fallback
     if (!messagesData) {
-      console.log('📭 MessagesScreen: No messagesData available');
       return [];
     }
-    
-    // Log API response for debugging
-    console.log('📭 MessagesScreen: API Response:', JSON.stringify(messagesData, null, 2));
     
     // Handle different response formats
     let list = [];
@@ -284,8 +311,6 @@ export const MessagesScreen = () => {
         list = dataObj.data;
       }
     }
-    
-    console.log('📭 MessagesScreen: Processed list length:', list.length);
     
     return list.map((item, index) => {
       const userId = String(item.user_id || item.id || item.delegate_id || item.sponsor_id || `unknown-${index}`);
@@ -310,8 +335,8 @@ export const MessagesScreen = () => {
       const lastMessageDate = item.last_message_date || item.last_message_date || item.date || item.created_at || '';
       const time = formatMessageTime(lastMessageDate);
       
-      // Debug logging for all chats with unread messages or if read
-      if (apiUnreadCount > 0 || isChatRead) {
+      // Only log in development for performance
+      if (__DEV__ && (apiUnreadCount > 0 || isChatRead)) {
         console.log(`📖 Chat: ${name} (${chatKey}):`, {
           userId: String(userId),
           userType,
@@ -339,14 +364,14 @@ export const MessagesScreen = () => {
   }, [messagesData, readChats]);
 
   const filteredChats = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = debouncedSearchQuery.trim().toLowerCase();
     if (!q) return chatThreads;
     return chatThreads.filter(
       (chat) =>
         chat.name.toLowerCase().includes(q) ||
         (chat.message || '').toLowerCase().includes(q)
     );
-  }, [searchQuery, chatThreads]);
+  }, [debouncedSearchQuery, chatThreads]);
 
   const renderRow = ({ item }) => (
     <TouchableOpacity
@@ -414,27 +439,17 @@ export const MessagesScreen = () => {
         <SearchBar
           placeholder="Search messages"
           value={searchQuery}
-          onChangeText={setSearchQuery}
+          onChangeText={handleSearchChange}
           style={styles.searchBar}
         />
 
-        {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Loading messages...</Text>
-          </View>
+        {isLoading && !refreshing ? (
+          <LoadingState message="Loading messages..." />
         ) : error ? (
-          <View style={styles.errorContainer}>
-            <Text style={styles.errorText}>
-              {error?.data?.message || error?.message || 'Failed to load messages'}
-            </Text>
-            <TouchableOpacity
-              style={styles.retryButton}
-              onPress={() => refetchMessages()}
-            >
-              <Text style={styles.retryButtonText}>Retry</Text>
-            </TouchableOpacity>
-          </View>
+          <ErrorState 
+            error={error?.data?.message || error?.message || 'Failed to load messages'} 
+            onRetry={refetchMessages} 
+          />
         ) : filteredChats.length > 0 ? (
           <FlatList
             data={filteredChats}
@@ -442,13 +457,23 @@ export const MessagesScreen = () => {
             renderItem={renderRow}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
             contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+              />
+            }
             showsVerticalScrollIndicator={false}
+            removeClippedSubviews={Platform.OS === 'android'}
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            updateCellsBatchingPeriod={50}
+            windowSize={10}
           />
         ) : (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No messages yet</Text>
-            <Text style={styles.emptySubtext}>Start a conversation to see messages here</Text>
-          </View>
+          <EmptyState message="No messages yet. Start a conversation to see messages here." />
         )}
       </View>
     </SafeAreaView>

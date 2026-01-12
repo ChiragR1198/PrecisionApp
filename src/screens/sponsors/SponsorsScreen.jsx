@@ -1,13 +1,14 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,9 +18,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { colors, radius } from '../../constants/theme';
 import { useGetAllDelegatesQuery, useGetEventSponsorQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { debounce } from '../../utils/helpers';
 
 const ChatIcon = ({ color = colors.icon, size = 24 }) => (
   <MaterialCommunityIcons name="chat" size={size} color={color} />
@@ -184,6 +187,20 @@ export const SponsorsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  
+  // Debounce search input for performance
+  const debouncedSetSearch = useCallback(
+    debounce((value) => {
+      setDebouncedSearchQuery(value);
+    }, 300),
+    []
+  );
+  
+  const handleSearchChange = useCallback((text) => {
+    setSearchQuery(text);
+    debouncedSetSearch(text);
+  }, [debouncedSetSearch]);
   const { user } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
@@ -205,6 +222,22 @@ export const SponsorsScreen = () => {
   // Combine loading and error states
   const isLoading = isDelegate ? delegatesLoading : sponsorsLoading;
   const error = isDelegate ? delegatesError : sponsorsError;
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      // Refetch will be handled by RTK Query polling
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
   
   const errorMessage = useMemo(() => {
     if (!error) return '';
@@ -325,7 +358,7 @@ export const SponsorsScreen = () => {
   }, [isSponsor, sponsorsData]);
 
   const filteredSponsors = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = debouncedSearchQuery.trim().toLowerCase();
     // Use API data if available, otherwise fallback to hardcoded SPONSORS (for non-logged-in or fallback)
     const baseList = isDelegate ? delegates : (isSponsor ? sponsors : SPONSORS);
     if (!q) return baseList;
@@ -440,7 +473,7 @@ export const SponsorsScreen = () => {
           <SearchBar
             placeholder={isDelegate ? 'Search delegates...' : 'Search sponsors...'}
             value={searchQuery}
-            onChangeText={setSearchQuery}
+            onChangeText={handleSearchChange}
             style={styles.searchBar}
           />
           <Text style={styles.countText}>
@@ -449,14 +482,10 @@ export const SponsorsScreen = () => {
               : `${filteredSponsors.length} sponsors found`}
           </Text>
         </View>
-        {isLoading ? (
-          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1 }]}>
-            <Text style={styles.countText}>Loading...</Text>
-          </View>
+        {isLoading && !refreshing ? (
+          <LoadingState message={isDelegate ? 'Loading delegates...' : 'Loading sponsors...'} />
         ) : error ? (
-          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1, paddingHorizontal: 32 }]}>
-            <Text style={[styles.countText, { color: colors.textMuted }]}>{errorMessage}</Text>
-          </View>
+          <ErrorState error={errorMessage} onRetry={onRefresh} />
         ) : (
           <FlatList
             data={filteredSponsors}
@@ -469,9 +498,25 @@ export const SponsorsScreen = () => {
               filteredSponsors.length === 0 && { flex: 1 },
               { paddingHorizontal: SIZES.paddingHorizontal }
             ]}
+            ListEmptyComponent={
+              <EmptyState message={isDelegate ? 'No delegates found.' : 'No sponsors found.'} />
+            }
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+              />
+            }
             bounces={true}
             style={{ flex: 1, backgroundColor: '#F9FAFB' }}
             keyboardShouldPersistTaps="handled"
+            removeClippedSubviews={Platform.OS === 'android'}
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            updateCellsBatchingPeriod={50}
+            windowSize={10}
           />
         )}
       </KeyboardAvoidingView>

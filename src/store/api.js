@@ -14,7 +14,10 @@ const baseQuery = fetchBaseQuery({
         // Remove any extra whitespace or quotes from token
         const cleanToken = token.trim().replace(/^["']|["']$/g, '');
         headers.set('Authorization', `Bearer ${cleanToken}`);
-        console.log('✅ Token added to request headers');
+        // Only log in development for performance
+        if (__DEV__) {
+          console.log('✅ Token added to request headers');
+        }
       } else {
         console.warn('⚠️ No auth token found in AsyncStorage');
       }
@@ -151,7 +154,10 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   
   // Check token before making request
   const tokenBeforeRequest = await AsyncStorage.getItem('auth_token');
-  console.log('🌐 API Request:', args.url || args, 'Token present:', tokenBeforeRequest ? 'Yes' : 'No');
+  // Only log in development for performance
+  if (__DEV__) {
+    console.log('🌐 API Request:', args.url || args, 'Token present:', tokenBeforeRequest ? 'Yes' : 'No');
+  }
   
   // For authenticated endpoints (not login/logout), ensure token is available
   if (!isAuthEndpoint && !tokenBeforeRequest) {
@@ -189,7 +195,10 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
         retryCount++;
         
         if (!result.error) {
-          console.log(`✅ Request succeeded after ${retryCount} retry${retryCount > 1 ? 'ies' : ''}`);
+          // Only log in development for performance
+          if (__DEV__) {
+            console.log(`✅ Request succeeded after ${retryCount} retry${retryCount > 1 ? 'ies' : ''}`);
+          }
           break;
         } else if (retryCount < maxRetries) {
           console.warn(`⚠️ Retry ${retryCount} failed - retrying (${retryCount + 1}/${maxRetries})...`);
@@ -207,13 +216,34 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
         console.error('❌ Network issue persists. Please check your connection.');
       }
     } else {
-      // For non-network errors, log immediately
-      console.error('❌ API Error:', {
-        url: args.url || args,
-        status: errorStatus,
-        message: result.error.data?.message || result.error.message || 'Unknown error',
-        data: result.error.data,
-      });
+      // For auth endpoints with network errors, provide helpful message
+      if (isFetchError && isAuthEndpoint) {
+        console.error('❌ Network Error (Auth Endpoint):', {
+          url: args.url || args,
+          status: errorStatus,
+          message: 'Network request failed. Please check your internet connection and try again.',
+          data: result.error.data,
+        });
+      } else {
+        // 404 (Not Found) is a valid business logic response - log as warning
+        // It means resource doesn't exist or user doesn't have permission
+        if (errorStatus === 404) {
+          console.warn('⚠️ Resource Not Found (404):', {
+            url: args.url || args,
+            status: errorStatus,
+            message: result.error.data?.message || result.error.message || 'Resource not found',
+            data: result.error.data,
+          });
+        } else {
+          // For other non-network errors (500, etc.), log as error
+          console.error('❌ API Error:', {
+            url: args.url || args,
+            status: errorStatus,
+            message: result.error.data?.message || result.error.message || 'Unknown error',
+            data: result.error.data,
+          });
+        }
+      }
     }
   }
 
@@ -308,37 +338,32 @@ export const api = createApi({
         try {
           const { data } = await queryFulfilled;
           
-          // Log full response structure for debugging
-          console.log('🔐 Delegate Login - Full response:', JSON.stringify(data, null, 2));
-          
           // Try multiple possible field names for token
           const token = data?.token || data?.data?.token || data?.access_token || data?.accessToken;
           
-          console.log('🔐 Delegate Login - Token received:', token ? 'Yes' : 'No');
-          
           if (token) {
             await AsyncStorage.setItem('auth_token', token);
-            const storedToken = await AsyncStorage.getItem('auth_token');
-            console.log('✅ Token stored successfully:', storedToken ? 'Yes' : 'No');
             
-            // Decode JWT to show expiry info
-            const decoded = decodeJWT(token);
-            if (decoded && decoded.exp) {
-              const expiryDate = new Date(decoded.exp * 1000);
-              const autoLogoutDate = new Date((decoded.exp - AUTO_LOGOUT_SECONDS) * 1000);
-              console.log('📅 Token expires at:', expiryDate.toLocaleString());
-              console.log('⏰ Auto logout at:', autoLogoutDate.toLocaleString(), '(2 hours before expiry)');
-            } else {
-              console.log('📅 Token valid for 30 days (auto logout 2 hours before expiry)');
+            // Only log in development for performance
+            if (__DEV__) {
+              const storedToken = await AsyncStorage.getItem('auth_token');
+              console.log('✅ Token stored successfully:', storedToken ? 'Yes' : 'No');
+              
+              // Decode JWT to show expiry info
+              const decoded = decodeJWT(token);
+              if (decoded && decoded.exp) {
+                const expiryDate = new Date(decoded.exp * 1000);
+                const autoLogoutDate = new Date((decoded.exp - AUTO_LOGOUT_SECONDS) * 1000);
+                console.log('📅 Token expires at:', expiryDate.toLocaleString());
+                console.log('⏰ Auto logout at:', autoLogoutDate.toLocaleString(), '(2 hours before expiry)');
+              }
             }
-          } else {
+          } else if (__DEV__) {
             console.error('❌ No token received in login response');
           }
           
           // Store user data including qr_image
           const userData = data.data || data;
-          console.log('🔐 Delegate Login - User data:', JSON.stringify(userData, null, 2));
-          console.log('🔐 Delegate Login - QR Image:', userData?.qr_image || 'Not found');
           await AsyncStorage.setItem('auth_user', JSON.stringify(userData));
           
           // Reset entire RTK Query cache to ensure fresh data for new user
@@ -347,7 +372,31 @@ export const api = createApi({
             dispatch(api.util.resetApiState());
           }, 500); // Increased delay to 500ms for better network stability
         } catch (error) {
-          console.error('Login token storage failed:', error);
+          // Only log storage errors if the request succeeded but storage failed
+          // Network errors and authentication errors are handled by baseQueryWithErrorHandling
+          const errorStatus = error?.status || error?.error?.status;
+          const isNetworkError = errorStatus === 'FETCH_ERROR' || 
+                                error?.message?.includes('FETCH_ERROR') ||
+                                error?.message?.includes('Network request failed');
+          
+          // Authentication errors (401, 403) are expected and already logged by baseQueryWithErrorHandling
+          const isAuthError = errorStatus === 401 || errorStatus === 403 || 
+                             errorStatus === 'AUTH_REQUIRED' || 
+                             error?.error?.status === 401 || 
+                             error?.error?.status === 403;
+          
+          if (isNetworkError || isAuthError) {
+            // Network or authentication error - already logged by baseQueryWithErrorHandling, don't duplicate
+            // These are expected errors (network unavailable, wrong credentials, etc.)
+            return;
+          }
+          
+          // Actual storage or processing error (unexpected errors)
+          console.error('❌ Login token storage failed:', {
+            error: error?.error || error,
+            message: error?.error?.message || error?.message || 'Unknown error',
+            status: errorStatus,
+          });
         }
       },
     }),
@@ -364,37 +413,32 @@ export const api = createApi({
         try {
           const { data } = await queryFulfilled;
           
-          // Log full response structure for debugging
-          console.log('🔐 Sponsor Login - Full response:', JSON.stringify(data, null, 2));
-          
           // Try multiple possible field names for token
           const token = data?.token || data?.data?.token || data?.access_token || data?.accessToken;
           
-          console.log('🔐 Sponsor Login - Token received:', token ? 'Yes' : 'No');
-          
           if (token) {
             await AsyncStorage.setItem('auth_token', token);
-            const storedToken = await AsyncStorage.getItem('auth_token');
-            console.log('✅ Token stored successfully:', storedToken ? 'Yes' : 'No');
             
-            // Decode JWT to show expiry info
-            const decoded = decodeJWT(token);
-            if (decoded && decoded.exp) {
-              const expiryDate = new Date(decoded.exp * 1000);
-              const autoLogoutDate = new Date((decoded.exp - AUTO_LOGOUT_SECONDS) * 1000);
-              console.log('📅 Token expires at:', expiryDate.toLocaleString());
-              console.log('⏰ Auto logout at:', autoLogoutDate.toLocaleString(), '(2 hours before expiry)');
-            } else {
-              console.log('📅 Token valid for 30 days (auto logout 2 hours before expiry)');
+            // Only log in development for performance
+            if (__DEV__) {
+              const storedToken = await AsyncStorage.getItem('auth_token');
+              console.log('✅ Token stored successfully:', storedToken ? 'Yes' : 'No');
+              
+              // Decode JWT to show expiry info
+              const decoded = decodeJWT(token);
+              if (decoded && decoded.exp) {
+                const expiryDate = new Date(decoded.exp * 1000);
+                const autoLogoutDate = new Date((decoded.exp - AUTO_LOGOUT_SECONDS) * 1000);
+                console.log('📅 Token expires at:', expiryDate.toLocaleString());
+                console.log('⏰ Auto logout at:', autoLogoutDate.toLocaleString(), '(2 hours before expiry)');
+              }
             }
-          } else {
+          } else if (__DEV__) {
             console.error('❌ No token received in login response');
           }
           
           // Store user data including qr_image
           const userData = data.data || data;
-          console.log('🔐 Sponsor Login - User data:', JSON.stringify(userData, null, 2));
-          console.log('🔐 Sponsor Login - QR Image:', userData?.qr_image || 'Not found');
           await AsyncStorage.setItem('auth_user', JSON.stringify(userData));
           
           // Reset entire RTK Query cache to ensure fresh data for new user
@@ -403,7 +447,31 @@ export const api = createApi({
             dispatch(api.util.resetApiState());
           }, 500); // Increased delay to 500ms for better network stability
         } catch (error) {
-          console.error('Login token storage failed:', error);
+          // Only log storage errors if the request succeeded but storage failed
+          // Network errors and authentication errors are handled by baseQueryWithErrorHandling
+          const errorStatus = error?.status || error?.error?.status;
+          const isNetworkError = errorStatus === 'FETCH_ERROR' || 
+                                error?.message?.includes('FETCH_ERROR') ||
+                                error?.message?.includes('Network request failed');
+          
+          // Authentication errors (401, 403) are expected and already logged by baseQueryWithErrorHandling
+          const isAuthError = errorStatus === 401 || errorStatus === 403 || 
+                             errorStatus === 'AUTH_REQUIRED' || 
+                             error?.error?.status === 401 || 
+                             error?.error?.status === 403;
+          
+          if (isNetworkError || isAuthError) {
+            // Network or authentication error - already logged by baseQueryWithErrorHandling, don't duplicate
+            // These are expected errors (network unavailable, wrong credentials, etc.)
+            return;
+          }
+          
+          // Actual storage or processing error (unexpected errors)
+          console.error('❌ Login token storage failed:', {
+            error: error?.error || error,
+            message: error?.error?.message || error?.message || 'Unknown error',
+            status: errorStatus,
+          });
         }
       },
     }),
@@ -469,7 +537,10 @@ export const api = createApi({
           setTimeout(() => {
             try {
               dispatch(api.util.resetApiState());
-              console.log('✅ Logout complete - cache cleared');
+              // Only log in development for performance
+              if (__DEV__) {
+                console.log('✅ Logout complete - cache cleared');
+              }
             } catch (error) {
               // Ignore AbortSignal errors - they occur when resetApiState aborts active queries
               // This is expected behavior and doesn't affect functionality
@@ -513,7 +584,10 @@ export const api = createApi({
           setTimeout(() => {
             try {
               dispatch(api.util.resetApiState());
-              console.log('✅ Logout complete - cache cleared');
+              // Only log in development for performance
+              if (__DEV__) {
+                console.log('✅ Logout complete - cache cleared');
+              }
             } catch (error) {
               // Ignore AbortSignal errors - they occur when resetApiState aborts active queries
               // This is expected behavior and doesn't affect functionality
@@ -603,14 +677,28 @@ export const api = createApi({
         params: { _t: Date.now() },
       }),
       providesTags: ['Events'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
       // Force refetch on mount to get fresh data
       refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 3. All Delegates
     getAllDelegates: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_ALL_DELEGATES,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_ALL_DELEGATES,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['Attendees'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 4. Send Meeting Request (Delegate)
@@ -625,8 +713,18 @@ export const api = createApi({
 
     // 5. Review Meeting Request (Delegate)
     getDelegateMeetingRequests: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['MeetingRequests'],
+      // Poll every 10 seconds to get latest requests
+      pollingInterval: 10000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 6. Meeting Request Action (Delegate)
@@ -652,8 +750,12 @@ export const api = createApi({
         };
       },
       providesTags: ['Agenda'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
       // Force refetch on mount to get fresh data
       refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 8. Agenda Item
@@ -662,9 +764,19 @@ export const api = createApi({
         if (!agendaId) {
           return null;
         }
-        return API_ENDPOINTS.AGENDA_ITEM_BY_ID(agendaId);
+        return {
+          url: API_ENDPOINTS.AGENDA_ITEM_BY_ID(agendaId),
+          // Add timestamp to force fresh request (bypass cache)
+          params: { _t: Date.now() },
+        };
       },
       providesTags: (result, error, agendaId) => [{ type: 'Agenda', id: agendaId }],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 9. Delegate Attendees
@@ -674,13 +786,27 @@ export const api = createApi({
         params: { _t: Date.now() }, // Add timestamp to force fresh request
       }),
       providesTags: ['Attendees'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
       refetchOnMountOrArgChange: true, // Force refetch on mount
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 10. View Itinerary (Delegate)
     getDelegateItinerary: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_VIEW_ITINERARY,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_VIEW_ITINERARY,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['Agenda'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 11. Delegate Profile
@@ -740,6 +866,10 @@ export const api = createApi({
         params: { _t: Date.now() },
       }),
       providesTags: ['Messages'],
+      // Poll every 10 seconds to get latest messages
+      pollingInterval: 10000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
       // Don't cache - always fetch fresh data
       keepUnusedDataFor: 0,
     }),
@@ -752,6 +882,8 @@ export const api = createApi({
         params: { _t: Date.now() },
       }),
       providesTags: ['Contacts'],
+      // Poll every 10 seconds to get latest contacts
+      pollingInterval: 10000,
       // Don't cache - always fetch fresh data
       keepUnusedDataFor: 0,
       // Force refetch on mount to get fresh data
@@ -794,6 +926,10 @@ export const api = createApi({
         };
       },
       providesTags: ['Messages'],
+      // Poll every 5 seconds for chat messages (more frequent for real-time feel)
+      pollingInterval: 10000, // Increased to 10s for better performance
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
       // Don't cache - always fetch fresh data
       keepUnusedDataFor: 0,
     }),
@@ -807,8 +943,12 @@ export const api = createApi({
         params: { _t: Date.now() },
       }),
       providesTags: ['Events'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
       // Force refetch on mount to get fresh data
       refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 3. Sponsor Event by ID
@@ -817,9 +957,19 @@ export const api = createApi({
         if (!eventId) {
           return null;
         }
-        return `${API_ENDPOINTS.SPONSOR_EVENTS}/${eventId}`;
+        return {
+          url: `${API_ENDPOINTS.SPONSOR_EVENTS}/${eventId}`,
+          // Add timestamp to force fresh request (bypass cache)
+          params: { _t: Date.now() },
+        };
       },
       providesTags: ['Events'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 4. Event Sponsor
@@ -828,15 +978,35 @@ export const api = createApi({
         if (!eventId) {
           return null;
         }
-        return API_ENDPOINTS.SPONSOR_EVENT_SPONSOR(eventId);
+        return {
+          url: API_ENDPOINTS.SPONSOR_EVENT_SPONSOR(eventId),
+          // Add timestamp to force fresh request (bypass cache)
+          params: { _t: Date.now() },
+        };
       },
       providesTags: ['Sponsors'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 4. Meeting Request from Delegate (Sponsor)
     getSponsorMeetingRequests: builder.query({
-      query: () => API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
+      query: () => ({
+        url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['MeetingRequests'],
+      // Poll every 10 seconds to get latest requests
+      pollingInterval: 10000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 4a. Sponsor Meeting Request Action
@@ -853,9 +1023,19 @@ export const api = createApi({
     getSponsorServices: builder.query({
       query: (eventId) => ({
         url: API_ENDPOINTS.SPONSOR_SERVICES,
-        params: { event_id: eventId },
+        params: { 
+          event_id: eventId,
+          // Add timestamp to force fresh request (bypass cache)
+          _t: Date.now(),
+        },
       }),
       providesTags: ['Sponsors'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 6. Sponsor All Attendees
@@ -878,7 +1058,11 @@ export const api = createApi({
         };
       },
       providesTags: ['Attendees'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
       refetchOnMountOrArgChange: true, // Force refetch on mount
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 7. Send Meeting Request (Sponsor)
@@ -893,8 +1077,18 @@ export const api = createApi({
 
     // 8. View Itinerary (Sponsor)
     getSponsorItinerary: builder.query({
-      query: () => API_ENDPOINTS.SPONSOR_VIEW_ITINERARY,
+      query: () => ({
+        url: API_ENDPOINTS.SPONSOR_VIEW_ITINERARY,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['Agenda'],
+      // Poll every 15 seconds to get latest data (optimized for performance)
+      pollingInterval: 15000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
+      // Don't cache - always fetch fresh data
+      keepUnusedDataFor: 0,
     }),
 
     // 9. Sponsor Profile
@@ -954,6 +1148,10 @@ export const api = createApi({
         params: { _t: Date.now() },
       }),
       providesTags: ['Messages'],
+      // Poll every 10 seconds to get latest messages
+      pollingInterval: 10000,
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
       // Don't cache - always fetch fresh data
       keepUnusedDataFor: 0,
     }),
@@ -974,6 +1172,10 @@ export const api = createApi({
         };
       },
       providesTags: ['Messages'],
+      // Poll every 5 seconds for chat messages (more frequent for real-time feel)
+      pollingInterval: 10000, // Increased to 10s for better performance
+      // Refetch when component mounts or screen comes into focus
+      refetchOnMountOrArgChange: true,
       // Don't cache - always fetch fresh data
       keepUnusedDataFor: 0,
     }),

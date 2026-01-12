@@ -4,19 +4,20 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    ImageBackground,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  ImageBackground,
+  Modal,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import { useGetDelegateEventsQuery, useGetSponsorEventsQuery } from '../../store/api';
@@ -172,6 +173,21 @@ export const DashboardScreen = () => {
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
   
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
+  
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -203,11 +219,8 @@ export const DashboardScreen = () => {
   // Transform API event data to display format
   const EVENTS = useMemo(() => {
     if (!eventsData) {
-      console.log('📊 Dashboard: No eventsData');
       return [];
     }
-    
-    console.log('📊 Dashboard: Raw eventsData:', JSON.stringify(eventsData, null, 2));
     
     // Handle different API response structures
     let events = [];
@@ -215,36 +228,32 @@ export const DashboardScreen = () => {
     // Case 1: eventsData.data is an array (most common)
     if (Array.isArray(eventsData.data)) {
       events = eventsData.data;
-      console.log('📊 Dashboard: Found events in eventsData.data:', events.length);
     }
     // Case 2: eventsData itself is an array
     else if (Array.isArray(eventsData)) {
       events = eventsData;
-      console.log('📊 Dashboard: eventsData is direct array:', events.length);
     }
     // Case 3: eventsData.data is a single object
     else if (eventsData.data && typeof eventsData.data === 'object' && !Array.isArray(eventsData.data)) {
       events = [eventsData.data];
-      console.log('📊 Dashboard: Single event object in eventsData.data');
     }
     // Case 4: eventsData is a single object
     else if (eventsData && typeof eventsData === 'object' && !Array.isArray(eventsData) && eventsData.id) {
       events = [eventsData];
-      console.log('📊 Dashboard: eventsData is single event object');
     }
     
     if (events.length === 0) {
-      console.log('📊 Dashboard: No events found');
       return [];
     }
-    
-    console.log('📊 Dashboard: Extracted events before deduplication:', events.length, events.map(e => e?.id));
     
     // Remove duplicates based on event ID (handle both string and number IDs)
     const seenIds = new Set();
     const uniqueEvents = events.filter((event) => {
       if (!event || !event.id) {
-        console.warn('⚠️ Dashboard: Event without ID:', event);
+        // Only log in development for performance
+        if (__DEV__) {
+          console.warn('⚠️ Dashboard: Event without ID:', event);
+        }
         return false;
       }
       // Normalize ID to string for comparison
@@ -412,7 +421,7 @@ export const DashboardScreen = () => {
   ], [SIZES.quickActionIconInner, isDelegate]);
 
   // Show loading state
-  if (isLoading) {
+  if (isLoading && !refreshing) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header
@@ -421,10 +430,7 @@ export const DashboardScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()}
           iconSize={SIZES.headerIconSize}
         />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading events...</Text>
-        </View>
+        <LoadingState message="Loading events..." />
       </SafeAreaView>
     );
   }
@@ -439,13 +445,7 @@ export const DashboardScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()}
           iconSize={SIZES.headerIconSize}
         />
-        <View style={styles.errorContainer}>
-          <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={refetch}>
-            <Text style={styles.retryButtonText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
+        <ErrorState error={errorMessage} onRetry={refetch} />
       </SafeAreaView>
     );
   }
@@ -460,10 +460,7 @@ export const DashboardScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()}
           iconSize={SIZES.headerIconSize}
         />
-        <View style={styles.errorContainer}>
-          <Icon name="calendar" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>No events available</Text>
-        </View>
+        <EmptyState message="No events available" />
       </SafeAreaView>
     );
   }
@@ -485,6 +482,14 @@ export const DashboardScreen = () => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
       >
         <View style={styles.content}>
           {/* Current Event Card */}

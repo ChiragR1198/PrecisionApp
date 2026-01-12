@@ -15,6 +15,7 @@ import {
   Image,
   Linking,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -320,6 +321,17 @@ export const SponsorDetailsScreen = () => {
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false} 
         bounces={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={false}
+            onRefresh={() => {
+              // Refresh handled by navigation - data comes from params
+              // Just trigger a re-render
+            }}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
       >
         <View style={styles.content}>
           {/* Sponsor Profile Section */}

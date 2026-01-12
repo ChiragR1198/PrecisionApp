@@ -10,6 +10,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -19,6 +20,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { ErrorState, LoadingState } from '../../components/States';
 import { colors, radius } from '../../constants/theme';
 import {
   api,
@@ -140,6 +142,21 @@ export const MessageDetailScreen = () => {
   const refetchMessages = isDelegate ? refetchDelegateMessages : refetchSponsorMessages;
   const isFocused = useIsFocused();
   const dispatch = useAppDispatch();
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetchMessages();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchMessages]);
 
   // Mark chat as read when screen comes into focus
   // This ensures unread count is only cleared when user actually opens the chat
@@ -309,16 +326,9 @@ export const MessageDetailScreen = () => {
       // Always update if data changed (new messages detected by different key)
       if (lastProcessedMessagesRef.current !== dataKey || !initializedRef.current) {
         if (dataLength > 0) {
-          console.log(`💬 MessageDetailScreen: Processing ${dataLength} messages (Key: ${dataKey})`);
-          // Map API messages to local format
-          // Log first message to see API structure
-          if (messagesArray.length > 0) {
-            console.log('💬 ========== API RESPONSE DEBUG ==========');
-            console.log('💬 First message from API:', JSON.stringify(messagesArray[0], null, 2));
-            console.log('💬 Current User ID:', currentUserId, typeof currentUserId);
-            console.log('💬 Current User Object:', JSON.stringify(user, null, 2));
-            console.log('💬 Total messages:', messagesArray.length);
-            console.log('💬 =========================================');
+          // Only log in development for performance
+          if (__DEV__) {
+            console.log(`💬 MessageDetailScreen: Processing ${dataLength} messages (Key: ${dataKey})`);
           }
           
           const mappedMessages = messagesArray.map((msg, index) => {
@@ -397,8 +407,8 @@ export const MessageDetailScreen = () => {
               }
             }
             
-            // Always log for debugging (first 5 messages to see pattern)
-            if (index < 5) {
+            // Only log in development for performance
+            if (__DEV__ && index < 5) {
               console.log(`💬 [${index + 1}] Sender: ${sender} | Method: ${detectionMethod}`, {
                 is_send: msg.is_send,
                 from_id: msg.from_id,
@@ -416,20 +426,25 @@ export const MessageDetailScreen = () => {
             };
           });
           
-          console.log(`💬 MessageDetailScreen: Setting ${mappedMessages.length} messages`);
+          // Only log in development for performance
+          if (__DEV__) {
+            console.log(`💬 MessageDetailScreen: Setting ${mappedMessages.length} messages`);
+          }
           setMessages(mappedMessages);
           lastProcessedMessagesRef.current = dataKey;
           initializedRef.current = true;
         } else {
           // Empty array - only set if we haven't initialized yet
           if (!initializedRef.current) {
-            console.log('💬 MessageDetailScreen: No messages found');
+            if (__DEV__) {
+              console.log('💬 MessageDetailScreen: No messages found');
+            }
             setMessages([]);
             lastProcessedMessagesRef.current = dataKey;
             initializedRef.current = true;
           }
         }
-      } else {
+      } else if (__DEV__) {
         console.log('💬 MessageDetailScreen: No changes detected (same dataKey)');
       }
     } else if (!isLoadingMessages && !initializedRef.current) {
@@ -754,11 +769,13 @@ export const MessageDetailScreen = () => {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
         <View style={styles.messagesContainer}>
-          {isLoadingMessages ? (
-            <View style={styles.emptyContainer}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={styles.emptySubtext}>Loading messages...</Text>
-            </View>
+          {isLoadingMessages && !refreshing ? (
+            <LoadingState message="Loading messages..." />
+          ) : messagesError ? (
+            <ErrorState 
+              error={messagesError?.data?.message || messagesError?.message || 'Failed to load messages'} 
+              onRetry={refetchMessages} 
+            />
           ) : messages.length > 0 ? (
             <FlatList
               ref={flatListRef}
@@ -766,9 +783,22 @@ export const MessageDetailScreen = () => {
               keyExtractor={(item) => String(item.id)}
               renderItem={renderMessage}
               contentContainerStyle={styles.messagesContent}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[colors.primary]}
+                  tintColor={colors.primary}
+                />
+              }
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="interactive"
+              removeClippedSubviews={Platform.OS === 'android'}
+              initialNumToRender={15}
+              maxToRenderPerBatch={10}
+              updateCellsBatchingPeriod={50}
+              windowSize={10}
               onContentSizeChange={() => {
                 // Auto-scroll when content size changes (new messages)
                 if (flatListRef.current && messages.length > previousMessagesLengthRef.current) {

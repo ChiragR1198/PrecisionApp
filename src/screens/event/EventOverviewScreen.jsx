@@ -3,9 +3,10 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ImageBackground, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, ImageBackground, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { colors, radius } from '../../constants/theme';
 import { useGetDelegateEventsQuery, useGetSponsorEventsQuery } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
@@ -160,6 +161,21 @@ export const EventOverviewScreen = () => {
   const isLoading = isDelegate ? delegateLoading : sponsorLoading;
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
   
   const errorMessage = useMemo(() => {
     if (!error) return '';
@@ -344,14 +360,11 @@ export const EventOverviewScreen = () => {
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
   // Show loading state
-  if (isLoading) {
+  if (isLoading && !refreshing) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading events...</Text>
-        </View>
+        <LoadingState message="Loading events..." />
       </SafeAreaView>
     );
   }
@@ -361,13 +374,7 @@ export const EventOverviewScreen = () => {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
-        <View style={styles.errorContainer}>
-          <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={refetch}>
-            <Text style={styles.retryButtonText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
+        <ErrorState error={errorMessage} onRetry={refetch} />
       </SafeAreaView>
     );
   }
@@ -377,10 +384,7 @@ export const EventOverviewScreen = () => {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
-        <View style={styles.errorContainer}>
-          <Icon name="calendar" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>No events available</Text>
-        </View>
+        <EmptyState message="No events available" />
       </SafeAreaView>
     );
   }
@@ -388,7 +392,20 @@ export const EventOverviewScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
+      <ScrollView 
+        style={styles.scrollView} 
+        contentContainerStyle={styles.scrollContent} 
+        showsVerticalScrollIndicator={false} 
+        bounces={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
+      >
         <View style={styles.content}>
           <TouchableOpacity style={[styles.currentEventCard, isEventDropdownOpen && styles.currentEventCardActive]} activeOpacity={0.9} onPress={() => setIsEventDropdownOpen(true)}>
             <View style={styles.currentEventContent}>

@@ -1,4 +1,3 @@
-import Icon from '@expo/vector-icons/Feather';
 import FontAwesome6 from '@expo/vector-icons/FontAwesome6';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
@@ -7,18 +6,19 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   BackHandler,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { ErrorState, LoadingState } from '../../components/States';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
 import { useGetAgendaItemQuery } from '../../store/api';
@@ -82,6 +82,21 @@ export const AgendaDetailScreen = () => {
     params?.agendaId,
     { skip: !params?.agendaId }
   );
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
 
   // Debug: Log navigation state on mount
   useEffect(() => {
@@ -268,7 +283,7 @@ export const AgendaDetailScreen = () => {
     </View>
   );
 
-  if (isLoading) {
+  if (isLoading && !refreshing) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
@@ -280,10 +295,7 @@ export const AgendaDetailScreen = () => {
           }} 
           iconSize={SIZES.headerIconSize} 
         />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading agenda details...</Text>
-        </View>
+        <LoadingState message="Loading agenda details..." />
       </SafeAreaView>
     );
   }
@@ -300,10 +312,10 @@ export const AgendaDetailScreen = () => {
           }} 
           iconSize={SIZES.headerIconSize} 
         />
-        <View style={styles.errorContainer}>
-          <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{errorMessage}</Text>
-        </View>
+        <ErrorState 
+          error={error?.data?.message || error?.message || 'Failed to load agenda details'} 
+          onRetry={refetch} 
+        />
       </SafeAreaView>
     );
   }
@@ -320,7 +332,15 @@ export const AgendaDetailScreen = () => {
         iconSize={SIZES.headerIconSize} 
       />
 
-      <ScrollView 
+      <ScrollView
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        } 
         style={styles.scrollView} 
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false} 

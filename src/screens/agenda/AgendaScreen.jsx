@@ -4,6 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useDispatch } from 'react-redux';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { ErrorState, LoadingState } from '../../components/States';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
 import { api, useGetAgendaQuery } from '../../store/api';
@@ -123,6 +125,21 @@ export const AgendaScreen = () => {
   
   const [selectedDateIndex, setSelectedDateIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
 
   const agenda = useMemo(() => {
     return agendaResponse?.data || agendaResponse || [];
@@ -293,11 +310,24 @@ const hasAnyResults = useMemo(() => {
         iconSize={SIZES.headerIconSize} 
       />
 
+      {isLoading && !refreshing && !agendaResponse ? (
+        <LoadingState message="Loading agenda..." />
+      ) : error ? (
+        <ErrorState error={errorMessage} onRetry={refetch} />
+      ) : (
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false} 
         bounces={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
       >
         <View style={styles.content}>
           {/* Date Selector - always visible; shows inline spinner on selected pill while loading */}
@@ -339,14 +369,6 @@ const hasAnyResults = useMemo(() => {
           </View>
 
           
-          {/* Error State */}
-          {error && !isLoading && (
-            <View style={styles.errorContainer}>
-              <Icon name="alert-circle" size={48} color={colors.textMuted} />
-              <Text style={styles.errorText}>{errorMessage}</Text>
-            </View>
-          )}
-
           {/* Search Bar */}
           <SearchBar
             placeholder="Search agenda items..."
@@ -354,18 +376,8 @@ const hasAnyResults = useMemo(() => {
             onChangeText={setSearchQuery}
           />
 
-          {/* Agenda Sections: now handle loading/error inside this area */}
-          {isLoading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={styles.loadingText}>Loading agenda...</Text>
-            </View>
-          ) : error ? (
-            <View style={styles.errorContainer}>
-              <Icon name="alert-circle" size={48} color={colors.textMuted} />
-              <Text style={styles.errorText}>{errorMessage}</Text>
-            </View>
-          ) : hasAnyResults ? (
+          {/* Agenda Sections */}
+          {hasAnyResults ? (
             <>
               <AgendaSection 
                 title="Morning" 
@@ -400,6 +412,7 @@ const hasAnyResults = useMemo(() => {
           )}
         </View>
       </ScrollView>
+      )}
     </SafeAreaView>
   );
 };

@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
+  RefreshControl,
   SectionList,
   StyleSheet,
   Text,
@@ -17,6 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { colors, radius } from '../../constants/theme';
 import { useDeleteDelegateContactMutation, useDeleteSponsorContactMutation, useGetDelegateContactsQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
@@ -44,6 +46,21 @@ export const ContactsScreen = () => {
     skip: shouldSkip,
     refetchOnMountOrArgChange: true,
   });
+
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
 
   const [deleteDelegateContact, { isLoading: isDeletingDelegate }] = useDeleteDelegateContactMutation();
   const [deleteSponsorContact, { isLoading: isDeletingSponsor }] = useDeleteSponsorContactMutation();
@@ -188,18 +205,13 @@ export const ContactsScreen = () => {
             <Text style={styles.emptyTitle}>Contacts Not Available</Text>
             <Text style={styles.emptySubtitle}>Only delegate users can view and manage contacts.</Text>
           </View>
-        ) : isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Loading contacts...</Text>
-          </View>
+        ) : isLoading && !refreshing ? (
+          <LoadingState message="Loading contacts..." />
         ) : error ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>Error Loading Contacts</Text>
-            <Text style={styles.emptySubtitle}>
-              {error?.data?.message || error?.message || 'Failed to load contacts. Please try again.'}
-            </Text>
-          </View>
+          <ErrorState 
+            error={error?.data?.message || error?.message || 'Failed to load contacts. Please try again.'} 
+            onRetry={refetch} 
+          />
         ) : (
           <>
             <View style={styles.searchWrap}>
@@ -217,6 +229,17 @@ export const ContactsScreen = () => {
               keyExtractor={(item) => item.id?.toString() || `${item.name}-${item.phone}`}
               renderItem={renderContact}
               renderSectionHeader={renderSectionHeader}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[colors.primary]}
+                  tintColor={colors.primary}
+                />
+              }
+              ListEmptyComponent={
+                <EmptyState message="No contacts found." />
+              }
               stickySectionHeadersEnabled={false}
               showsVerticalScrollIndicator={false}
               contentContainerStyle={[

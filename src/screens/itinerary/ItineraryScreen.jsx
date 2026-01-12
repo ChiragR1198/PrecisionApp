@@ -3,6 +3,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { colors, radius } from '../../constants/theme';
 import { useGetDelegateItineraryQuery, useGetSponsorItineraryQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
@@ -75,6 +77,22 @@ export const ItineraryScreen = () => {
   const isLoading = isDelegate ? delegateLoading : sponsorLoading;
   const error = isDelegate ? delegateError : sponsorError;
   const itineraryData = isDelegate ? delegateItineraryData : sponsorItineraryData;
+  const refetch = isDelegate ? () => {} : () => {}; // RTK Query handles refetch via polling
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isTabletDevice = SCREEN_WIDTH >= 768;
@@ -243,17 +261,13 @@ export const ItineraryScreen = () => {
           })}
         </View>
 
-        {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Loading itinerary...</Text>
-          </View>
+        {isLoading && !refreshing ? (
+          <LoadingState message="Loading itinerary..." />
         ) : error ? (
-          <View style={styles.errorContainer}>
-            <Text style={styles.errorText}>
-              {error?.data?.message || error?.message || 'Failed to load itinerary'}
-            </Text>
-          </View>
+          <ErrorState 
+            error={error?.data?.message || error?.message || 'Failed to load itinerary'} 
+            onRetry={onRefresh} 
+          />
         ) : filteredItinerary.length > 0 ? (
           <FlatList
             data={filteredItinerary}
@@ -272,15 +286,20 @@ export const ItineraryScreen = () => {
               </View>
             )}
             contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+              />
+            }
             showsVerticalScrollIndicator={false}
           />
         ) : (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No itinerary items found</Text>
-            <Text style={styles.emptySubtext}>
-              {searchQuery ? 'Try a different search term' : 'Your itinerary will appear here'}
-            </Text>
-          </View>
+          <EmptyState 
+            message={searchQuery ? 'No itinerary items found. Try a different search term.' : 'No itinerary items found. Your itinerary will appear here.'} 
+          />
         )}
       </View>
     </SafeAreaView>

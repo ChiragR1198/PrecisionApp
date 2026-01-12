@@ -1,5 +1,5 @@
 import Icon from '@expo/vector-icons/Feather';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -10,6 +10,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -20,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import UserAvatar from '../../assets/images/user.png';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { colors, radius } from '../../constants/theme';
 import {
   useDelegateMeetingRequestActionMutation,
@@ -58,6 +60,21 @@ export const MeetingRequestsScreen = () => {
   const isLoading = isDelegate ? isLoadingDelegate : isLoadingSponsor;
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? refetchDelegate : refetchSponsor;
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
   
   // Use appropriate mutation based on user type
   const [updateDelegateMeetingRequest] = useDelegateMeetingRequestActionMutation();
@@ -294,6 +311,14 @@ export const MeetingRequestsScreen = () => {
     }
   }, [isActionModalVisible, actionModalAnim]);
 
+  // Refetch data when screen comes into focus (user navigates back to this screen)
+  useFocusEffect(
+    React.useCallback(() => {
+      // Refetch meeting requests when screen is focused
+      refetch();
+    }, [refetch])
+  );
+
   const renderContact = ({ item }) => (
     <View style={styles.contactRow}>
       <View style={[styles.avatarWrapper, { width: SIZES.avatarSize, height: SIZES.avatarSize, borderRadius: SIZES.avatarSize / 2 }]}>
@@ -390,14 +415,10 @@ export const MeetingRequestsScreen = () => {
             style={styles.searchBar}
           />
         </View>
-        {isLoading ? (
-          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center' }]}>
-            <Text style={styles.loadingText}>Loading meeting requests...</Text>
-          </View>
+        {isLoading && !refreshing ? (
+          <LoadingState message="Loading meeting requests..." />
         ) : error ? (
-          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center' }]}>
-            <Text style={styles.errorText}>{errorMessage}</Text>
-          </View>
+          <ErrorState error={errorMessage} onRetry={refetch} />
         ) : (
           <FlatList
             data={filteredContacts}
@@ -406,12 +427,25 @@ export const MeetingRequestsScreen = () => {
             ItemSeparatorComponent={() => <View style={styles.separator} />}
             contentContainerStyle={[
               styles.listContent,
-              filteredContacts.length === 0 && { flex: 1, alignItems: 'center', justifyContent: 'center' },
+              filteredContacts.length === 0 && { flex: 1 },
             ]}
             ListEmptyComponent={
-              <Text style={styles.emptyText}>No meeting requests found.</Text>
+              <EmptyState message="No meeting requests found." />
+            }
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+              />
             }
             showsVerticalScrollIndicator={false}
+            removeClippedSubviews={Platform.OS === 'android'}
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            updateCellsBatchingPeriod={50}
+            windowSize={10}
           />
         )}
       </View>

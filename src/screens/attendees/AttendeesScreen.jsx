@@ -11,6 +11,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -21,6 +22,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import {
@@ -143,6 +145,21 @@ export const AttendeesScreen = () => {
   const isLoading = isDelegate ? delegateLoading : sponsorLoading;
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
+  
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  
+  // Handle pull-to-refresh
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetch]);
   
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
@@ -628,7 +645,7 @@ export const AttendeesScreen = () => {
   );
 
   // Show loading state
-  if (isLoading) {
+  if (isLoading && !refreshing) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
@@ -637,10 +654,7 @@ export const AttendeesScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()} 
           iconSize={SIZES.headerIconSize} 
         />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading attendees...</Text>
-        </View>
+        <LoadingState message="Loading attendees..." />
       </SafeAreaView>
     );
   }
@@ -655,13 +669,7 @@ export const AttendeesScreen = () => {
           onLeftPress={() => navigation.openDrawer?.()} 
           iconSize={SIZES.headerIconSize} 
         />
-        <View style={styles.errorContainer}>
-          <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={refetch}>
-            <Text style={styles.retryButtonText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
+        <ErrorState error={errorMessage} onRetry={refetch} />
       </SafeAreaView>
     );
   }
@@ -717,6 +725,14 @@ export const AttendeesScreen = () => {
               renderItem={renderItem}
               ItemSeparatorComponent={itemSeparator}
               contentContainerStyle={styles.listContent}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[colors.primary]}
+                  tintColor={colors.primary}
+                />
+              }
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               removeClippedSubviews={Platform.OS === 'android'}
