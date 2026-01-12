@@ -357,6 +357,7 @@ export const MessagesScreen = () => {
           pathname: '/message-detail',
           params: {
             thread: JSON.stringify(item),
+            returnTo: 'messages', // Track where we came from
           },
         })
       }

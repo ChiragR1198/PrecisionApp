@@ -8,9 +8,10 @@ import Octicons from '@expo/vector-icons/Octicons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import {
   Alert,
+  BackHandler,
   Image,
   Linking,
   Platform,
@@ -187,6 +188,43 @@ export const SponsorDetailsScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  // Handle back navigation (both header back button and hardware back button)
+  const handleBack = useCallback(() => {
+    console.log('🔙 SponsorDetailsScreen: handleBack called');
+    
+    // For expo-router with drawer navigation, explicitly navigate to sponsors screen
+    try {
+      console.log('🔙 Navigating to sponsors screen');
+      router.push('/(drawer)/sponsors');
+    } catch (error) {
+      console.error('❌ Navigation failed:', error);
+      // Fallback: try router.back()
+      try {
+        console.log('🔙 Fallback: trying router.back()');
+        router.back();
+      } catch (backError) {
+        console.error('❌ Router.back() also failed:', backError);
+      }
+    }
+  }, []);
+
+  // Handle Android hardware back button
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      console.log('🔙 Setting up Android BackHandler (SponsorDetailsScreen)');
+      const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+        console.log('🔙 Hardware back button pressed (SponsorDetailsScreen)');
+        handleBack();
+        return true; // Prevent default behavior (exit app)
+      });
+
+      return () => {
+        console.log('🔙 Removing BackHandler (SponsorDetailsScreen)');
+        backHandler.remove();
+      };
+    }
+  }, [handleBack]);
+
   const handleStartChat = () => {
     // Prepare thread data for MessageDetailScreen
     // MessageDetailScreen expects: user_id, user_type, name, avatar/user_image
@@ -211,11 +249,13 @@ export const SponsorDetailsScreen = () => {
       email: sponsor.email,
     };
 
-    // Navigate to MessageDetailScreen
+    // Navigate to MessageDetailScreen with returnTo parameter and original sponsor data
     router.push({
       pathname: '/message-detail',
       params: {
         thread: JSON.stringify(threadData),
+        returnTo: 'sponsor-details', // Track where we came from
+        returnSponsor: JSON.stringify(sponsor), // Pass sponsor data to navigate back
       },
     });
   };
@@ -271,7 +311,7 @@ export const SponsorDetailsScreen = () => {
       <Header 
         title={isDelegate ? 'Delegate Details' : 'Sponsors Details'} 
         leftIcon="arrow-left" 
-        onLeftPress={() => router.push('/sponsors')} 
+        onLeftPress={handleBack} 
         iconSize={SIZES.headerIconSize} 
       />
 
@@ -376,7 +416,7 @@ export const SponsorDetailsScreen = () => {
       </ScrollView>
 
       {/* Start Chat Button */}
-      <View style={[styles.bottomButtonContainer, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+      <View style={[styles.bottomButtonContainer, { bottom: 0, paddingBottom: Math.max(insets.bottom, 0) + 16 }]}>
         <TouchableOpacity style={styles.startChatButton} onPress={handleStartChat} activeOpacity={0.8}>
           <LinearGradient
             colors={colors.gradient}
@@ -571,7 +611,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   bottomButtonContainer: {
     position: 'absolute',
-    bottom: 0,
     left: 0,
     right: 0,
     paddingHorizontal: SIZES.paddingHorizontal,
@@ -579,7 +618,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     backgroundColor: colors.background,
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    // paddingBottom will be set dynamically based on safe area insets
+    // bottom and paddingBottom will be set dynamically based on safe area insets
   },
   startChatButton: {
     width: '100%',

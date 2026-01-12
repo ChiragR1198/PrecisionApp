@@ -63,18 +63,27 @@ function RootLayoutNav() {
                           currentSegment === 'forgot-password' || currentSegment === 'email-verification' || 
                           currentSegment === 'reset-password';
 
-    if (!isAuthenticated) {
-      // User is not authenticated, redirect to login if trying to access protected routes or at root
-      if (inAuthGroup || !currentSegment) {
-        router.replace('/login');
+    // Add a small delay to ensure navigator is fully ready
+    const timer = setTimeout(() => {
+      try {
+        if (!isAuthenticated) {
+          // User is not authenticated, redirect to login if trying to access protected routes or at root
+          if (inAuthGroup || !currentSegment) {
+            router.replace('/login');
+          }
+        } else {
+          // User is authenticated, redirect to dashboard if on auth screens or at root
+          if (isOnAuthScreen || !currentSegment) {
+            router.replace('/(drawer)/dashboard');
+          }
+        }
+      } catch (navError) {
+        console.warn('⚠️ Navigation error:', navError);
       }
-    } else {
-      // User is authenticated, redirect to dashboard if on auth screens or at root
-      if (isOnAuthScreen || !currentSegment) {
-        router.replace('/(drawer)/dashboard');
-      }
-    }
-  }, [isAuthenticated, isLoading, segments, navigationState?.key]);
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [isAuthenticated, isLoading, segments, navigationState?.key, router]);
 
   // Show loading screen while checking authentication
   if (isLoading) {

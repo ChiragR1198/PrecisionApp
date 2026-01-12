@@ -11,11 +11,12 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useDispatch } from 'react-redux';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
-import { useGetAgendaQuery } from '../../store/api';
+import { api, useGetAgendaQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const MapPinIcon = Icons.MapPin;
@@ -79,6 +80,7 @@ const normalizeWhitespace = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' 
 export const AgendaScreen = () => {
   const navigation = useNavigation();
   const params = useLocalSearchParams();
+  const dispatch = useDispatch();
   const { user } = useAppSelector((state) => state.auth);
   const { selectedEventId } = useAppSelector((state) => state.event);
   
@@ -104,6 +106,8 @@ export const AgendaScreen = () => {
   // Pass eventId to get agenda for the selected event
   const { data: agendaResponse, isLoading, error, refetch } = useGetAgendaQuery(eventId, {
     skip: !eventId,
+    // Refetch when screen comes into focus to get latest data
+    refetchOnFocus: true,
   });
   const errorMessage = useMemo(() => {
     if (!error) return '';
@@ -219,10 +223,20 @@ const hasAnyResults = useMemo(() => {
     <TouchableOpacity 
       style={styles.agendaCard} 
       onPress={() => {
+        // Pre-fetch the agenda item data for instant loading
+        dispatch(api.util.prefetch('getAgendaItem', item.id.toString(), { force: true }));
+        
+        // Navigate with both ID and initial data for optimistic UI
         router.push({
-          pathname: '/agenda-detail',
+          pathname: '/(drawer)/agenda-detail',
           params: {
-            agendaId: item.id.toString()
+            agendaId: item.id.toString(),
+            // Pass initial data to show immediately
+            initialTitle: item.title || '',
+            initialTime: item.timeOriginal || item.time || '',
+            initialDescription: item.description || '',
+            initialLocation: item.location || '',
+            initialDate: item.date || '',
           }
         });
       }}
