@@ -55,7 +55,7 @@ export const requestNotificationPermissions = async () => {
 export const getNotificationToken = async () => {
   try {
     const token = await Notifications.getExpoPushTokenAsync({
-      projectId: '0439d5f9-4716-47e0-a8f3-07b17c27a43d', // From app.json
+      projectId: '0439d5f9-4716-47e0-a8f3-07b17c27a43d',
     });
     console.log('📱 Notification token:', token.data);
     return token.data;
@@ -67,9 +67,9 @@ export const getNotificationToken = async () => {
 
 /**
  * Show local notification for new message
- * @param {string} title - Notification title
- * @param {string} body - Notification body (message text)
- * @param {object} data - Additional data (user_id, thread_id, etc.)
+ * @param {string} title
+ * @param {string} body
+ * @param {object} data
  */
 export const showMessageNotification = async (title, body, data = {}) => {
   try {
@@ -84,7 +84,7 @@ export const showMessageNotification = async (title, body, data = {}) => {
         sound: 'default',
         priority: Notifications.AndroidNotificationPriority.HIGH,
       },
-      trigger: null, // Show immediately
+      trigger: null,
     });
     console.log('📬 Notification shown:', { title, body });
   } catch (error) {
@@ -106,11 +106,10 @@ export const cancelAllNotifications = async () => {
 
 /**
  * Setup notification listener
- * @param {function} onNotificationReceived - Callback when notification received
+ * @param {function} onNotificationReceived
  * @returns {function} Cleanup function
  */
 export const setupNotificationListener = (onNotificationReceived) => {
-  // Listener for notifications received while app is foregrounded
   const notificationListener = Notifications.addNotificationReceivedListener((notification) => {
     console.log('📬 Notification received (foreground):', notification);
     if (onNotificationReceived) {
@@ -118,7 +117,6 @@ export const setupNotificationListener = (onNotificationReceived) => {
     }
   });
 
-  // Listener for user tapping on notification
   const responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
     console.log('👆 Notification tapped:', response);
     const data = response.notification.request.content.data;
@@ -127,9 +125,8 @@ export const setupNotificationListener = (onNotificationReceived) => {
     }
   });
 
-  // Return cleanup function
+  // Cleanup
   return () => {
-    // Use .remove() method on subscription objects instead of removeNotificationSubscription
     if (notificationListener && typeof notificationListener.remove === 'function') {
       notificationListener.remove();
     }
@@ -138,4 +135,3 @@ export const setupNotificationListener = (onNotificationReceived) => {
     }
   };
 };
-

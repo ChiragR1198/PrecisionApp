@@ -8,21 +8,36 @@
       "distribution": "internal",
       "android": {
         "gradleCommand": ":app:assembleDebug"
+      },
+      "ios": {
+        "simulator": true
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "ios": {
+        "simulator": false
       }
     },
     "production": {
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "simulator": false
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "appleId": "richeysharif@gmail.com",
+        "ascAppId": "6759138301"
+      }
+    }
   }
 }
+                  

@@ -22,17 +22,44 @@ const MapPinIcon = ({ color = colors.white, size = 14 }) => (
 // Helper function to format date
 const formatDate = (dateFrom, dateTo) => {
   if (!dateFrom) return '';
-  
-  const formatDateString = (dateStr) => {
-    const date = new Date(dateStr);
-    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
-  };
 
-  if (dateTo && dateFrom !== dateTo) {
-    return `${formatDateString(dateFrom)} - ${formatDateString(dateTo)}`;
+  const months = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+
+  const formatFullDate = (date) =>
+    `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+
+  const formatMonthDay = (date) =>
+    `${months[date.getMonth()]} ${date.getDate()}`;
+
+  const fromDate = new Date(dateFrom);
+  const toDate = dateTo ? new Date(dateTo) : null;
+
+  if (toDate && dateFrom !== dateTo) {
+    const sameYear = fromDate.getFullYear() === toDate.getFullYear();
+
+    // Example: April 30 – May 1, 2026 (en dash, year once)
+    if (sameYear) {
+      return `${formatMonthDay(fromDate)} – ${formatMonthDay(toDate)}, ${fromDate.getFullYear()}`;
+    }
+
+    // Different years: April 30, 2026 – May 1, 2027
+    return `${formatFullDate(fromDate)} – ${formatFullDate(toDate)}`;
   }
-  return formatDateString(dateFrom);
+
+  return formatFullDate(fromDate);
 };
 
 // Helper function to calculate dynamic font size based on title length
@@ -436,9 +463,9 @@ export const EventOverviewScreen = () => {
           <View style={styles.statsSection}>
             <Text style={styles.sectionTitle}>Event Statistics</Text>
             <View style={styles.statsGrid}>
-              <StatCard value="190+" label="Speakers" icon="mic" startAnimation={shouldAnimateStats} />
+              <StatCard value="20+" label="Speakers" icon="mic" startAnimation={shouldAnimateStats} />
               <StatCard value="4+" label="Panel Discussions" icon="sliders" startAnimation={shouldAnimateStats} />
-              <StatCard value="30+" label="Event Attendance" icon="users" startAnimation={shouldAnimateStats} />
+              <StatCard value="200+" label="Event Attendance" icon="users" startAnimation={shouldAnimateStats} />
             </View>
             <View style={[styles.statsGrid, { marginTop: SIZES.cardSpacing }]}>
               <StatCard value="170+" label="Meetings" icon="calendar" startAnimation={shouldAnimateStats} />
