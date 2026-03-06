@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -66,6 +67,15 @@ export const MessageDetailScreen = () => {
   const [sendDelegateMessage, { isLoading: delegateSending }] = useSendDelegateMessageMutation();
   const [sendSponsorMessage, { isLoading: sponsorSending }] = useSendSponsorMessageMutation();
   const isSending = delegateSending || sponsorSending;
+
+  // Debug: Log params when they change
+  useEffect(() => {
+    console.log('📋 MessageDetailScreen params changed:', {
+      allParams: params,
+      returnTo: params?.returnTo,
+      hasThread: !!params?.thread,
+    });
+  }, [params]);
 
   // Parse thread from params
   const thread = useMemo(() => {
@@ -578,11 +588,112 @@ export const MessageDetailScreen = () => {
     );
   };
 
-  // Handle back navigation to MessagesScreen
+  // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
-    // Explicitly navigate to messages screen (like other detail screens do)
-    router.push('/messages');
-  }, []);
+    console.log('🔙 MessageDetailScreen: handleBack called');
+    console.log('🔙 All params:', params);
+    console.log('🔙 ReturnTo param:', params?.returnTo);
+    console.log('🔙 ReturnTo type:', typeof params?.returnTo);
+    console.log('🔙 ReturnTo === "messages":', params?.returnTo === 'messages');
+    console.log('🔙 Navigation canGoBack:', navigation.canGoBack());
+    
+    // Check if we have returnTo parameter (navigated from detail screen or list screen)
+    // Handle both string and array formats (expo-router sometimes returns arrays)
+    const returnTo = Array.isArray(params?.returnTo) ? params.returnTo[0] : params?.returnTo;
+    console.log('🔙 Processed returnTo:', returnTo);
+    
+    if (returnTo === 'sponsor-details' && params?.returnSponsor) {
+      // Navigate back to sponsor details screen with original data
+      try {
+        console.log('🔙 Navigating back to sponsor-details screen with data');
+        router.push({
+          pathname: '/sponsor-details',
+          params: {
+            sponsor: params.returnSponsor, // Pass original sponsor data
+          },
+        });
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to sponsor-details failed:', error);
+      }
+    } else if (returnTo === 'delegate-details' && params?.returnDelegate) {
+      // Navigate back to delegate details screen with original data
+      try {
+        console.log('🔙 Navigating back to delegate-details screen with data');
+        router.push({
+          pathname: '/delegate-details',
+          params: {
+            delegate: params.returnDelegate, // Pass original delegate data
+          },
+        });
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to delegate-details failed:', error);
+      }
+    } else if (returnTo === 'sponsors') {
+      // Navigate back to sponsors screen (from list)
+      try {
+        console.log('🔙 Navigating back to sponsors screen');
+        router.push('/(drawer)/sponsors');
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to sponsors failed:', error);
+      }
+    } else if (returnTo === 'attendees') {
+      // Navigate back to attendees screen (from list)
+      try {
+        console.log('🔙 Navigating back to attendees screen');
+        router.push('/(drawer)/attendees');
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to attendees failed:', error);
+      }
+    } else if (returnTo === 'messages') {
+      // Navigate back to messages screen (from list)
+      // For expo-router with drawer navigation, explicitly navigate to messages screen
+      try {
+        console.log('🔙 Navigating back to messages screen');
+        router.push('/(drawer)/messages');
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to messages failed:', error);
+        // Fallback: try router.back()
+        try {
+          console.log('🔙 Fallback: trying router.back()');
+          router.back();
+        } catch (backError) {
+          console.error('❌ Router.back() also failed:', backError);
+        }
+      }
+    }
+    
+    // If no returnTo param, try router.back() first
+    try {
+      console.log('🔙 Trying router.back()');
+      router.back();
+    } catch (error) {
+      console.warn('⚠️ router.back() failed, navigating to messages screen');
+      // Last resort: navigate to messages screen
+      try {
+        console.log('🔙 Fallback: navigating to messages screen');
+        router.push('/(drawer)/messages');
+      } catch (navError) {
+        console.error('❌ All navigation methods failed:', navError);
+      }
+    }
+  }, [navigation, params?.returnTo, params?.returnSponsor, params?.returnDelegate]);
+
+  // Handle Android hardware back button
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+        handleBack();
+        return true; // Prevent default behavior
+      });
+
+      return () => backHandler.remove();
+    }
+  }, [handleBack]);
 
   if (!thread) {
     return (
@@ -603,7 +714,7 @@ export const MessageDetailScreen = () => {
   const threadAvatar = thread.avatar || thread.user_image || null;
 
   return (
-    <SafeAreaView style={styles.container} edges={[]}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
         leftIcon="arrow-left"
         onLeftPress={handleBack}
@@ -639,66 +750,68 @@ export const MessageDetailScreen = () => {
 
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
-        {isLoadingMessages ? (
-          <View style={styles.emptyContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.emptySubtext}>Loading messages...</Text>
-          </View>
-        ) : messages.length > 0 ? (
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            keyExtractor={(item) => String(item.id)}
-            renderItem={renderMessage}
-            contentContainerStyle={styles.messagesContent}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="interactive"
-            onContentSizeChange={() => {
-              // Auto-scroll when content size changes (new messages)
-              if (flatListRef.current && messages.length > previousMessagesLengthRef.current) {
-                setTimeout(() => {
-                  flatListRef.current?.scrollToEnd({ animated: true });
-                }, 100);
-              }
-            }}
-          />
-        ) : (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No messages yet</Text>
-            <Text style={styles.emptySubtext}>Start the conversation</Text>
-          </View>
-        )}
-
-        <View style={[styles.inputBar, { paddingHorizontal: SIZES.paddingHorizontal, paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, 12) : 12 }]}>
-        <TouchableOpacity activeOpacity={0.7} style={styles.attachButton}>
-          <Text style={styles.attachText}>＋</Text>
-        </TouchableOpacity>
-        <TextInput
-          style={styles.input}
-          placeholder="Message"
-          placeholderTextColor={colors.textMuted}
-          value={inputValue}
-          onChangeText={setInputValue}
-          editable={!isSending}
-          onSubmitEditing={handleSendMessage}
-        />
-        <TouchableOpacity
-          activeOpacity={0.8}
-          style={[styles.sendButton, (isSending || !inputValue.trim()) && styles.sendButtonDisabled]}
-          onPress={handleSendMessage}
-          disabled={isSending || !inputValue.trim()}
-        >
-          {isSending ? (
-            <ActivityIndicator size="small" color={colors.white} />
+        <View style={styles.messagesContainer}>
+          {isLoadingMessages ? (
+            <View style={styles.emptyContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.emptySubtext}>Loading messages...</Text>
+            </View>
+          ) : messages.length > 0 ? (
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={renderMessage}
+              contentContainerStyle={styles.messagesContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
+              onContentSizeChange={() => {
+                // Auto-scroll when content size changes (new messages)
+                if (flatListRef.current && messages.length > previousMessagesLengthRef.current) {
+                  setTimeout(() => {
+                    flatListRef.current?.scrollToEnd({ animated: true });
+                  }, 100);
+                }
+              }}
+            />
           ) : (
-            <Text style={styles.sendIcon}>➤</Text>
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>No messages yet</Text>
+              <Text style={styles.emptySubtext}>Start the conversation</Text>
+            </View>
           )}
-        </TouchableOpacity>
-      </View>
+        </View>
+
+        <View style={[styles.inputBar, { paddingHorizontal: SIZES.paddingHorizontal, paddingBottom: Math.max(insets.bottom - 34, 0) }]}>
+          <TouchableOpacity activeOpacity={0.7} style={styles.attachButton}>
+            <Text style={styles.attachText}>＋</Text>
+          </TouchableOpacity>
+          <TextInput
+            style={styles.input}
+            placeholder="Message"
+            placeholderTextColor={colors.textMuted}
+            value={inputValue}
+            onChangeText={setInputValue}
+            editable={!isSending}
+            onSubmitEditing={handleSendMessage}
+          />
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={[styles.sendButton, (isSending || !inputValue.trim()) && styles.sendButtonDisabled]}
+            onPress={handleSendMessage}
+            disabled={isSending || !inputValue.trim()}
+          >
+            {isSending ? (
+              <ActivityIndicator size="small" color={colors.white} />
+            ) : (
+              <Text style={styles.sendIcon}>➤</Text>
+            )}
+          </TouchableOpacity>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -711,6 +824,9 @@ const createStyles = (SIZES) =>
       backgroundColor: colors.background,
     },
     keyboardAvoidingView: {
+      flex: 1,
+    },
+    messagesContainer: {
       flex: 1,
     },
     headerCenter: {
@@ -749,6 +865,7 @@ const createStyles = (SIZES) =>
     },
     messagesContent: {
       paddingVertical: 16,
+      paddingBottom: 20, // Add padding to prevent messages from going under input bar
       flexGrow: 1,
     },
     messageRow: {

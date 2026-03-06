@@ -1,13 +1,19 @@
 import Icon from '@expo/vector-icons/Feather';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Animated,
+  BackHandler,
   Image,
   Linking,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -50,11 +56,17 @@ const ExternalLinkIcon = ({ color = colors.textMuted, size = 16 }) => (
 );
 
 export const DelegateDetailsScreen = () => {
-
+  const navigation = useNavigation();
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const [priority, setPriority] = useState('1st');
   const { user } = useAppSelector((state) => state.auth);
+  
+  // Modal states for meeting request
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [isSendingRequest, setIsSendingRequest] = useState(false);
+  const [isRequestSuccess, setIsRequestSuccess] = useState(false);
+  const modalAnim = useRef(new Animated.Value(0)).current;
 
   // Determine user type
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -116,6 +128,66 @@ export const DelegateDetailsScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  // Modal animation
+  useEffect(() => {
+    if (isModalVisible) {
+      Animated.spring(modalAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 8,
+      }).start();
+    } else {
+      Animated.timing(modalAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [isModalVisible, modalAnim]);
+
+  // Handle back navigation (both header back button and hardware back button)
+  const handleBack = useCallback(() => {
+    console.log('🔙 DelegateDetailsScreen: handleBack called');
+    
+    // For expo-router with drawer navigation, explicitly navigate to attendees screen
+    try {
+      console.log('🔙 Navigating to attendees screen');
+      router.push('/(drawer)/attendees');
+    } catch (error) {
+      console.error('❌ Navigation failed:', error);
+      // Fallback: try router.back()
+      try {
+        console.log('🔙 Fallback: trying router.back()');
+        router.back();
+      } catch (backError) {
+        console.error('❌ Router.back() also failed:', backError);
+      }
+    }
+  }, []);
+
+  // Handle Android hardware back button
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      console.log('🔙 Setting up Android BackHandler (DelegateDetailsScreen)');
+      const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+        console.log('🔙 Hardware back button pressed (DelegateDetailsScreen)');
+        handleBack();
+        return true; // Prevent default behavior (exit app)
+      });
+
+      return () => {
+        console.log('🔙 Removing BackHandler (DelegateDetailsScreen)');
+        backHandler.remove();
+      };
+    }
+  }, [handleBack]);
+
+  const closeModal = () => {
+    setIsModalVisible(false);
+    setIsSendingRequest(false);
+    setIsRequestSuccess(false);
+  };
+
   const handleSendMeetingRequest = async () => {
     try {
       // Validate attendee ID
@@ -123,6 +195,11 @@ export const DelegateDetailsScreen = () => {
         Alert.alert('Error', `Invalid ${isDelegate ? 'sponsor' : 'delegate'} ID`);
         return;
       }
+
+      // Open modal with loading state
+      setIsModalVisible(true);
+      setIsSendingRequest(true);
+      setIsRequestSuccess(false);
 
       // Map priority text to number: 1st=1, 2nd=2
       const priorityMap = { '1st': 1, '2nd': 2 };
@@ -154,9 +231,13 @@ export const DelegateDetailsScreen = () => {
 
       await createMeetingRequest(payload).unwrap();
 
-      Alert.alert('Success', 'Meeting request sent successfully');
+      // Show success state
+      setIsSendingRequest(false);
+      setIsRequestSuccess(true);
     } catch (e) {
       console.error('Error sending meeting request:', e);
+      setIsSendingRequest(false);
+      setIsRequestSuccess(false);
       Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
     }
   };
@@ -185,6 +266,8 @@ export const DelegateDetailsScreen = () => {
       pathname: '/message-detail',
       params: {
         thread: JSON.stringify(thread),
+        returnTo: 'delegate-details', // Track where we came from
+        returnDelegate: JSON.stringify(delegate), // Pass delegate data to navigate back
       },
     });
   };
@@ -249,7 +332,7 @@ export const DelegateDetailsScreen = () => {
       <Header 
         title="Delegate Details" 
         leftIcon="arrow-left" 
-        onLeftPress={() => router.push('/attendees')}
+        onLeftPress={handleBack}
         iconSize={SIZES.headerIconSize} 
       />
 
@@ -406,6 +489,70 @@ export const DelegateDetailsScreen = () => {
           )}
         </View>
       </ScrollView>
+
+      {/* Meeting Request Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isModalVisible}
+        onRequestClose={closeModal}
+      >
+        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
+          <Pressable 
+            style={StyleSheet.absoluteFill} 
+            onPress={closeModal}
+          />
+          <Animated.View
+            style={[
+              styles.modalCard2,
+              {
+                transform: [
+                  {
+                    translateY: modalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.modalHeader2}>
+              <Text style={styles.modalTitle2}>Send Meeting Request</Text>
+              <TouchableOpacity onPress={closeModal}>
+                <Text style={styles.closeText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {isRequestSuccess ? (
+              // Success State
+              <View style={styles.successContainer}>
+                <View style={styles.successIconContainer}>
+                  <Icon name="check-circle" size={64} color={colors.primary} />
+                </View>
+                <Text style={styles.successTitle}>Request Sent Successfully!</Text>
+                <Text style={styles.successMessage}>
+                  Your meeting request has been sent to {isDelegate ? delegate.name : (delegate.full_name || delegate.name)}.
+                </Text>
+                <View style={styles.successButtonContainer}>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.primaryButton, styles.successButton]}
+                    onPress={closeModal}
+                  >
+                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              // Loading State
+              <View style={styles.loadingContainerModal}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingTextModal}>Sending request...</Text>
+              </View>
+            )}
+          </Animated.View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -593,6 +740,182 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: SIZES.body,
     fontWeight: '600',
     color: colors.white,
+  },
+  // Meeting Request Modal styles
+  modalBackdrop2: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  modalCard2: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 34, // Add extra padding at bottom for safe area
+    width: '100%',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+      },
+      android: {
+        elevation: 5,
+      },
+    }),
+  },
+  modalHeader2: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle2: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  closeText: {
+    fontSize: 20,
+    color: colors.textMuted,
+  },
+  modalContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: colors.gray50,
+    marginBottom: 16,
+  },
+  modalAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: 'hidden',
+    marginRight: 12,
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  modalContactInfo: {
+    flex: 1,
+  },
+  modalContactName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  modalContactCompany: {
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  priorityLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  priorityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  priorityChip: {
+    flex: 1,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    marginHorizontal: 4,
+    alignItems: 'center',
+  },
+  priorityChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  priorityChipText: {
+    color: colors.text,
+    fontWeight: '600',
+  },
+  priorityChipTextActive: {
+    color: colors.white,
+  },
+  separator3: {
+    backgroundColor: colors.gray100,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 20,
+    opacity: 0.5,
+  },
+  modalButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    borderRadius: radius.md,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  cancelButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  primaryButton: {
+    backgroundColor: colors.primary,
+  },
+  modalButtonText: {
+    fontWeight: '600',
+  },
+  cancelButtonText: {
+    color: colors.text,
+  },
+  primaryButtonText: {
+    color: colors.white,
+  },
+  successContainer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  successIconContainer: {
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  successMessage: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 16,
+    lineHeight: 20,
+  },
+  successButtonContainer: {
+    width: '100%',
+    marginTop: 8,
+  },
+  successButton: {
+    flex: 0,
+  },
+  loadingContainerModal: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+  },
+  loadingTextModal: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+    fontWeight: '600',
   },
 });
 

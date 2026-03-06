@@ -408,7 +408,9 @@ export const SponsorsScreen = () => {
             router.push({
               pathname: '/message-detail',
               params: {
-                thread: JSON.stringify(thread)
+                thread: JSON.stringify(thread),
+                returnTo: 'sponsors', // Track where we came from
+                returnItem: JSON.stringify(item), // Pass item data to navigate back if needed
               }
             });
           }}

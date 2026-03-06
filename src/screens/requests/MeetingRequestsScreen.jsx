@@ -1,6 +1,8 @@
+import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   FlatList,
@@ -78,6 +80,13 @@ export const MeetingRequestsScreen = () => {
   
   // Track action updates locally for immediate UI feedback
   const [actionUpdates, setActionUpdates] = useState({});
+  
+  // States for action success modal (similar to AttendeesScreen)
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  const [isActionSuccess, setIsActionSuccess] = useState(false);
+  const [actionResult, setActionResult] = useState({ actionText: '', contactName: '' });
+  const [isActionModalVisible, setIsActionModalVisible] = useState(false);
+  const actionModalAnim = useRef(new Animated.Value(0)).current;
   
   const requests = useMemo(() => {
     let list = [];
@@ -187,6 +196,13 @@ export const MeetingRequestsScreen = () => {
       // API expects: 1 for approve, 2 for reject
       const actionValue = action === 1 ? 1 : 2;
       const actionText = action === 1 ? 'accepted' : 'declined';
+      const contactName = item.name || 'Contact';
+      
+      // Show loading modal
+      setIsActionLoading(true);
+      setIsActionSuccess(false);
+      setActionResult({ actionText, contactName });
+      setIsActionModalVisible(true);
       
       // Optimistically update UI immediately
       setActionUpdates((prev) => ({
@@ -199,7 +215,11 @@ export const MeetingRequestsScreen = () => {
         action: actionValue,
       }).unwrap();
       
-      Alert.alert('Success', `Meeting request ${actionText} successfully`);
+      // Show success state - ensure actionResult is preserved
+      setIsActionLoading(false);
+      setIsActionSuccess(true);
+      // Re-set actionResult to ensure it's available
+      setActionResult({ actionText, contactName });
       refetch();
     } catch (e) {
       console.error('Error updating meeting request action:', e);
@@ -213,8 +233,18 @@ export const MeetingRequestsScreen = () => {
         return updated;
       });
       
+      // Close modal and show error alert
+      setIsActionLoading(false);
+      setIsActionSuccess(false);
+      setIsActionModalVisible(false);
       Alert.alert('Error', e?.data?.message || e?.message || 'Failed to update meeting request');
     }
+  };
+  
+  const closeActionModal = () => {
+    setIsActionModalVisible(false);
+    setIsActionLoading(false);
+    setIsActionSuccess(false);
   };
 
   const openModal = (contact) => {
@@ -246,6 +276,23 @@ export const MeetingRequestsScreen = () => {
       });
     }
   }, [isModalVisible, modalAnim, selectedContact]);
+  
+  // Animation for action success modal
+  useEffect(() => {
+    if (isActionModalVisible) {
+      Animated.spring(actionModalAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 8,
+      }).start();
+    } else {
+      Animated.timing(actionModalAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [isActionModalVisible, actionModalAnim]);
 
   const renderContact = ({ item }) => (
     <View style={styles.contactRow}>
@@ -462,6 +509,76 @@ export const MeetingRequestsScreen = () => {
             )}
           </Animated.View>
         </View>
+      </Modal>
+
+      {/* Action Success Modal - Similar to AttendeesScreen */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isActionModalVisible || isActionLoading || isActionSuccess}
+        onRequestClose={closeActionModal}
+      >
+        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
+          <Pressable 
+            style={StyleSheet.absoluteFill} 
+            onPress={closeActionModal}
+          />
+          <Animated.View
+            style={[
+              styles.modalCard2,
+              {
+                transform: [
+                  {
+                    translateY: actionModalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.modalHeader2}>
+              <Text style={styles.modalTitle2}>
+                {isActionSuccess ? 'Meeting Request' : 'Processing'}
+              </Text>
+              <TouchableOpacity onPress={closeActionModal}>
+                <Text style={styles.closeText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {isActionSuccess ? (
+              // Success State
+              <View style={styles.successContainer}>
+                <View style={styles.successIconContainer}>
+                  <Icon name="check-circle" size={64} color={colors.primary} />
+                </View>
+                <Text style={styles.successTitle}>Success</Text>
+                <View style={{ marginVertical: 8, paddingHorizontal: 16 }}>
+                  <Text style={styles.successMessage} numberOfLines={0}>
+                    Meeting request {actionResult?.actionText || 'processed'} successfully
+                  </Text>
+                </View>
+                <View style={styles.successButtonContainer}>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.primaryButton, styles.successButton]}
+                    onPress={closeActionModal}
+                  >
+                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : isActionLoading ? (
+              // Loading State
+              <View style={styles.loadingContainerModal}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingTextModal}>
+                  {actionResult.actionText === 'accepted' ? 'Accepting request...' : 'Declining request...'}
+                </Text>
+              </View>
+            ) : null}
+          </Animated.View>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -743,6 +860,84 @@ const createStyles = (SIZES) => StyleSheet.create({
   },
   primaryButtonText: {
     color: colors.white,
+  },
+  // Action Success Modal styles (similar to AttendeesScreen)
+  modalBackdrop2: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  modalCard2: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 34,
+    width: '100%',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+      },
+      android: {
+        elevation: 5,
+      },
+    }),
+  },
+  modalHeader2: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle2: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  successContainer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  successIconContainer: {
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  successMessage: {
+    fontSize: 16,
+    color: '#1F2937', // Explicit dark color to ensure visibility
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 0,
+    lineHeight: 22,
+    fontWeight: '500',
+    minHeight: 22,
+  },
+  successButtonContainer: {
+    width: '100%',
+    marginTop: 8,
+  },
+  successButton: {
+    flex: 0,
+  },
+  loadingContainerModal: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+  },
+  loadingTextModal: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+    fontWeight: '600',
   },
 });
 

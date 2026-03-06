@@ -5,9 +5,10 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   Platform,
   ScrollView,
   StyleSheet,
@@ -81,6 +82,63 @@ export const AgendaDetailScreen = () => {
     params?.agendaId,
     { skip: !params?.agendaId }
   );
+
+  // Debug: Log navigation state on mount
+  useEffect(() => {
+    console.log('🔙 AgendaDetailScreen mounted');
+    console.log('🔙 Navigation state:', {
+      canGoBack: navigation.canGoBack(),
+      state: navigation.getState(),
+    });
+    console.log('🔙 Router state:', router);
+  }, []);
+
+  // Handle back navigation (both header back button and hardware back button)
+  const handleBack = useCallback(() => {
+    console.log('🔙 AgendaDetailScreen: handleBack called');
+    
+    // For expo-router with drawer navigation, explicitly navigate to agenda screen
+    // router.back() sometimes doesn't work properly with drawer navigator
+    try {
+      console.log('🔙 Navigating to agenda screen');
+      // Get eventId from params to preserve it when navigating back
+      const eventId = params?.eventId || null;
+      if (eventId) {
+        router.push({
+          pathname: '/(drawer)/agenda',
+          params: { eventId: String(eventId) }
+        });
+      } else {
+        router.push('/(drawer)/agenda');
+      }
+    } catch (error) {
+      console.error('❌ Navigation failed:', error);
+      // Last resort: try router.back()
+      try {
+        console.log('🔙 Fallback: trying router.back()');
+        router.back();
+      } catch (backError) {
+        console.error('❌ Router.back() also failed:', backError);
+      }
+    }
+  }, [params?.eventId]);
+
+  // Handle Android hardware back button
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      console.log('🔙 Setting up Android BackHandler');
+      const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+        console.log('🔙 Hardware back button pressed');
+        handleBack();
+        return true; // Prevent default behavior (exit app)
+      });
+
+      return () => {
+        console.log('🔙 Removing BackHandler');
+        backHandler.remove();
+      };
+    }
+  }, [handleBack]);
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
@@ -94,36 +152,63 @@ export const AgendaDetailScreen = () => {
     return agendaData?.data || agendaData || null;
   }, [agendaData]);
 
-  // Transform agenda item data for display
-  const agendaItem = useMemo(() => {
-    if (!selectedAgendaItem) {
+  // Create optimistic/initial data from params if available (for instant display)
+  const initialData = useMemo(() => {
+    if (params?.initialTitle || params?.initialTime || params?.initialDate) {
+      const dateFormatted = params?.initialDate ? formatDateDisplay(params.initialDate) : { date: '', dayName: '' };
       return {
-        id: null,
-        title: 'Loading...',
-        time: '',
-        description: '',
-        location: '',
-        date: '',
-        dayName: '',
+        id: params?.agendaId || null,
+        title: params?.initialTitle || 'Untitled Session',
+        time: params?.initialTime ? formatTime(params.initialTime) : '',
+        description: params?.initialDescription ? normalizeWhitespace(decodeEntities(stripHtml(params.initialDescription))) : '',
+        location: params?.initialLocation || '',
+        locationDetails: '',
+        date: dateFormatted.date,
+        dayName: dateFormatted.dayName,
         category: 'Session',
         speakers: [],
       };
     }
+    return null;
+  }, [params]);
 
-    const dateFormatted = formatDateDisplay(selectedAgendaItem.date);
+  // Transform agenda item data for display
+  const agendaItem = useMemo(() => {
+    // If we have API data, use it (preferred)
+    if (selectedAgendaItem) {
+      const dateFormatted = formatDateDisplay(selectedAgendaItem.date);
+      return {
+        id: selectedAgendaItem.id,
+        title: selectedAgendaItem.title || 'Untitled Session',
+        time: formatTime(selectedAgendaItem.time),
+        description: normalizeWhitespace(decodeEntities(stripHtml(selectedAgendaItem.description || ''))),
+        location: selectedAgendaItem.location || selectedAgendaItem.venue || '',
+        locationDetails: '',
+        date: dateFormatted.date,
+        dayName: dateFormatted.dayName,
+        category: 'Session',
+        speakers: [],
+      };
+    }
+    
+    // If we have initial data from params, use it for optimistic UI
+    if (initialData) {
+      return initialData;
+    }
+    
+    // Fallback to loading state
     return {
-      id: selectedAgendaItem.id,
-      title: selectedAgendaItem.title || 'Untitled Session',
-      time: formatTime(selectedAgendaItem.time),
-      description: normalizeWhitespace(decodeEntities(stripHtml(selectedAgendaItem.description || ''))),
-      location: selectedAgendaItem.location || selectedAgendaItem.venue || '',
-      locationDetails: '',
-      date: dateFormatted.date,
-      dayName: dateFormatted.dayName,
+      id: null,
+      title: 'Loading...',
+      time: '',
+      description: '',
+      location: '',
+      date: '',
+      dayName: '',
       category: 'Session',
       speakers: [],
     };
-  }, [selectedAgendaItem]);
+  }, [selectedAgendaItem, initialData]);
 
   const descriptionText = agendaItem.description || '';
 
@@ -189,7 +274,10 @@ export const AgendaDetailScreen = () => {
         <Header 
           title="Agenda Detail" 
           leftIcon="arrow-left" 
-          onLeftPress={() => router.push('/agenda')} 
+          onLeftPress={() => {
+            console.log('🔙 Header back button pressed (loading state)');
+            handleBack();
+          }} 
           iconSize={SIZES.headerIconSize} 
         />
         <View style={styles.loadingContainer}>
@@ -206,7 +294,10 @@ export const AgendaDetailScreen = () => {
         <Header 
           title="Agenda Detail" 
           leftIcon="arrow-left" 
-          onLeftPress={() => router.push('/agenda')} 
+          onLeftPress={() => {
+            console.log('🔙 Header back button pressed (error state)');
+            handleBack();
+          }} 
           iconSize={SIZES.headerIconSize} 
         />
         <View style={styles.errorContainer}>
@@ -222,7 +313,10 @@ export const AgendaDetailScreen = () => {
       <Header 
         title="Agenda Detail" 
         leftIcon="arrow-left" 
-        onLeftPress={() => router.push('/agenda')} 
+        onLeftPress={() => {
+          console.log('🔙 Header back button pressed (main state)');
+          handleBack();
+        }} 
         iconSize={SIZES.headerIconSize} 
       />
 
@@ -244,7 +338,7 @@ export const AgendaDetailScreen = () => {
               <Text style={styles.categoryTagText}>{agendaItem.category}</Text>
             </View>
             
-            <Text style={styles.eventTitle}>{agendaItem.title}</Text>
+            <Text style={styles.eventTitle} numberOfLines={0}>{agendaItem.title}</Text>
             
             {agendaItem.time && (
               <View style={styles.timeContainer}>
@@ -345,6 +439,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 30,
+    flexGrow: 1,
   },
   content: {
     width: '100%',
@@ -357,10 +452,15 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     marginTop: SIZES.sectionSpacing - 15,
     minHeight: SIZES.bannerMinHeight + 10,
     justifyContent: 'flex-start',
+    width: '100%',
+    paddingBottom: 30,
+    overflow: 'visible',
   },
   bannerContent: {
     paddingHorizontal: SIZES.paddingHorizontal,
-    paddingVertical: SIZES.sectionSpacing,
+    paddingTop: SIZES.sectionSpacing,
+    paddingBottom: SIZES.sectionSpacing + 10,
+    width: '100%',
   },
   categoryTag: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
@@ -379,12 +479,15 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: isTablet ? 26 : 20,
     fontWeight: '700',
     color: colors.white,
-    marginBottom: 12,
-    paddingRight: SIZES.paddingHorizontal * 2,
+    marginBottom: 16,
+    width: '100%',
+    lineHeight: isTablet ? 32 : 26,
+    paddingRight: 0,
   },
   timeContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginTop: 4,
   },
   timeText: {
     fontSize: SIZES.body,

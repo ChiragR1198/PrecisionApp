@@ -168,39 +168,52 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   
   let result = await baseQuery(args, api, extraOptions);
 
-  // Log error details
+  // Handle errors with retry logic for network errors
   if (result.error) {
     const errorStatus = result.error.status;
     const isFetchError = errorStatus === 'FETCH_ERROR';
-    
-    console.error('❌ API Error:', {
-      url: args.url || args,
-      status: errorStatus,
-      message: result.error.data?.message || result.error.message || (isFetchError ? 'Network error - check connectivity' : 'Unknown error'),
-      data: result.error.data,
-    });
     
     // For FETCH_ERROR, retry with exponential backoff (might be timing/network issue)
     if (isFetchError && !isAuthEndpoint) {
       const maxRetries = 2;
       let retryCount = 0;
+      let initialError = result.error;
+      
+      // Log initial network error at warn level (will retry)
+      console.warn(`⚠️ Network error on ${args.url || args} - retrying (${retryCount + 1}/${maxRetries})...`);
       
       while (retryCount < maxRetries && result.error && result.error.status === 'FETCH_ERROR') {
         const delay = 500 * Math.pow(2, retryCount); // 500ms, 1000ms
-        console.warn(`⚠️ Network error detected - retrying (${retryCount + 1}/${maxRetries}) after ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         result = await baseQuery(args, api, extraOptions);
         retryCount++;
         
         if (!result.error) {
-          console.log('✅ Retry successful');
+          console.log(`✅ Request succeeded after ${retryCount} retry${retryCount > 1 ? 'ies' : ''}`);
           break;
+        } else if (retryCount < maxRetries) {
+          console.warn(`⚠️ Retry ${retryCount} failed - retrying (${retryCount + 1}/${maxRetries})...`);
         }
       }
       
+      // Only log error if all retries failed
       if (result.error && result.error.status === 'FETCH_ERROR') {
-        console.error('❌ All retries failed - network issue persists. Please check your connection.');
+        console.error('❌ API Error (all retries failed):', {
+          url: args.url || args,
+          status: errorStatus,
+          message: initialError.data?.message || initialError.message || 'Network error - check connectivity',
+          data: initialError.data,
+        });
+        console.error('❌ Network issue persists. Please check your connection.');
       }
+    } else {
+      // For non-network errors, log immediately
+      console.error('❌ API Error:', {
+        url: args.url || args,
+        status: errorStatus,
+        message: result.error.data?.message || result.error.message || 'Unknown error',
+        data: result.error.data,
+      });
     }
   }
 
@@ -632,9 +645,15 @@ export const api = createApi({
         if (!eventId) {
           return null;
         }
-        return API_ENDPOINTS.AGENDA_BY_ID(eventId);
+        return {
+          url: API_ENDPOINTS.AGENDA_BY_ID(eventId),
+          // Add timestamp to force fresh request (bypass cache)
+          params: { _t: Date.now() },
+        };
       },
       providesTags: ['Agenda'],
+      // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
     }),
 
     // 8. Agenda Item
