@@ -36,17 +36,44 @@ const SponsorsIcon = Icons.Briefcase;
 // Helper function to format date
 const formatDate = (dateFrom, dateTo) => {
   if (!dateFrom) return '';
-  
-  const formatDateString = (dateStr) => {
-    const date = new Date(dateStr);
-    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
-  };
 
-  if (dateTo && dateFrom !== dateTo) {
-    return `${formatDateString(dateFrom)} - ${formatDateString(dateTo)}`;
+  const months = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+
+  const formatFullDate = (date) =>
+    `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+
+  const formatMonthDay = (date) =>
+    `${months[date.getMonth()]} ${date.getDate()}`;
+
+  const fromDate = new Date(dateFrom);
+  const toDate = dateTo ? new Date(dateTo) : null;
+
+  if (toDate && dateFrom !== dateTo) {
+    const sameYear = fromDate.getFullYear() === toDate.getFullYear();
+
+    // Example: April 30 – May 1, 2026 (en dash, year once)
+    if (sameYear) {
+      return `${formatMonthDay(fromDate)} – ${formatMonthDay(toDate)}, ${fromDate.getFullYear()}`;
+    }
+
+    // Different years: April 30, 2026 – May 1, 2027
+    return `${formatFullDate(fromDate)} – ${formatFullDate(toDate)}`;
   }
-  return formatDateString(dateFrom);
+
+  return formatFullDate(fromDate);
 };
 
 // Helper function to calculate dynamic font size based on title length
@@ -330,7 +357,7 @@ export const DashboardScreen = () => {
         mainEventDateSize:      getResponsiveValue({ android: 15, ios: 15, tablet: 15, default: 15 }),
         mapPinSize:             getResponsiveValue({ android: 13, ios: 14, tablet: 14, default: 13 }),
         quickActionTitleSize:   getResponsiveValue({ android: 16, ios: 17, tablet: 18, default: 16 }),
-        quickActionCardSize:    getResponsiveValue({ android: '48%', ios: '48%', tablet: 200, default: '48%' }),
+        quickActionCardSize:    getResponsiveValue({ android: '48%', ios: '47%', tablet: 200, default: '48%' }),
         quickActionIconSize:    getResponsiveValue({ android: 54, ios: 55, tablet: 58, default: 54 }),
         quickActionIconInner:   getResponsiveValue({ android: 22, ios: 23, tablet: 25, default: 22 }),
         contentMaxWidth:        getResponsiveValue({ android: '100%', ios: '100%', tablet: 600, default: '100%' }),

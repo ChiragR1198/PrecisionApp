@@ -1,18 +1,27 @@
 {
   "expo": {
-    "name": "PrecisionGlobe",
-    "slug": "PrecisionGlobe",
+    "name": "PrecisionGlobalSummits",
+    "slug": "PrecisionGlobalSummits",
     "version": "1.0.0",
-    "owner": "chirag1198",
+    "owner": "raviridge2021",
     "orientation": "portrait",
     "icon": "./src/assets/images/app-icon1.png",
-    "scheme": "precisionglobe",
+    "scheme": "precisionglobalsummits",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.precisionglobe.app",
+      "buildNumber": "2",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs access to your camera to take photos.",
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone for video recording.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to select images.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./src/assets/images/app-icon.png"
@@ -20,7 +29,8 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
       "package": "com.precisionglobe.app"
     },
@@ -70,10 +80,11 @@
         {
           "android": {
             "compileSdkVersion": 35,
-            "targetSdkVersion": 34
+            "targetSdkVersion": 35
           }
         }
-      ]
+      ],
+      "./plugins/withAndroidPhoneOnly"
     ],
     "experiments": {
       "typedRoutes": true
@@ -85,7 +96,7 @@
         "backgroundColor": "#000000"
       },
       "eas": {
-        "projectId": "0439d5f9-4716-47e0-a8f3-07b17c27a43d"
+        "projectId": "7383a335-b805-4b75-acb9-c67ce0ef4376"
       }
     }
   }

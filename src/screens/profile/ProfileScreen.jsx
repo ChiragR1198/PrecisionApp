@@ -31,6 +31,27 @@ import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorPro
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { logout as logoutAction } from '../../store/slices/authSlice';
 
+// Utility to strip HTML tags and return plain text
+const stripHtmlTags = (value) => {
+  if (!value || typeof value !== 'string') return '';
+
+  // If there are no angle brackets, treat it as plain text
+  if (!/[<>]/.test(value)) {
+    return value.trim();
+  }
+
+  // Remove HTML tags
+  let text = value.replace(/<[^>]*>/g, ' ');
+
+  // Decode a few common HTML entities we expect from TinyMCE
+  text = text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&');
+
+  // Collapse extra whitespace
+  return text.replace(/\s+/g, ' ').trim();
+};
+
 // Icon Components
 const UserIcon = Icons.User;
 const MailIcon = Icons.Mail;
@@ -276,8 +297,8 @@ export const ProfileScreen = () => {
           state: profile.state || '',
           address: profile.address || '',
           linkedinUrl: profile.linkedin_url || '',
-          bio: profile.bio || '',
-          companyInformation: profile.company_information || '',
+          bio: stripHtmlTags(profile.bio || ''),
+          companyInformation: stripHtmlTags(profile.company_information || ''),
           tel: '',
           fax: '',
         });
@@ -297,8 +318,8 @@ export const ProfileScreen = () => {
           state: '',
           address: profile.address || '',
           linkedinUrl: '',
-          bio: profile.biography || '',
-          companyInformation: profile.company_information || '',
+          bio: stripHtmlTags(profile.biography || ''),
+          companyInformation: stripHtmlTags(profile.company_information || ''),
           tel: profile.tel || '',
           fax: profile.fax || '',
         });
@@ -1004,16 +1025,19 @@ export const ProfileScreen = () => {
                 keyboardType="email-address"
               />
               
-              <FormField
-                label="Phone Number"
-                value={formData.phoneNumber}
-                onChangeText={(value) => handleInputChange('phoneNumber', value)}
-                placeholder="+1 (555) 123-4567"
-                icon={PhoneIcon}
-                styles={styles}
-                iconSize={SIZES.iconSize}
-                keyboardType="phone-pad"
-              />
+              {/* Hide phone number field for delegate users */}
+              {!isDelegate && (
+                <FormField
+                  label="Phone Number"
+                  value={formData.phoneNumber}
+                  onChangeText={(value) => handleInputChange('phoneNumber', value)}
+                  placeholder="+1 (555) 123-4567"
+                  icon={PhoneIcon}
+                  styles={styles}
+                  iconSize={SIZES.iconSize}
+                  keyboardType="phone-pad"
+                />
+              )}
               
               <FormField
                 label="Job Title"
