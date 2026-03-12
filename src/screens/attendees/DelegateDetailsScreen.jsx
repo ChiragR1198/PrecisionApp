@@ -77,7 +77,8 @@ export const DelegateDetailsScreen = () => {
   const [isSendingRequest, setIsSendingRequest] = useState(false);
   const [isRequestSuccess, setIsRequestSuccess] = useState(false);
   const modalAnim = useRef(new Animated.Value(0)).current;
-  const [isTimeModalVisible, setIsTimeModalVisible] = useState(false);
+  // Single-modal step: 'priority' | 'time' — avoids nested modals on Android
+  const [modalStep, setModalStep] = useState('priority');
   // selected slot shape: { date: 'YYYY-MM-DD', from: 'HH:MM', to: 'HH:MM', fromFull: 'HH:MM:SS' }
   const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
@@ -369,6 +370,7 @@ export const DelegateDetailsScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setModalStep('priority');
   };
 
   const openMeetingModal = () => {
@@ -377,8 +379,10 @@ export const DelegateDetailsScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setModalStep('priority');
   };
 
+  // Show time-slot step inside same modal (no second modal — fixes Android)
   const openTimeModal = () => {
     if (!delegate || !delegate.id) return;
 
@@ -389,12 +393,12 @@ export const DelegateDetailsScreen = () => {
       event_id: effectiveEventId,
       date,
     });
-    setIsTimeModalVisible(true);
     setSelectedTimeSlot(null);
+    setModalStep('time');
   };
 
   const closeTimeModal = () => {
-    setIsTimeModalVisible(false);
+    setModalStep('priority');
   };
 
   const handleSendMeetingRequest = async (slot) => {
@@ -439,7 +443,7 @@ export const DelegateDetailsScreen = () => {
 
       await createMeetingRequest(payload).unwrap();
 
-      setIsTimeModalVisible(false);
+      setModalStep('priority');
       setHasRequested(true);
       setRequestedPriorityText(priority);
       setIsRequestSuccess(true);
@@ -666,7 +670,7 @@ export const DelegateDetailsScreen = () => {
         </View>
       </ScrollView>
 
-      {/* Priority Modal (like AttendeesScreen) */}
+      {/* Single modal: priority step + time-slot step (no nested modals — fixes Android) */}
       <Modal
         transparent
         animationType="fade"
@@ -690,14 +694,101 @@ export const DelegateDetailsScreen = () => {
               },
             ]}
           >
+            {/* Header: title and close depend on step */}
             <View style={styles.modalHeader2}>
-              <Text style={styles.modalTitle2}>Send Meeting Request</Text>
-              <TouchableOpacity onPress={closeModal}>
-                <Text style={styles.closeText}>✕</Text>
-              </TouchableOpacity>
+              {modalStep === 'time' ? (
+                <>
+                  <TouchableOpacity style={styles.modalHeaderSide} onPress={closeTimeModal} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                    <Text style={styles.closeText}>←</Text>
+                  </TouchableOpacity>
+                  <Text style={[styles.modalTitle2, styles.modalTitleCenter]}>Select Time Slot</Text>
+                  <TouchableOpacity style={styles.modalHeaderSide} onPress={closeModal}>
+                    <Text style={styles.closeText}>✕</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.modalTitle2}>Send Meeting Request</Text>
+                  <TouchableOpacity onPress={closeModal}>
+                    <Text style={styles.closeText}>✕</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
 
-            {isRequestSuccess ? (
+            {modalStep === 'time' ? (
+              /* Time slot step (same modal) */
+              <>
+                {meetingTimesLoading ? (
+                  <View style={styles.loadingContainerModal}>
+                    <ActivityIndicator size="large" color={colors.primary} />
+                    <Text style={styles.loadingTextModal}>Loading time slots...</Text>
+                  </View>
+                ) : meetingSlotGroups.length === 0 ? (
+                  <View style={styles.loadingContainerModal}>
+                    <Text style={styles.loadingTextModal}>No time slots available.</Text>
+                  </View>
+                ) : (
+                  <>
+                    <ScrollView
+                      style={{ maxHeight: 260 }}
+                      contentContainerStyle={{ paddingVertical: 4 }}
+                      showsVerticalScrollIndicator
+                    >
+                      {meetingSlotGroups.map((group) => (
+                        <View key={group.date} style={styles.slotGroup}>
+                          <Text style={styles.slotGroupTitle}>{group.dateLabel}</Text>
+                          {group.items.map((it) => {
+                            const key = `${it.date}-${it.fromFull || it.from}-${it.to}`;
+                            const isActive =
+                              selectedTimeSlot &&
+                              selectedTimeSlot.date === it.date &&
+                              selectedTimeSlot.fromFull === it.fromFull &&
+                              selectedTimeSlot.to === it.to;
+                            return (
+                              <TouchableOpacity
+                                key={key}
+                                style={[styles.priorityChip, isActive && styles.priorityChipActive, { marginVertical: 4 }]}
+                                onPress={() => setSelectedTimeSlot(isActive ? null : it)}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>
+                                  {it.to ? `${it.from} to ${it.to}` : it.from}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      ))}
+                    </ScrollView>
+                    <View style={styles.separator3}/>
+                    <View style={styles.modalButtonRow}>
+                      <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
+                        <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.modalButton,
+                          styles.primaryButton,
+                          (!selectedTimeSlot || isSendingRequest) && { opacity: 0.6 },
+                        ]}
+                        onPress={() => {
+                          if (!selectedTimeSlot) return;
+                          handleSendMeetingRequest(selectedTimeSlot);
+                        }}
+                        disabled={!selectedTimeSlot || isSendingRequest}
+                      >
+                        {isSendingRequest ? (
+                          <ActivityIndicator size="small" color={colors.white} />
+                        ) : (
+                          <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </>
+            ) : isRequestSuccess ? (
               <View style={styles.successContainer}>
                 <View style={styles.successIconContainer}>
                   <Icon name="check-circle" size={64} color={colors.primary} />
@@ -722,6 +813,7 @@ export const DelegateDetailsScreen = () => {
                 <Text style={styles.loadingTextModal}>Sending request...</Text>
               </View>
             ) : (
+              /* Priority step */
               <>
                 <View style={styles.modalContactRow}>
                   <View style={styles.modalAvatar}>
@@ -773,112 +865,6 @@ export const DelegateDetailsScreen = () => {
                     activeOpacity={0.85}
                   >
                     <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Select Time</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </Animated.View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* Time Slot Modal */}
-      <Modal
-        transparent
-        animationType="fade"
-        visible={isTimeModalVisible}
-        onRequestClose={closeTimeModal}
-      >
-        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
-          <Pressable 
-            style={StyleSheet.absoluteFill} 
-            onPress={closeTimeModal}
-          />
-          <Animated.View
-            style={[
-              styles.modalCard2,
-              {
-                transform: [
-                  {
-                    translateY: modalAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [300, 0],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <View style={styles.modalHeader2}>
-              <Text style={styles.modalTitle2}>Select Time Slot</Text>
-              <TouchableOpacity onPress={closeTimeModal}>
-                <Text style={styles.closeText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            {meetingTimesLoading ? (
-              <View style={styles.loadingContainerModal}>
-                <ActivityIndicator size="large" color={colors.primary} />
-                <Text style={styles.loadingTextModal}>Loading time slots...</Text>
-              </View>
-            ) : meetingSlotGroups.length === 0 ? (
-              <View style={styles.loadingContainerModal}>
-                <Text style={styles.loadingTextModal}>No time slots available.</Text>
-              </View>
-            ) : (
-              <>
-                <ScrollView
-                  style={{ maxHeight: 260 }}
-                  contentContainerStyle={{ paddingVertical: 4 }}
-                  showsVerticalScrollIndicator
-                >
-                  {meetingSlotGroups.map((group) => (
-                    <View key={group.date} style={styles.slotGroup}>
-                      <Text style={styles.slotGroupTitle}>{group.dateLabel}</Text>
-                      {group.items.map((it) => {
-                        const key = `${it.date}-${it.fromFull || it.from}-${it.to}`;
-                        const isActive =
-                          selectedTimeSlot &&
-                          selectedTimeSlot.date === it.date &&
-                          selectedTimeSlot.fromFull === it.fromFull &&
-                          selectedTimeSlot.to === it.to;
-                        return (
-                          <TouchableOpacity
-                            key={key}
-                            style={[styles.priorityChip, isActive && styles.priorityChipActive, { marginVertical: 4 }]}
-                            onPress={() => setSelectedTimeSlot(isActive ? null : it)}
-                            activeOpacity={0.85}
-                          >
-                            <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>
-                              {it.to ? `${it.from} to ${it.to}` : it.from}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  ))}
-                </ScrollView>
-                <View style={styles.separator3}/>
-                <View style={styles.modalButtonRow}>
-                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
-                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.modalButton,
-                      styles.primaryButton,
-                      (!selectedTimeSlot || isSendingRequest) && { opacity: 0.6 },
-                    ]}
-                    onPress={() => {
-                      if (!selectedTimeSlot) return;
-                      handleSendMeetingRequest(selectedTimeSlot);
-                    }}
-                    disabled={!selectedTimeSlot || isSendingRequest}
-                  >
-                    {isSendingRequest ? (
-                      <ActivityIndicator size="small" color={colors.white} />
-                    ) : (
-                      <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
-                    )}
                   </TouchableOpacity>
                 </View>
               </>
@@ -1087,6 +1073,13 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  modalHeaderSide: {
+    minWidth: 32,
+  },
+  modalTitleCenter: {
+    flex: 1,
+    textAlign: 'center',
   },
   modalTitle2: {
     fontSize: 18,
