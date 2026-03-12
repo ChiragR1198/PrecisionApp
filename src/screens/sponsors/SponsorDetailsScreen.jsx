@@ -8,7 +8,7 @@ import Octicons from '@expo/vector-icons/Octicons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   BackHandler,
@@ -20,11 +20,12 @@ import {
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
+import { useSendDelegateMeetingRequestMutation, useSendSponsorMeetingRequestMutation } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const MailIcon = ({ color = colors.primary, size = 22 }) => (
@@ -49,6 +50,10 @@ const MapPinIcon = ({ color = colors.primary, size = 22 }) => (
 
 const MessageCircleIcon = ({ color = colors.white, size = 20 }) => (
   <MaterialCommunityIcons name="chat" size={size} color={color} />
+);
+
+const CalendarIcon = ({ color = colors.white, size = 20 }) => (
+  <MaterialIcons name="event-available" size={size} color={color} />
 );
 
 const CopyIcon = ({ color = colors.textMuted, size = 20 }) => (
@@ -105,6 +110,9 @@ export const SponsorDetailsScreen = () => {
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const insets = useSafeAreaInsets();
+  const [isBookingMeeting, setIsBookingMeeting] = useState(false);
+  const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
+  const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
 
   // Get sponsor data from params or use default
   const sponsor = useMemo(() => {
@@ -124,6 +132,15 @@ export const SponsorDetailsScreen = () => {
 
     // If params exist, merge with default
     const parsed = params?.sponsor ? { ...defaultSponsor, ...JSON.parse(params.sponsor) } : defaultSponsor;
+    const raw = parsed?.raw || {};
+
+    // Prefer backend biography/company_information for sponsor profiles
+    if (!parsed.about || parsed.about.trim().length === 0) {
+      const backendAbout = raw.biography || raw.company_information || '';
+      if (backendAbout) {
+        parsed.about = backendAbout;
+      }
+    }
     
     // If logoBg is not set (for delegates), generate it from ID
     if (!parsed.logoBg && parsed.id) {
@@ -131,20 +148,22 @@ export const SponsorDetailsScreen = () => {
     }
 
     // Clean about text if it contains HTML (in case raw data is passed)
-    if (parsed.about && typeof parsed.about === 'string' && parsed.about.includes('<')) {
-      parsed.about = parsed.about
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<\/p>/gi, '\n\n')
-        .replace(/<[^>]*>/g, '')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
+    if (parsed.about && typeof parsed.about === 'string') {
+      if (parsed.about.includes('<')) {
+        parsed.about = parsed.about
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/p>/gi, '\n\n')
+          .replace(/<[^>]*>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+      }
 
       // If cleaned text is empty or just DOCTYPE, set to empty
       if (
@@ -158,6 +177,14 @@ export const SponsorDetailsScreen = () => {
 
     return parsed;
   }, [params]);
+
+  const isDelegateProfile = useMemo(() => {
+    const tier = String(sponsor?.tier || '').toLowerCase();
+    if (tier === 'delegate') return true;
+    // Fallback heuristics when tier isn't present
+    const raw = sponsor?.raw || {};
+    return Boolean(raw?.linkedin_url || raw?.fname || raw?.lname);
+  }, [sponsor]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -191,14 +218,20 @@ export const SponsorDetailsScreen = () => {
   // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
     console.log('🔙 SponsorDetailsScreen: handleBack called');
-    
-    // For expo-router with drawer navigation, explicitly navigate to sponsors screen
+
+    const returnTo = params?.returnTo;
+
+    // If we came from attendees, go back there; otherwise go to sponsors list
+    const targetPath =
+      returnTo === 'attendees'
+        ? '/(drawer)/attendees'
+        : '/(drawer)/sponsors';
+
     try {
-      console.log('🔙 Navigating to sponsors screen');
-      router.push('/(drawer)/sponsors');
+      console.log('🔙 Navigating to', targetPath);
+      router.push(targetPath);
     } catch (error) {
       console.error('❌ Navigation failed:', error);
-      // Fallback: try router.back()
       try {
         console.log('🔙 Fallback: trying router.back()');
         router.back();
@@ -206,7 +239,7 @@ export const SponsorDetailsScreen = () => {
         console.error('❌ Router.back() also failed:', backError);
       }
     }
-  }, []);
+  }, [params?.returnTo]);
 
   // Handle Android hardware back button
   useEffect(() => {
@@ -260,6 +293,57 @@ export const SponsorDetailsScreen = () => {
     });
   };
 
+  const handleBookMeeting = async () => {
+    const targetId = sponsor?.id || sponsor?.raw?.id;
+
+    if (!targetId) {
+      Alert.alert('Error', 'Invalid profile information');
+      return;
+    }
+
+    try {
+      if (isBookingMeeting) return;
+      setIsBookingMeeting(true);
+
+      const now = new Date();
+      const date = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      const time = now.toTimeString().split(' ')[0]; // HH:MM:SS
+
+      // Delegate -> Sponsor booking (when viewing a sponsor profile)
+      if (isDelegate && !isDelegateProfile) {
+        await createDelegateMeetingRequest({
+          sponsor_id: Number(targetId),
+          event_id: Number(user?.event_id || 27),
+          priority: 1,
+          date,
+          time,
+          message: '',
+        }).unwrap();
+      }
+      // Sponsor -> Delegate booking (when viewing a delegate profile)
+      else if (!isDelegate && isDelegateProfile) {
+        await createSponsorMeetingRequest({
+          delegate_id: Number(targetId),
+          event_id: Number(user?.event_id || 27),
+          priority: 1,
+          date,
+          time,
+          message: '',
+        }).unwrap();
+      } else {
+        Alert.alert('Not available', 'Meeting booking is not available for this profile type.');
+        return;
+      }
+
+      Alert.alert('Success', `Meeting request sent to ${sponsor?.name || 'delegate'}.`);
+    } catch (e) {
+      console.error('Error sending meeting request:', e);
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
+    } finally {
+      setIsBookingMeeting(false);
+    }
+  };
+
   const handleCopyEmail = () => {
     Linking.openURL(`mailto:${sponsor.email}`).catch(() => {
       Alert.alert('Error', 'Could not open email client');
@@ -267,6 +351,8 @@ export const SponsorDetailsScreen = () => {
   };
 
   const handleCall = () => {
+    // Do not allow calling when viewing a delegate profile
+    if (!sponsor.phone || isDelegateProfile) return;
     const phoneNumber = sponsor.phone.replace(/\D/g, '');
     Linking.openURL(`tel:${phoneNumber}`);
   };
@@ -309,7 +395,7 @@ export const SponsorDetailsScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
-        title={isDelegate ? 'Delegate Details' : 'Sponsors Details'} 
+        title={isDelegateProfile ? 'Delegate Details' : 'Sponsor Details'} 
         leftIcon="arrow-left" 
         onLeftPress={handleBack} 
         iconSize={SIZES.headerIconSize} 
@@ -352,6 +438,43 @@ export const SponsorDetailsScreen = () => {
                 <Text style={styles.companyText}>{sponsor.company}</Text>
               </View>
             )}
+
+            {/* Book a Meeting (Sponsor + Delegate profiles) */}
+            {/* {!!sponsor?.name && (
+              <View style={styles.bookMeetingRow}>
+                <TouchableOpacity
+                  style={styles.bookMeetingButton}
+                  onPress={handleBookMeeting}
+                  activeOpacity={0.85}
+                  disabled={isBookingMeeting}
+                >
+                  <LinearGradient
+                    colors={['#DC2626', '#B91C1C']}
+                    style={styles.bookMeetingGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                  >
+                    {isBookingMeeting ? (
+                      <ActivityIndicator color={colors.white} />
+                    ) : (
+                      <CalendarIcon />
+                    )}
+                    <Text style={styles.bookMeetingText}>Book a Meeting</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.bookMeetingQuickButton}
+                  onPress={handleBookMeeting}
+                  activeOpacity={0.85}
+                  disabled={isBookingMeeting}
+                >
+                  <View style={styles.bookMeetingQuickInner}>
+                    <MaterialIcons name="person-add" size={18} color={colors.primary} />
+                  </View>
+                </TouchableOpacity>
+              </View>
+            )} */}
           </LinearGradient>
 
           {/* Contact Information Section */}
@@ -370,7 +493,7 @@ export const SponsorDetailsScreen = () => {
                   onAction={handleCopyEmail}
                 />
               )}
-              {sponsor.phone && (
+              {sponsor.phone && !isDelegateProfile && (
                 <ContactItem
                   icon={PhoneIcon}
                   label="Phone"
@@ -543,6 +666,50 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     textAlign: 'center',
     opacity: 0.95,
     marginBottom: 16,
+  },
+  bookMeetingRow: {
+    width: '100%',
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  bookMeetingButton: {
+    flex: 1,
+    borderRadius: radius.pill,
+    overflow: 'hidden',
+  },
+  bookMeetingGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    gap: 10,
+  },
+  bookMeetingText: {
+    fontSize: SIZES.body,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  bookMeetingQuickButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bookMeetingQuickInner: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(17, 24, 39, 0.08)',
   },
   section: {
     marginBottom: SIZES.sectionSpacing,

@@ -445,8 +445,8 @@ export const SponsorsScreen = () => {
           />
           <Text style={styles.countText}>
             {isDelegate
-              ? `${filteredSponsors.length} delegates found`
-              : `${filteredSponsors.length} sponsors found`}
+              ? `${filteredSponsors.length} Delegates found`
+              : `${filteredSponsors.length} Sponsors found`}
           </Text>
         </View>
         {isLoading ? (

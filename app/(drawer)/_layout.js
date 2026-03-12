@@ -22,7 +22,7 @@ export default function DrawerLayout() {
         name="agenda-detail"
         options={{ drawerItemStyle: { display: 'none' } }}
       />
-      <Drawer.Screen name="attendees" options={{ drawerLabel: 'Attendees' }} />
+      <Drawer.Screen name="attendees" options={{ drawerLabel: 'Event Sponsors' }} />
       <Drawer.Screen
         name="delegate-details"
         options={{ drawerItemStyle: { display: 'none' } }}
@@ -43,6 +43,7 @@ export default function DrawerLayout() {
       />
       <Drawer.Screen name="itinerary" options={{ drawerLabel: 'Itinerary' }} />
       <Drawer.Screen name="contacts" options={{ drawerLabel: 'Contacts' }} />
+      <Drawer.Screen name="contact-us" options={{ drawerLabel: 'Contact Us' }} />
       <Drawer.Screen name="profile" options={{ drawerLabel: 'Profile' }} />
       <Drawer.Screen
         name="change-password"

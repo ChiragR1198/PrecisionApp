@@ -24,7 +24,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-import { useSendDelegateMeetingRequestMutation, useSendSponsorMeetingRequestMutation } from '../../store/api';
+import {
+  useGetDelegateMeetingTimesQuery,
+  useGetSponsorMeetingTimesQuery,
+  useSendDelegateMeetingRequestMutation,
+  useSendSponsorMeetingRequestMutation,
+} from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const UserIcon = ({ color = colors.white, size = 18 }) => (
@@ -55,18 +60,27 @@ const ExternalLinkIcon = ({ color = colors.textMuted, size = 16 }) => (
   <Icon name="external-link" size={size} color={color} />
 );
 
+const meetingRed = '#DC2626';
+
 export const DelegateDetailsScreen = () => {
   const navigation = useNavigation();
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const [priority, setPriority] = useState('1st');
   const { user } = useAppSelector((state) => state.auth);
+  const { selectedEventDateFrom } = useAppSelector((state) => state.event);
+  const [hasRequested, setHasRequested] = useState(false);
+  const [requestedPriorityText, setRequestedPriorityText] = useState(null);
   
   // Modal states for meeting request
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isSendingRequest, setIsSendingRequest] = useState(false);
   const [isRequestSuccess, setIsRequestSuccess] = useState(false);
   const modalAnim = useRef(new Animated.Value(0)).current;
+  const [isTimeModalVisible, setIsTimeModalVisible] = useState(false);
+  // selected slot shape: { date: 'YYYY-MM-DD', from: 'HH:MM', to: 'HH:MM', fromFull: 'HH:MM:SS' }
+  const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
+  const [meetingTimesParams, setMeetingTimesParams] = useState(null);
 
   // Determine user type
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -77,7 +91,147 @@ export const DelegateDetailsScreen = () => {
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
   const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
 
-  // Get delegate data from params
+  const eventId = user?.event_id || user?.events?.[0]?.id || 27;
+  const todayDate = useMemo(() => {
+    const now = new Date();
+    return now.toISOString().split('T')[0];
+  }, []);
+
+  const meetingDate = useMemo(() => {
+    const raw = params?.eventDateFrom || selectedEventDateFrom;
+    if (!raw) return todayDate;
+    const s = String(raw);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return todayDate;
+  }, [params?.eventDateFrom, selectedEventDateFrom, todayDate]);
+
+  const {
+    data: delegateMeetingTimesData,
+    isLoading: delegateMeetingTimesLoading,
+    error: delegateMeetingTimesError,
+    refetch: refetchDelegateMeetingTimes,
+  } = useGetDelegateMeetingTimesQuery(meetingTimesParams || {}, {
+    skip: !user || !isDelegate || !meetingTimesParams,
+  });
+
+  const {
+    data: sponsorMeetingTimesData,
+    isLoading: sponsorMeetingTimesLoading,
+    error: sponsorMeetingTimesError,
+    refetch: refetchSponsorMeetingTimes,
+  } = useGetSponsorMeetingTimesQuery(meetingTimesParams || {}, {
+    skip: !user || isDelegate || !meetingTimesParams,
+  });
+
+  const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
+  const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
+  const refetchMeetingTimes = isDelegate ? refetchDelegateMeetingTimes : refetchSponsorMeetingTimes;
+
+  const meetingSlotGroups = useMemo(() => {
+    if (!meetingTimesData) return [];
+
+    const formatDateDDMMYYYY = (yyyyMmDd) => {
+      if (!yyyyMmDd) return '';
+      const [y, m, d] = String(yyyyMmDd).slice(0, 10).split('-');
+      if (!y || !m || !d) return String(yyyyMmDd);
+      return `${d}-${m}-${y}`;
+    };
+
+    const pickTimePart = (value) => {
+      if (!value) return '';
+      const s = String(value);
+      // "YYYY-MM-DD HH:MM:SS" -> "HH:MM:SS"
+      if (s.includes(' ')) return s.split(' ')[1] || s;
+      return s;
+    };
+
+    const toHHMM = (hhmmss) => {
+      const s = String(hhmmss || '');
+      return s.length >= 5 ? s.slice(0, 5) : s;
+    };
+
+    // API shape (from logs): { data: { "YYYY-MM-DD": [ {meeting_from,...} ] }, dates: [...] }
+    if (meetingTimesData?.data && typeof meetingTimesData.data === 'object' && !Array.isArray(meetingTimesData.data)) {
+      const dates = Array.isArray(meetingTimesData?.dates)
+        ? meetingTimesData.dates
+        : Object.keys(meetingTimesData.data || {});
+
+      return (dates || []).map((dateKey) => {
+        const rawSlots = meetingTimesData.data?.[dateKey] || [];
+        const items = (Array.isArray(rawSlots) ? rawSlots : [])
+          .map((slot) => {
+            const fromFull = pickTimePart(slot?.meeting_from);
+            const toFull = pickTimePart(slot?.meeting_to);
+            const from = toHHMM(fromFull);
+            const to = toHHMM(toFull);
+            if (!from || !to) return null;
+            return {
+              id: slot?.id ?? `${dateKey}-${fromFull}-${toFull}`,
+              date: dateKey,
+              from,
+              to,
+              fromFull,
+            };
+          })
+          .filter(Boolean);
+
+        return {
+          date: dateKey,
+          dateLabel: formatDateDDMMYYYY(dateKey),
+          items,
+        };
+      }).filter((g) => g.items.length > 0);
+    }
+
+    // Fallback: older array-based responses
+    const arr = Array.isArray(meetingTimesData?.data)
+      ? meetingTimesData.data
+      : Array.isArray(meetingTimesData)
+        ? meetingTimesData
+        : Array.isArray(meetingTimesData?.data?.data)
+          ? meetingTimesData.data.data
+          : [];
+
+    const items = arr
+      .map((slot) => {
+        if (typeof slot === 'string') {
+          const t = slot.slice(0, 5);
+          return { id: slot, date: meetingDate, from: t, to: '', fromFull: slot };
+        }
+        const rawTime = slot?.time || slot?.time_slot || slot?.label || null;
+        if (!rawTime) return null;
+        const fromFull = pickTimePart(rawTime);
+        return { id: rawTime, date: meetingDate, from: toHHMM(fromFull), to: '', fromFull };
+      })
+      .filter(Boolean);
+
+    return items.length
+      ? [{ date: meetingDate, dateLabel: meetingDate, items }]
+      : [];
+  }, [meetingTimesData, meetingDate]);
+
+  useEffect(() => {
+    if (meetingTimesParams) {
+      console.log('🕒 Meeting times params (DelegateDetailsScreen):', meetingTimesParams);
+      console.log('🕒 Meeting times data (DelegateDetailsScreen):', JSON.stringify(meetingTimesData, null, 2));
+      if (delegateMeetingTimesError || sponsorMeetingTimesError) {
+        console.log('🕒 Meeting times error (DelegateDetailsScreen):', delegateMeetingTimesError || sponsorMeetingTimesError);
+      }
+    }
+  }, [meetingTimesParams, meetingTimesData, delegateMeetingTimesError, sponsorMeetingTimesError]);
+
+  // Determine which profile type we are showing (default: delegate)
+  const profileType = useMemo(() => {
+    const rawType = params?.profileType;
+    if (!rawType) return 'delegate';
+    const t = String(rawType).toLowerCase();
+    return t === 'sponsor' ? 'sponsor' : 'delegate';
+  }, [params?.profileType]);
+  const isSponsorProfile = profileType === 'sponsor';
+
+  // Get delegate data from params (also used for sponsor profiles coming from Attendees list)
   const delegate = useMemo(() => {
     if (!params?.delegate) {
       return {
@@ -98,6 +252,27 @@ export const DelegateDetailsScreen = () => {
     const parsedDelegate = JSON.parse(params.delegate);
     return parsedDelegate;
   }, [params]);
+
+  // If this profile already has a meeting request (from AttendeesScreen/API),
+  // initialise the requested state and priority so the UI shows it as already sent.
+  useEffect(() => {
+    if (delegate && typeof delegate.hasRequest !== 'undefined') {
+      setHasRequested(Boolean(delegate.hasRequest));
+
+      // Try to initialise priority from incoming data (e.g. '1st', '2nd')
+      if (delegate.priorityText && typeof delegate.priorityText === 'string') {
+        setPriority(delegate.priorityText);
+        setRequestedPriorityText(delegate.priorityText);
+      } else if (delegate.priority && typeof delegate.priority === 'number') {
+        const mapped =
+          delegate.priority === 1 ? '1st' :
+          delegate.priority === 2 ? '2nd' :
+          '1st';
+        setPriority(mapped);
+        setRequestedPriorityText(mapped);
+      }
+    }
+  }, [delegate]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -148,14 +323,21 @@ export const DelegateDetailsScreen = () => {
   // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
     console.log('🔙 DelegateDetailsScreen: handleBack called');
-    
-    // For expo-router with drawer navigation, explicitly navigate to attendees screen
+
+    const rawReturnTo = params?.returnTo;
+    const targetPath = rawReturnTo ? `/(drawer)/${rawReturnTo}` : null;
+
     try {
-      console.log('🔙 Navigating to attendees screen');
-      router.push('/(drawer)/attendees');
+      if (targetPath) {
+        console.log('🔙 Navigating to', targetPath);
+        router.push(targetPath);
+      } else {
+        console.log('🔙 No explicit returnTo, using router.back()');
+        router.back();
+      }
     } catch (error) {
       console.error('❌ Navigation failed:', error);
-      // Fallback: try router.back()
+      // Fallback: try router.back() one more time
       try {
         console.log('🔙 Fallback: trying router.back()');
         router.back();
@@ -163,7 +345,7 @@ export const DelegateDetailsScreen = () => {
         console.error('❌ Router.back() also failed:', backError);
       }
     }
-  }, []);
+  }, [params?.returnTo]);
 
   // Handle Android hardware back button
   useEffect(() => {
@@ -186,9 +368,36 @@ export const DelegateDetailsScreen = () => {
     setIsModalVisible(false);
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
+    setSelectedTimeSlot(null);
   };
 
-  const handleSendMeetingRequest = async () => {
+  const openMeetingModal = () => {
+    if (hasRequested) return;
+    setIsModalVisible(true);
+    setIsSendingRequest(false);
+    setIsRequestSuccess(false);
+    setSelectedTimeSlot(null);
+  };
+
+  const openTimeModal = () => {
+    if (!delegate || !delegate.id) return;
+
+    const effectiveEventId = Number(eventId || 27);
+    const date = meetingDate;
+
+    setMeetingTimesParams({
+      event_id: effectiveEventId,
+      date,
+    });
+    setIsTimeModalVisible(true);
+    setSelectedTimeSlot(null);
+  };
+
+  const closeTimeModal = () => {
+    setIsTimeModalVisible(false);
+  };
+
+  const handleSendMeetingRequest = async (slot) => {
     try {
       // Validate attendee ID
       if (!delegate.id || delegate.id === '') {
@@ -196,25 +405,24 @@ export const DelegateDetailsScreen = () => {
         return;
       }
 
-      // Open modal with loading state
-      setIsModalVisible(true);
       setIsSendingRequest(true);
-      setIsRequestSuccess(false);
 
       // Map priority text to number: 1st=1, 2nd=2
       const priorityMap = { '1st': 1, '2nd': 2 };
       const priorityValue = priorityMap[priority] || 1;
 
-      // Get current date and time
       const now = new Date();
-      const date = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
-      const time = now.toTimeString().split(' ')[0]; // Format: HH:MM:SS
+      const date = slot?.date || meetingDate || todayDate;
+      const time =
+        slot?.fromFull ||
+        (slot?.from ? `${slot.from}:00` : null) ||
+        now.toTimeString().split(' ')[0]; // Fallback: HH:MM:SS
 
       // Use different parameter names based on user type
       const payload = isDelegate
         ? {
             sponsor_id: Number(delegate.id),
-            event_id: Number(user?.event_id || 27),
+            event_id: Number(eventId || 27),
             priority: priorityValue,
             date: date,
             time: time,
@@ -222,7 +430,7 @@ export const DelegateDetailsScreen = () => {
           }
         : {
             delegate_id: Number(delegate.id),
-            event_id: Number(user?.event_id || 27),
+            event_id: Number(eventId || 27),
             priority: priorityValue,
             date: date,
             time: time,
@@ -231,14 +439,16 @@ export const DelegateDetailsScreen = () => {
 
       await createMeetingRequest(payload).unwrap();
 
-      // Show success state
-      setIsSendingRequest(false);
+      setIsTimeModalVisible(false);
+      setHasRequested(true);
+      setRequestedPriorityText(priority);
       setIsRequestSuccess(true);
+      setSelectedTimeSlot(null);
     } catch (e) {
       console.error('Error sending meeting request:', e);
-      setIsSendingRequest(false);
-      setIsRequestSuccess(false);
       Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
+    } finally {
+      setIsSendingRequest(false);
     }
   };
 
@@ -279,8 +489,8 @@ export const DelegateDetailsScreen = () => {
   };
 
   const handleCall = () => {
-    const phoneNumber = delegate.phone.replace(/\D/g, '');
-    Linking.openURL(`tel:${phoneNumber}`);
+    // Delegate phone numbers must not be dialed or exposed from the app
+    return;
   };
 
   const handleOpenLinkedIn = () => {
@@ -308,18 +518,6 @@ export const DelegateDetailsScreen = () => {
     </View>
   );
 
-  const PriorityButton = ({ label, isSelected, onPress }) => (
-    <TouchableOpacity
-      style={[styles.priorityButton, isSelected && styles.priorityButtonSelected]}
-      onPress={onPress}
-      activeOpacity={0.8}
-    >
-      <Text style={[styles.priorityButtonText, isSelected && styles.priorityButtonTextSelected]}>
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-
   const DetailRow = ({ label, value }) => (
     <View style={styles.detailRow}>
       <Text style={styles.detailLabel}>{label}</Text>
@@ -330,7 +528,7 @@ export const DelegateDetailsScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
-        title="Delegate Details" 
+        title={isSponsorProfile ? 'Sponsor Details' : 'Delegatee Details'} 
         leftIcon="arrow-left" 
         onLeftPress={handleBack}
         iconSize={SIZES.headerIconSize} 
@@ -360,17 +558,37 @@ export const DelegateDetailsScreen = () => {
             <Text style={styles.delegateRole}>{delegate.role}</Text>
             <Text style={styles.delegateCompany}>{delegate.company}</Text>
 
-            <TouchableOpacity style={styles.startChatButton} onPress={handleStartChat} activeOpacity={0.8}>
-              <LinearGradient
-                colors={colors.gradient}
-                style={styles.startChatGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
+            {/* Action row: Book a meeting (left) + Start chat icon (right) */}
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[styles.bookMeetingButton, hasRequested && styles.bookMeetingButtonDisabled]}
+                onPress={openMeetingModal}
+                activeOpacity={0.85}
+                disabled={hasRequested}
               >
-                <MessageCircleIcon />
-                <Text style={styles.startChatText}>Start Chat</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+                <View style={styles.bookMeetingLeftIcon}>
+                  <Icon name="users" size={18} color={colors.white} />
+                </View>
+                <Text style={[styles.bookMeetingText, hasRequested && styles.bookMeetingTextDisabled]}>
+                  {hasRequested
+                    ? requestedPriorityText
+                      ? `Requested (${requestedPriorityText})`
+                      : 'Requested'
+                    : 'Book a meeting'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.chatIconButton} onPress={handleStartChat} activeOpacity={0.85}>
+                <LinearGradient
+                  colors={colors.gradient}
+                  style={styles.chatIconGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  <MessageCircleIcon />
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {delegate.name === 'No Data' ? (
@@ -391,14 +609,7 @@ export const DelegateDetailsScreen = () => {
                   onAction={handleCopyEmail}
                 />
               )}
-              {delegate.phone && (
-                <ContactItem
-                  icon={PhoneIcon}
-                  value={delegate.phone}
-                  actionIcon={PhoneIcon}
-                  onAction={handleCall}
-                />
-              )}
+              {/* Delegate phone numbers must not be visible in the app */}
               {delegate.linkedin && (
                 <ContactItem
                   icon={LinkedinIcon}
@@ -441,41 +652,6 @@ export const DelegateDetailsScreen = () => {
             </View>
           )}
 
-          {/* Select Priority Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Select Priority</Text>
-            <View style={styles.priorityContainer}>
-              <PriorityButton
-                label="1st"
-                isSelected={priority === '1st'}
-                onPress={() => setPriority('1st')}
-              />
-              <PriorityButton
-                label="2nd"
-                isSelected={priority === '2nd'}
-                onPress={() => setPriority('2nd')}
-              />
-            </View>
-          </View>
-
-          {/* Send Request Button */}
-          <View style={styles.section}>
-            <TouchableOpacity 
-              style={styles.sendRequestButton} 
-              onPress={handleSendMeetingRequest} 
-              activeOpacity={0.8}
-            >
-              <LinearGradient
-                colors={colors.gradient}
-                style={styles.sendRequestGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-              >
-                <Text style={styles.sendRequestText}>Send Request</Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-
               {/* Details Section */}
               {/* <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Details</Text>
@@ -490,7 +666,7 @@ export const DelegateDetailsScreen = () => {
         </View>
       </ScrollView>
 
-      {/* Meeting Request Modal */}
+      {/* Priority Modal (like AttendeesScreen) */}
       <Modal
         transparent
         animationType="fade"
@@ -498,10 +674,7 @@ export const DelegateDetailsScreen = () => {
         onRequestClose={closeModal}
       >
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
-          <Pressable 
-            style={StyleSheet.absoluteFill} 
-            onPress={closeModal}
-          />
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
           <Animated.View
             style={[
               styles.modalCard2,
@@ -525,30 +698,190 @@ export const DelegateDetailsScreen = () => {
             </View>
 
             {isRequestSuccess ? (
-              // Success State
               <View style={styles.successContainer}>
                 <View style={styles.successIconContainer}>
                   <Icon name="check-circle" size={64} color={colors.primary} />
                 </View>
                 <Text style={styles.successTitle}>Request Sent Successfully!</Text>
                 <Text style={styles.successMessage}>
-                  Your meeting request has been sent to {isDelegate ? delegate.name : (delegate.full_name || delegate.name)}.
+                  Your meeting request has been sent to {delegate?.name || delegate?.full_name || 'this attendee'}.
                 </Text>
                 <View style={styles.successButtonContainer}>
                   <TouchableOpacity
                     style={[styles.modalButton, styles.primaryButton, styles.successButton]}
                     onPress={closeModal}
+                    activeOpacity={0.85}
                   >
                     <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Close</Text>
                   </TouchableOpacity>
                 </View>
               </View>
-            ) : (
-              // Loading State
+            ) : isSendingRequest ? (
               <View style={styles.loadingContainerModal}>
                 <ActivityIndicator size="large" color={colors.primary} />
                 <Text style={styles.loadingTextModal}>Sending request...</Text>
               </View>
+            ) : (
+              <>
+                <View style={styles.modalContactRow}>
+                  <View style={styles.modalAvatar}>
+                    {delegate?.image ? (
+                      <Image source={{ uri: delegate.image }} style={styles.avatarImage} />
+                    ) : (
+                      <View
+                        style={[
+                          styles.avatarImage,
+                          { backgroundColor: colors.gray200, alignItems: 'center', justifyContent: 'center' },
+                        ]}
+                      >
+                        <UserIcon size={24} color={colors.textMuted} />
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.modalContactInfo}>
+                    <Text style={styles.modalContactName}>
+                      {delegate?.name || delegate?.full_name || '—'}
+                    </Text>
+                    <Text style={styles.modalContactCompany}>{delegate?.company || '—'}</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.priorityLabel}>Select Priority</Text>
+                <View style={styles.priorityRow}>
+                  {['1st', '2nd'].map((level) => {
+                    const isActive = priority === level;
+                    return (
+                      <TouchableOpacity
+                        key={level}
+                        style={[styles.priorityChip, isActive && styles.priorityChipActive]}
+                        onPress={() => setPriority(level)}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>{level}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <View style={styles.separator3} />
+                <View style={styles.modalButtonRow}>
+                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeModal} activeOpacity={0.85}>
+                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.primaryButton]}
+                    onPress={openTimeModal}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Select Time</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </Animated.View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Time Slot Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isTimeModalVisible}
+        onRequestClose={closeTimeModal}
+      >
+        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
+          <Pressable 
+            style={StyleSheet.absoluteFill} 
+            onPress={closeTimeModal}
+          />
+          <Animated.View
+            style={[
+              styles.modalCard2,
+              {
+                transform: [
+                  {
+                    translateY: modalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.modalHeader2}>
+              <Text style={styles.modalTitle2}>Select Time Slot</Text>
+              <TouchableOpacity onPress={closeTimeModal}>
+                <Text style={styles.closeText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {meetingTimesLoading ? (
+              <View style={styles.loadingContainerModal}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingTextModal}>Loading time slots...</Text>
+              </View>
+            ) : meetingSlotGroups.length === 0 ? (
+              <View style={styles.loadingContainerModal}>
+                <Text style={styles.loadingTextModal}>No time slots available.</Text>
+              </View>
+            ) : (
+              <>
+                <ScrollView
+                  style={{ maxHeight: 260 }}
+                  contentContainerStyle={{ paddingVertical: 4 }}
+                  showsVerticalScrollIndicator
+                >
+                  {meetingSlotGroups.map((group) => (
+                    <View key={group.date} style={styles.slotGroup}>
+                      <Text style={styles.slotGroupTitle}>{group.dateLabel}</Text>
+                      {group.items.map((it) => {
+                        const key = `${it.date}-${it.fromFull || it.from}-${it.to}`;
+                        const isActive =
+                          selectedTimeSlot &&
+                          selectedTimeSlot.date === it.date &&
+                          selectedTimeSlot.fromFull === it.fromFull &&
+                          selectedTimeSlot.to === it.to;
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            style={[styles.priorityChip, isActive && styles.priorityChipActive, { marginVertical: 4 }]}
+                            onPress={() => setSelectedTimeSlot(isActive ? null : it)}
+                            activeOpacity={0.85}
+                          >
+                            <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>
+                              {it.to ? `${it.from} to ${it.to}` : it.from}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ))}
+                </ScrollView>
+                <View style={styles.separator3}/>
+                <View style={styles.modalButtonRow}>
+                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
+                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalButton,
+                      styles.primaryButton,
+                      (!selectedTimeSlot || isSendingRequest) && { opacity: 0.6 },
+                    ]}
+                    onPress={() => {
+                      if (!selectedTimeSlot) return;
+                      handleSendMeetingRequest(selectedTimeSlot);
+                    }}
+                    disabled={!selectedTimeSlot || isSendingRequest}
+                  >
+                    {isSendingRequest ? (
+                      <ActivityIndicator size="small" color={colors.white} />
+                    ) : (
+                      <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
             )}
           </Animated.View>
         </SafeAreaView>
@@ -605,24 +938,51 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     marginBottom: 10,
     textAlign: 'center',
   },
-  startChatButton: {
+  actionRow: {
     width: '100%',
-    borderRadius: radius.md,
-    overflow: 'hidden',
-    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 10,
   },
-  startChatGradient: {
+  bookMeetingButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
     gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: radius.pill,
+    backgroundColor: meetingRed,
   },
-  startChatText: {
+  bookMeetingButtonDisabled: {
+    backgroundColor: colors.gray200,
+    opacity: 0.9,
+  },
+  bookMeetingLeftIcon: {
+    width: 22,
+    alignItems: 'center',
+  },
+  bookMeetingText: {
     fontSize: SIZES.body,
-    fontWeight: '600',
+    fontWeight: '700',
     color: colors.white,
+  },
+  bookMeetingTextDisabled: {
+    color: colors.textMuted,
+  },
+  chatIconButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  chatIconGradient: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   section: {
     marginBottom: SIZES.sectionSpacing,
@@ -680,33 +1040,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.text,
     flex: 1,
   },
-  priorityContainer: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  priorityButton: {
-    flex: 1,
-    backgroundColor: colors.gray100,
-    borderRadius: radius.pill,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  priorityButtonSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  priorityButtonText: {
-    fontSize: SIZES.body,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  priorityButtonTextSelected: {
-    color: colors.white,
-  },
   detailsCard: {
     padding: SIZES.paddingHorizontal / 2,
   },
@@ -723,23 +1056,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: SIZES.body,
     fontWeight: '600',
     color: colors.text,
-  },
-  sendRequestButton: {
-    width: '100%',
-    borderRadius: radius.md,
-    overflow: 'hidden',
-  },
-  sendRequestGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-  },
-  sendRequestText: {
-    fontSize: SIZES.body,
-    fontWeight: '600',
-    color: colors.white,
   },
   // Meeting Request Modal styles
   modalBackdrop2: {
@@ -876,6 +1192,17 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   primaryButtonText: {
     color: colors.white,
+  },
+  slotGroup: {
+    marginBottom: 8,
+  },
+  slotGroupTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginTop: 6,
+    marginBottom: 6,
+    paddingHorizontal: 4,
   },
   successContainer: {
     alignItems: 'center',

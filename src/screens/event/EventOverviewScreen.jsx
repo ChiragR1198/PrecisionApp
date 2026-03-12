@@ -1,8 +1,8 @@
 import Icon from '@expo/vector-icons/Feather';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, ImageBackground, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -103,61 +103,6 @@ const splitIntoParagraphs = (text) => {
     .filter(p => p.length > 0);
 };
 
-// Hook to animate counter from 0 to target value
-const useAnimatedCounter = (targetValue, duration = 2000, startAnimation = true) => {
-  const [count, setCount] = useState(0);
-  const intervalRef = useRef(null);
-  const startTimeRef = useRef(null);
-
-  useEffect(() => {
-    if (!startAnimation) {
-      setCount(0);
-      return;
-    }
-
-    // Extract numeric value from string like "190+" or "4+"
-    const numericValue = parseInt(targetValue?.toString().replace(/\D/g, '') || '0', 10);
-    const suffix = targetValue?.toString().match(/[^0-9]/g)?.join('') || '';
-
-    if (numericValue === 0) {
-      setCount(0);
-      return;
-    }
-
-    setCount(0);
-    startTimeRef.current = Date.now();
-
-    const animate = () => {
-      const elapsed = Date.now() - startTimeRef.current;
-      const progress = Math.min(elapsed / duration, 1);
-      
-      // Easing function for smooth animation
-      const easeOutQuart = 1 - Math.pow(1 - progress, 4);
-      const currentValue = Math.floor(numericValue * easeOutQuart);
-
-      setCount(currentValue);
-
-      if (progress < 1) {
-        intervalRef.current = requestAnimationFrame(animate);
-      } else {
-        setCount(numericValue);
-      }
-    };
-
-    intervalRef.current = requestAnimationFrame(animate);
-
-    return () => {
-      if (intervalRef.current) {
-        cancelAnimationFrame(intervalRef.current);
-      }
-    };
-  }, [targetValue, duration, startAnimation]);
-
-  // Extract suffix from original value
-  const suffix = targetValue?.toString().match(/[^0-9]/g)?.join('') || '';
-  return count + suffix;
-};
-
 export const EventOverviewScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
@@ -214,7 +159,6 @@ export const EventOverviewScreen = () => {
     }
   }, [error, dispatch]);
   
-  const [shouldAnimateStats, setShouldAnimateStats] = useState(false);
   const [isEventDropdownOpen, setIsEventDropdownOpen] = useState(false);
   
   const initialSelectedIndex = Number.isFinite(Number(params?.selectedEventIndex)) ? Number(params.selectedEventIndex) : 0;
@@ -260,52 +204,19 @@ export const EventOverviewScreen = () => {
     if (!events[selectedEventIndex]) return null;
     
     const event = events[selectedEventIndex];
+    const dateText = formatDate(event.date_from, event.date_to);
+    const locationText = event.venue || event.location || '';
     return {
       id: event.id,
       title: event.title || 'Untitled Event',
-      date: formatDate(event.date_from, event.date_to),
-      location: event.location || event.venue || '',
+      date: dateText,
+      location: locationText,
       date_from: event.date_from,
       date_to: event.date_to,
       description: event.description,
     };
   }, [events, selectedEventIndex]);
   
-  // Trigger animation when selection changes
-  useEffect(() => {
-    if (events.length > 0 && events[selectedEventIndex]) {
-      setShouldAnimateStats(false);
-      setTimeout(() => setShouldAnimateStats(true), 100);
-    }
-  }, [selectedEventIndex, events]);
-
-  // Start animation when event details are loaded
-  useEffect(() => {
-    if (selectedEvent && !isLoading) {
-      // Small delay to ensure UI is ready
-      const timer = setTimeout(() => {
-        setShouldAnimateStats(true);
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [selectedEvent, isLoading]);
-
-  // Reset and restart animation when screen comes into focus
-  useFocusEffect(
-    useCallback(() => {
-      // Reset animation state when screen comes into focus
-      setShouldAnimateStats(false);
-      
-      // Restart animation if event details are already loaded
-      if (selectedEvent && !isLoading) {
-        const timer = setTimeout(() => {
-          setShouldAnimateStats(true);
-        }, 300);
-        return () => clearTimeout(timer);
-      }
-    }, [selectedEvent, isLoading])
-  );
-
   const isLoadingDetails = isLoading;
 
   const handleEventSelect = (index) => {
@@ -444,16 +355,16 @@ export const EventOverviewScreen = () => {
                       <View style={styles.badge}><Text style={styles.badgeText}>Current Event</Text></View>
                     </View>
                     <Text style={[styles.bannerTitle, { fontSize: getDynamicFontSize(selectedEvent?.title, isTablet ? 32 : 24, 16) }]} numberOfLines={3} ellipsizeMode="tail">{selectedEvent?.title || 'Loading...'}</Text>
+                    {!!selectedEvent?.location && (
+                      <View style={styles.bannerVenueRow}>
+                        <MapPinIcon size={14} />
+                        <Text style={styles.bannerVenueText}>{selectedEvent.location}</Text>
+                      </View>
+                    )}
                     {selectedEvent?.date ? (
                       <View style={styles.bannerMetaRow}>
                         <Icon name="calendar" size={14} color="#FFFFFF" />
                         <Text style={styles.bannerMetaText}>{selectedEvent.date}</Text>
-                      </View>
-                    ) : null}
-                    {selectedEvent?.location ? (
-                      <View style={styles.bannerMetaRow}>
-                        <MapPinIcon size={12} />
-                        <Text style={styles.bannerMetaText}>{selectedEvent.location}</Text>
                       </View>
                     ) : null}
                   </LinearGradient>
@@ -463,14 +374,14 @@ export const EventOverviewScreen = () => {
           <View style={styles.statsSection}>
             <Text style={styles.sectionTitle}>Event Statistics</Text>
             <View style={styles.statsGrid}>
-              <StatCard value="20+" label="Speakers" icon="mic" startAnimation={shouldAnimateStats} />
-              <StatCard value="4+" label="Panel Discussions" icon="sliders" startAnimation={shouldAnimateStats} />
-              <StatCard value="200+" label="Event Attendance" icon="users" startAnimation={shouldAnimateStats} />
+              <StatCard value="20+" label="Speakers" icon="mic" />
+              <StatCard value="4+" label="Panel Discussions" icon="sliders" />
+              <StatCard value="200+" label="Attendance" icon="users" />
             </View>
             <View style={[styles.statsGrid, { marginTop: SIZES.cardSpacing }]}>
-              <StatCard value="170+" label="Meetings" icon="calendar" startAnimation={shouldAnimateStats} />
-              <StatCard value="20+" label="Exhibition Booths" icon="briefcase" startAnimation={shouldAnimateStats} />
-              <StatCard value="12+" label="Networking Hours" icon="clock" startAnimation={shouldAnimateStats} />
+              <StatCard value="170+" label="Meetings" icon="calendar" />
+              <StatCard value="20+" label="Exhibition Booths" icon="briefcase" />
+              <StatCard value="12+" label="Networking Hours" icon="clock" />
             </View>
           </View>
 
@@ -524,7 +435,7 @@ export const EventOverviewScreen = () => {
               <ScrollView style={styles.dropdownModalList} contentContainerStyle={styles.dropdownModalListContent} showsVerticalScrollIndicator>
                 {events.map((event, idx) => {
                   const eventDate = formatDate(event.date_from, event.date_to);
-                  const eventLocation = event.location || event.venue || '';
+                  const eventLocation = event.venue || event.location || '';
                   const modalTitleSize = getDynamicFontSize(event.title, SIZES.title, 11);
                   return (
                     <TouchableOpacity key={event.id || idx} style={[styles.modalItem, idx === selectedEventIndex && styles.modalItemActive]} activeOpacity={0.9} onPress={() => handleEventSelect(idx)}>
@@ -546,9 +457,7 @@ export const EventOverviewScreen = () => {
   );
 };
 
-const StatCard = ({ value, label, icon, startAnimation }) => {
-  const animatedValue = useAnimatedCounter(value, 2000, startAnimation);
-  
+const StatCard = ({ value, label, icon }) => {
   return (
     <View style={statStyles.cardContainer}>
       <View style={statStyles.iconRow}>
@@ -557,7 +466,7 @@ const StatCard = ({ value, label, icon, startAnimation }) => {
             <Icon name={icon} size={16} color={colors.primary} />
           </View>
         ) : <View />}
-        <Text style={statStyles.valueText}>{animatedValue}</Text>
+        <Text style={statStyles.valueText}>{value}</Text>
       </View>
       <Text style={statStyles.labelText}>{label}</Text>
     </View>
@@ -673,6 +582,17 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '700',
     marginBottom: 10,
     paddingTop: isTablet ? 80 : 40,
+  },
+  bannerVenueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  bannerVenueText: {
+    color: colors.white,
+    fontSize: 15,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   bannerMetaRow: {
     flexDirection: 'row',

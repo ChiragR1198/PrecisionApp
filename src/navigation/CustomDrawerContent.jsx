@@ -12,16 +12,18 @@ import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorPro
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { clearAuth } from '../store/slices/authSlice';
 
+// Engagement-first order: Dashboard, Agenda, Attendees, Meeting Requests, Messages, then rest
 const NAV_ITEMS = [
   { label: 'Dashboard', route: 'dashboard', icon: 'bar-chart-2' },
-  { label: 'My Event', route: 'my-event', icon: 'calendar' },
   { label: 'Agenda', route: 'agenda', icon: 'list' },
-  { label: 'Attendees', route: 'attendees', icon: 'users' },
-  { label: 'Sponsors', route: 'sponsors', icon: 'briefcase' },
+  { label: 'Event Sponsors', route: 'attendees', icon: 'users' },
   { label: 'Meeting Requests', route: 'meeting-requests', icon: 'calendar' },
   { label: 'Messages', route: 'messages', icon: 'message-circle' },
+  { label: 'My Event', route: 'my-event', icon: 'calendar' },
+  { label: 'Sponsors', route: 'sponsors', icon: 'briefcase' },
   { label: 'Itinerary', route: 'itinerary', icon: 'map-pin' },
   { label: 'Contacts', route: 'contacts', icon: 'book' },
+  // { label: 'Contact Us', route: 'contact-us', icon: 'mail' },
   { label: 'Profile', route: 'profile', icon: 'user' },
   { label: 'Change Password', route: 'change-password', icon: 'key' },
   { label: 'Logout', icon: 'log-out', action: 'logout' },
@@ -88,12 +90,24 @@ export const CustomDrawerContent = (props) => {
   }, [state]);
 
   const navItems = useMemo(() => {
-    if (!isDelegate) return NAV_ITEMS;
-    return NAV_ITEMS.map((item) =>
-      item.route === 'sponsors'
-        ? { ...item, label: 'Delegate' }
-        : item
-    );
+    return NAV_ITEMS.map((item) => {
+      // Dynamic label for attendees route:
+      // - Delegate login: "Event Sponsors"
+      // - Sponsor login: "Attendees"
+      if (item.route === 'attendees') {
+        return {
+          ...item,
+          label: isDelegate ? 'Event Sponsors' : 'Attendees',
+        };
+      }
+
+      // For delegates, show "Delegates" for the sponsors route
+      if (isDelegate && item.route === 'sponsors') {
+        return { ...item, label: 'Delegates' };
+      }
+
+      return item;
+    });
   }, [isDelegate]);
 
   return (

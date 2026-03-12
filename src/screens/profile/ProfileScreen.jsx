@@ -8,20 +8,21 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    Modal,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useWindowDimensions,
-    View
+  ActivityIndicator,
+  Alert,
+  Image,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -72,6 +73,8 @@ const BuildingIcon = ({ color = colors.icon, size = 18 }) => (
   <Icon name="layers" size={size} color={color} />
 );
 
+const MAX_BIO_LENGTH = 500;
+
 const CameraIcon = ({ color = colors.white, size = 16 }) => (
   <FontAwesome name="camera" size={size} color={color} />
 );
@@ -100,9 +103,13 @@ const FormField = ({
   keyboardType = 'default',
   multiline = false,
   numberOfLines = 1,
+  required = false,
 }) => (
   <View style={styles.fieldContainer}>
-    <Text style={styles.fieldLabel}>{label}</Text>
+    <Text style={styles.fieldLabel}>
+      {label}
+      {required && <Text style={styles.requiredAsterisk}> *</Text>}
+    </Text>
     <View style={styles.inputContainer}>
       <TextInput
         style={[styles.input, multiline && styles.inputMultiline]}
@@ -261,6 +268,30 @@ export const ProfileScreen = () => {
     }
     return data;
   }, [profileData, userId]);
+
+  // Single source of truth for displaying profile info in UI
+  // - Prefer matched `profile` (API)
+  // - Fallback to `user` only when IDs match (avoid showing stale data)
+  const displayProfile = useMemo(() => {
+    const safeUser =
+      userId && user?.id && String(user.id) === String(userId) ? user : null;
+    const src = profile || safeUser || null;
+    if (!src) return null;
+
+    const name =
+      src.name ||
+      src.full_name ||
+      `${src.fname || ''} ${src.lname || ''}`.trim() ||
+      '';
+
+    const jobTitle = src.job_title || '';
+    const company = src.company || '';
+    const email = src.email || '';
+    const phone = src.mobile || src.phone || '';
+    const image = src.image || null;
+
+    return { name, jobTitle, company, email, phone, image };
+  }, [profile, user, userId]);
   
   const [formData, setFormData] = useState({
     fullName: '',
@@ -362,6 +393,7 @@ export const ProfileScreen = () => {
   const [isQRModalVisible, setIsQRModalVisible] = useState(false);
   const [qrMode, setQrMode] = useState('code');
   const [scanResult, setScanResult] = useState(null);
+  const [lastScannedText, setLastScannedText] = useState('');
   const [hasScanPermission, setHasScanPermission] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isImagePickerModalVisible, setIsImagePickerModalVisible] = useState(false);
@@ -412,11 +444,29 @@ export const ProfileScreen = () => {
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
   const handleInputChange = (field, value) => {
+    if (field === 'bio' && typeof value === 'string') {
+      value = value.slice(0, MAX_BIO_LENGTH);
+    }
     setFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleOpenLinkedIn = () => {
+    if (!formData.linkedinUrl) return;
+    const url = formData.linkedinUrl.startsWith('http')
+      ? formData.linkedinUrl
+      : `https://${formData.linkedinUrl}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Error', 'Could not open LinkedIn profile');
+    });
   };
 
   const handleSaveChanges = async () => {
     try {
+      if (!formData.fullName.trim() || !formData.email.trim()) {
+        Alert.alert('Missing required fields', 'Please fill in your full name and email before saving.');
+        return;
+      }
+
       const formDataToSend = new FormData();
       
       if (isDelegate) {
@@ -550,13 +600,26 @@ export const ProfileScreen = () => {
   };
 
   const handleOpenQRModal = async () => {
-    console.log('========================================');
-    console.log('📱 QR MODAL OPENING - DATA CHECK');
-    console.log('========================================');
+    const emailForQr = profile?.email || user?.email || formData.email;
+    if (!emailForQr || !String(emailForQr).trim()) {
+      Alert.alert(
+        'Email required',
+        'Please add your email address to your profile so your QR code includes it.'
+      );
+      return;
+    }
     
+    if (__DEV__) {
+      console.log(
+        '[ProfileScreen][QR] profile-for-display',
+        JSON.stringify(displayProfile || null)
+      );
+    }
+
     setIsQRModalVisible(true);
     setQrMode('code');
     setScanResult(null);
+    setLastScannedText('');
     setHasScanPermission(null);
     setIsScanning(false);
     setQrImageError(false); // Reset error state when opening modal
@@ -568,13 +631,6 @@ export const ProfileScreen = () => {
       qrImageTimeoutRef.current = null;
     }
     
-    // Log all available data sources
-    console.log('📊 Profile Data:', JSON.stringify(profile, null, 2));
-    console.log('📊 Profile qr_image:', profile?.qr_image);
-    console.log('📊 User Data (Redux):', JSON.stringify(user, null, 2));
-    console.log('📊 User qr_image (Redux):', user?.qr_image);
-    console.log('📊 Current qrImageUri state:', qrImageUri);
-    
     // Try to get QR image from multiple sources: profile, user (Redux), or AsyncStorage
     let imageUrl = profile?.qr_image || user?.qr_image;
     
@@ -582,30 +638,23 @@ export const ProfileScreen = () => {
     if (!imageUrl) {
       try {
         const storedUser = await AsyncStorage.getItem('auth_user');
-        console.log('📦 AsyncStorage auth_user (raw):', storedUser);
         if (storedUser) {
           const parsedUser = JSON.parse(storedUser);
-          console.log('📦 AsyncStorage auth_user (parsed):', JSON.stringify(parsedUser, null, 2));
           imageUrl = parsedUser?.qr_image;
-          console.log('📦 AsyncStorage qr_image:', imageUrl);
-        } else {
-          console.log('⚠️ No auth_user found in AsyncStorage');
         }
       } catch (error) {
-        console.error('❌ Error loading QR image from AsyncStorage:', error);
+        console.error('Error loading QR image from AsyncStorage:', error);
       }
     }
     
-    // Final decision
-    console.log('✅ Final QR Image URL to use:', imageUrl);
-    console.log('========================================');
-    
     // Set image URI directly from URL
     if (imageUrl) {
+      if (__DEV__) {
+        console.log('[ProfileScreen][QR] qr-image-url', String(imageUrl));
+      }
       setQrImageUri(imageUrl);
       setQrImageLoading(true); // Will be set to false when image loads
     } else {
-      console.log('⚠️ No QR image URL found from any source!');
       setQrImageLoading(false);
     }
   };
@@ -640,6 +689,11 @@ export const ProfileScreen = () => {
         role: scanResult.role || '',
         initials: scanResult.initials || '',
       };
+
+      if (!contactData.name.trim()) {
+        Alert.alert('Missing name', 'Could not determine the contact name from this QR code.');
+        return;
+      }
 
       console.log('Contact data being sent:', contactData);
 
@@ -699,50 +753,259 @@ export const ProfileScreen = () => {
   const handleBarCodeScanned = ({ data }) => {
     setIsScanning(false);
     
-    // Console log the raw QR code data
-    console.log('=== QR Code Scan Details ===');
-    console.log('Raw QR Data:', data);
-    console.log('Data Type:', typeof data);
-    console.log('Data Length:', data?.length);
-    console.log('Is VCARD:', data?.startsWith('BEGIN:VCARD'));
+    const normalized = String(data || '').trim();
+    setLastScannedText(normalized);
+
+    const maybeEnrichFromSelfProfile = (built) => {
+      if (!built || !displayProfile) return built;
+
+      const raw = String(normalized || '').toLowerCase();
+      const name = String(displayProfile?.name || '').trim();
+      const email = String(displayProfile?.email || '').trim();
+
+      // If QR payload includes the email, it's strongly likely this is self.
+      const rawHasEmail = !!email && raw.includes(email.toLowerCase());
+
+      // If payload is short and contains both first+last name tokens, also likely self.
+      const tokens = name.split(/\s+/).filter(Boolean);
+      const first = (tokens[0] || '').toLowerCase();
+      const last = (tokens[tokens.length - 1] || '').toLowerCase();
+      const rawHasNameTokens =
+        raw.length <= 80 && !!first && !!last && raw.includes(first) && raw.includes(last);
+
+      // Only enrich when scan result is missing most fields (so we don't overwrite real contact data)
+      const missingMost =
+        !built.email && !built.phone && !built.company && !built.role && !built.image;
+
+      if ((rawHasEmail || rawHasNameTokens) && missingMost) {
+        return {
+          ...built,
+          name: displayProfile?.name || built.name,
+          role: displayProfile?.jobTitle || built.role,
+          company: displayProfile?.company || built.company,
+          email: displayProfile?.email || built.email,
+          phone: displayProfile?.phone || built.phone,
+          image: displayProfile?.image || built.image,
+        };
+      }
+
+      return built;
+    };
     
-    if (data.startsWith('BEGIN:VCARD')) {
-      console.log('Processing VCARD format...');
-      const parsed = parseVCard(data);
-      console.log('Parsed VCARD Contact:', parsed);
-      console.log('Parsed Contact Details:', {
-        name: parsed.name,
-        phone: parsed.phone,
-        email: parsed.email,
-        company: parsed.company,
-        role: parsed.role,
-        initials: parsed.initials,
-      });
-      setScanResult(parsed);
-    } else {
-      // fallback for normal QR text
-      console.log('Processing non-VCARD QR code...');
-      const fallbackResult = {
-        initials: 'QR',
-        name: 'Unknown Contact',
-        role: 'Scanned via QR',
-        company: data,
-        email: 'N/A',
-        phone: 'N/A',
+    const buildScanResult = (rawResult) => {
+      const safe = rawResult || {};
+      const clean = (v) => (typeof v === 'string' ? v.trim() : '');
+
+      let name = clean(safe.name);
+      const role = clean(safe.role);
+      const company = clean(safe.company);
+      const email = clean(safe.email);
+      const phone = clean(safe.phone);
+      const image = clean(safe.image || safe.photo || safe.avatar);
+
+      if (!name) {
+        // Derive a reasonable name fallback (never show "Unknown Contact")
+        if (company) name = company;
+        else if (email) name = email.split('@')[0];
+        else if (phone) name = phone;
+        else name = 'Scanned Contact';
+      }
+
+      const initialsSource = name || company || email || 'SC';
+      const initials =
+        initialsSource
+          .split(' ')
+          .filter(Boolean)
+          .map((n) => n[0])
+          .join('')
+          .toUpperCase()
+          .slice(0, 2) || 'SC';
+
+      return { initials, name, role, company, email, phone, image };
+    };
+
+    const parseStructuredText = (text) => {
+      const t = String(text || '').trim();
+      if (!t) return null;
+
+      const isEmail = (v) => /\S+@\S+\.\S+/.test(String(v || '').trim());
+      const isPhone = (v) => /^\+?[\d ()-]{7,}$/.test(String(v || '').trim());
+
+      const parseUrlPayload = (raw) => {
+        const s = String(raw || '').trim();
+        if (!/^https?:\/\//i.test(s)) return null;
+        try {
+          const url = new URL(s);
+          const qp = url.searchParams;
+          return buildScanResult({
+            name: qp.get('name') || qp.get('full_name') || qp.get('fullName'),
+            role: qp.get('title') || qp.get('job_title') || qp.get('role'),
+            company: qp.get('company') || qp.get('org') || qp.get('organization'),
+            email: qp.get('email'),
+            phone: qp.get('phone') || qp.get('mobile') || qp.get('tel'),
+            image: qp.get('image') || qp.get('avatar') || qp.get('photo'),
+          });
+        } catch {
+          return null;
+        }
       };
-      console.log('Fallback QR Result:', fallbackResult);
-      console.log('QR Code Content:', data);
-      setScanResult(fallbackResult);
+
+      // Parentheses payload support, commonly seen in generated QR strings:
+      // "Name(Email)(Phone) Company", "Name(Company)(Email) Role", "Ronak()() Ronak"
+      const parseParensPayload = (raw) => {
+        const s = String(raw || '').trim();
+        if (!s.includes('(') || !s.includes(')')) return null;
+
+        const isLikelyEventText = (v) => {
+          const x = String(v || '').trim();
+          if (!x) return false;
+          return /\b(summit|conference|congress|expo|event|symposium|meetup|meeting|trials)\b/i.test(x);
+        };
+
+        const groups = [...s.matchAll(/\(([^)]*)\)/g)].map((m) => String(m[1] || '').trim());
+        if (groups.length === 0) return null;
+
+        const before = s.split('(')[0].trim();
+        const after = s.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+
+        let email = '';
+        let phone = '';
+        const rest = [];
+
+        for (const g of groups) {
+          if (!g) continue;
+          if (!email && isEmail(g)) {
+            email = g;
+            continue;
+          }
+          if (!phone && isPhone(g)) {
+            phone = g;
+            continue;
+          }
+          rest.push(g);
+        }
+
+        // Heuristics for remaining fields
+        let company = rest[0] || '';
+        let role = rest[1] || '';
+
+        // Ignore event-like bracket text (often embedded in FN)
+        if (company && isLikelyEventText(company)) company = '';
+        if (role && isLikelyEventText(role)) role = '';
+
+        // Prefer the "after" string as the full name (it already includes suffix tokens like last name)
+        // Example: "Jim(Precision Summit) Pang" => after = "Jim Pang"
+        let name = after || before;
+        if (name && before && name.toLowerCase().startsWith(before.toLowerCase())) {
+          name = name.trim();
+        }
+
+        // If trailing string is email/phone, capture it instead
+        if (after) {
+          if (isEmail(after) && !email) email = after;
+          if (isPhone(after) && !phone) phone = after;
+        }
+
+        // If company looks like a title and role is empty, swap.
+        if (!role && company && /\b(manager|developer|engineer|director|vp|ceo|cto|cfo|founder|lead|head)\b/i.test(company)) {
+          role = company;
+          company = '';
+        }
+
+        return buildScanResult({ name, email, phone, company, role });
+      };
+
+      // JSON payload support
+      if (t.startsWith('{') || t.startsWith('[')) {
+        try {
+          const obj = JSON.parse(t);
+          const o = Array.isArray(obj) ? obj[0] : obj;
+          if (o && typeof o === 'object') {
+            return buildScanResult({
+              name: o.name || o.full_name || o.fullName,
+              role: o.title || o.job_title || o.role,
+              company: o.company || o.org || o.organization,
+              email: o.email,
+              phone: o.phone || o.mobile || o.tel,
+              image: o.image || o.avatar || o.photo,
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // URL payload support (non-VCARD)
+      const urlParsed = parseUrlPayload(t);
+      if (urlParsed) return urlParsed;
+
+      // Parentheses payload (non-VCARD)
+      const parensParsed = parseParensPayload(t);
+      if (parensParsed) return parensParsed;
+
+      // Key-value lines support (e.g. Name:..., Email:...)
+      const lines = t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const kv = {};
+      for (const line of lines) {
+        const m = line.match(/^([A-Za-z _-]+)\s*:\s*(.+)$/);
+        if (!m) continue;
+        kv[m[1].toLowerCase()] = m[2];
+      }
+      if (Object.keys(kv).length > 0) {
+        return buildScanResult({
+          name: kv['name'] || kv['full name'] || kv['fullname'],
+          role: kv['title'] || kv['job title'] || kv['role'],
+          company: kv['company'] || kv['organisation'] || kv['organization'] || kv['org'],
+          email: kv['email'],
+          phone: kv['phone'] || kv['mobile'] || kv['tel'],
+        });
+      }
+
+      // mailto / email-only
+      const mailtoMatch = t.match(/^mailto:(.+)$/i);
+      const possibleEmail = mailtoMatch ? mailtoMatch[1] : t;
+      if (isEmail(possibleEmail)) {
+        return buildScanResult({ email: possibleEmail });
+      }
+
+      // phone-ish
+      if (isPhone(t)) {
+        return buildScanResult({ phone: t });
+      }
+
+      // otherwise treat as name/company
+      // also strip summit/event text if it's inside parentheses
+      const cleanedName = t.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+      return buildScanResult({ name: cleanedName || t });
+    };
+
+    if (/^BEGIN:VCARD/i.test(normalized)) {
+      const parsed = parseVCard(normalized);
+      const built = maybeEnrichFromSelfProfile(buildScanResult(parsed));
+      if (__DEV__) {
+        console.log(
+          '[ProfileScreen][SCAN] result',
+          JSON.stringify({ raw: normalized, parsed: built })
+        );
+      }
+      setScanResult(built);
+    } else {
+      const parsed = parseStructuredText(normalized);
+      const built = maybeEnrichFromSelfProfile(parsed || buildScanResult({ name: 'Scanned Contact' }));
+      if (__DEV__) {
+        console.log(
+          '[ProfileScreen][SCAN] result',
+          JSON.stringify({ raw: normalized, parsed: built })
+        );
+      }
+      setScanResult(built);
     }
-    console.log('=== End QR Code Scan ===');
   };
 
   const parseVCard = (vcard) => {
-    console.log('--- Parsing VCARD ---');
-    console.log('VCARD Raw String:', vcard);
-    const lines = vcard.split(/\r?\n/);
-    console.log('VCARD Lines Count:', lines.length);
-    console.log('VCARD Lines:', lines);
+    // Unfold folded lines (vCard allows CRLF + space/tab continuation)
+    const unfolded = String(vcard || '').replace(/\r?\n[ \t]/g, '');
+    const lines = unfolded.split(/\r?\n/);
   
     let contact = {
       name: '',
@@ -750,13 +1013,23 @@ export const ProfileScreen = () => {
       email: '',
       company: '',
       role: '',
+      image: '',
     };
   
     lines.forEach((line, index) => {
+      if (!line) return;
+      const parts = line.split(':');
+      if (parts.length < 2) return;
+      const left = parts.shift() || '';
+      const value = parts.join(':').trim();
+
+      let key = left.split(';')[0].trim();
+      key = key.replace(/^item\d+\./i, ''); // handle item1.EMAIL etc
+      key = key.toUpperCase();
+
       // ✅ Use FN first (formatted name)
-      if (line.startsWith('FN:')) {
-        let rawName = line.replace('FN:', '').trim();
-        console.log(`Line ${index} - Found FN:`, rawName);
+      if (key === 'FN') {
+        let rawName = value;
   
         // remove content in round brackets (e.g., "(Precision in Clinical Trials Summit Boston)")
         rawName = rawName.replace(/\([^)]*\)/g, '');
@@ -768,13 +1041,12 @@ export const ProfileScreen = () => {
         rawName = rawName.replace(/\s+/g, ' ').trim();
   
         contact.name = rawName;
-        console.log(`Line ${index} - Processed Name:`, contact.name);
       }
   
       // fallback only if FN missing
-      if (!contact.name && line.startsWith('N:')) {
-        const parts = line.replace('N:', '').split(';');
-        let fallbackName = `${parts[1] || ''} ${parts[0] || ''}`.trim();
+      if (!contact.name && key === 'N') {
+        const nameParts = value.split(';');
+        let fallbackName = `${nameParts[1] || ''} ${nameParts[0] || ''}`.trim();
         
         // remove content in round brackets (e.g., "(Precision in Clinical Trials Summit Boston)")
         fallbackName = fallbackName.replace(/\([^)]*\)/g, '');
@@ -786,38 +1058,36 @@ export const ProfileScreen = () => {
         fallbackName = fallbackName.replace(/\s+/g, ' ').trim();
         
         contact.name = fallbackName;
-        console.log(`Line ${index} - Found N (fallback):`, contact.name);
       }
   
-      if (line.startsWith('TEL')) {
-        const phoneValue = line.split(':')[1]?.trim();
+      if (key === 'TEL') {
+        const phoneValue = value;
         // Use first phone number found, or if empty, assign the value
         if (!contact.phone || contact.phone === '') {
           contact.phone = phoneValue || '';
         }
-        console.log(`Line ${index} - Found TEL:`, phoneValue, '| Assigned phone:', contact.phone);
       }
   
-      if (line.startsWith('EMAIL')) {
-        const emailValue = line.split(':')[1]?.trim();
-        contact.email = emailValue;
-        console.log(`Line ${index} - Found EMAIL:`, emailValue);
+      if (key === 'EMAIL') {
+        const emailValue = value;
+        if (!contact.email) contact.email = emailValue;
       }
   
-      if (line.startsWith('ORG')) {
-        const companyValue = line.split(':')[1]?.trim();
-        contact.company = companyValue;
-        console.log(`Line ${index} - Found ORG:`, companyValue);
+      if (key === 'ORG') {
+        const companyValue = value;
+        if (!contact.company) contact.company = companyValue;
       }
   
-      if (line.startsWith('TITLE')) {
-        const roleValue = line.split(':')[1]?.trim();
-        contact.role = roleValue;
-        console.log(`Line ${index} - Found TITLE:`, roleValue);
+      if (key === 'TITLE' || key === 'ROLE') {
+        const roleValue = value;
+        if (!contact.role) contact.role = roleValue;
+      }
+
+      if (key === 'PHOTO') {
+        const photoValue = value;
+        if (!contact.image) contact.image = photoValue;
       }
     });
-  
-    console.log('Parsed Contact Object:', contact);
   
     const initials = contact.name
       ? contact.name.split(' ').map(n => n[0]).join('').toUpperCase()
@@ -825,15 +1095,13 @@ export const ProfileScreen = () => {
   
     const result = {
       initials,
-      name: contact.name || 'Unknown Contact',
+      name: contact.name || '',
       role: contact.role || '',
       company: contact.company || '',
-      email: contact.email || 'N/A',
-      phone: contact.phone || 'N/A',
+      email: contact.email || '',
+      phone: contact.phone || '',
+      image: contact.image || '',
     };
-    
-    console.log('Final Parsed Result:', result);
-    console.log('--- End Parsing VCARD ---');
     
     return result;
   };
@@ -1012,6 +1280,7 @@ export const ProfileScreen = () => {
                 icon={UserIcon}
                 styles={styles}
                 iconSize={SIZES.iconSize}
+                required
               />
               
               <FormField
@@ -1023,10 +1292,11 @@ export const ProfileScreen = () => {
                 styles={styles}
                 iconSize={SIZES.iconSize}
                 keyboardType="email-address"
+                required
               />
               
               {/* Hide phone number field for delegate users */}
-              {!isDelegate && (
+              {/* {!isDelegate && ( */}
                 <FormField
                   label="Phone Number"
                   value={formData.phoneNumber}
@@ -1037,7 +1307,7 @@ export const ProfileScreen = () => {
                   iconSize={SIZES.iconSize}
                   keyboardType="phone-pad"
                 />
-              )}
+              {/* )} */}
               
               <FormField
                 label="Job Title"
@@ -1103,6 +1373,20 @@ export const ProfileScreen = () => {
                     iconSize={SIZES.iconSize}
                     keyboardType="url"
                   />
+                  {formData.linkedinUrl ? (
+                    <TouchableOpacity
+                      style={styles.linkedinPreviewRow}
+                      onPress={handleOpenLinkedIn}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.helperText}>
+                        Preview:{' '}
+                        <Text style={styles.linkedinPreviewText}>
+                          {formData.linkedinUrl.replace(/^https?:\/\//, '')}
+                        </Text>
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                 </>
               )}
               
@@ -1117,7 +1401,7 @@ export const ProfileScreen = () => {
               /> */}
               
               {/* Sponsor-only fields */}
-              {!isDelegate && (
+              {/* {!isDelegate && ( */}
                 <>
                   <FormField
                     label="Tel"
@@ -1141,7 +1425,7 @@ export const ProfileScreen = () => {
                     keyboardType="phone-pad"
                   />
                 </>
-              )}
+              {/* )} */}
               
               <FormField
                 label={isDelegate ? "Bio" : "Biography"}
@@ -1154,6 +1438,11 @@ export const ProfileScreen = () => {
                 multiline={true}
                 numberOfLines={4}
               />
+              <View style={styles.bioCounterRow}>
+                <Text style={styles.bioCounterText}>
+                  {formData.bio.length}/{MAX_BIO_LENGTH} characters
+                </Text>
+              </View>
               
               <FormField
                 label="Company Information"
@@ -1169,7 +1458,7 @@ export const ProfileScreen = () => {
             </View>
 
             {/* Settings Section - Delegate only */}
-            {isDelegate && (
+            {/* {isDelegate && ( */}
               <View style={styles.notificationSection}>
                 <Text style={styles.sectionTitle}>Notification Settings</Text>
                 
@@ -1199,7 +1488,7 @@ export const ProfileScreen = () => {
                   />
                 </View>
               </View>
-            )}
+            {/* )} */}
 
             {/* Save Changes Button */}
             <View style={styles.saveButtonSection}>
@@ -1303,128 +1592,216 @@ export const ProfileScreen = () => {
               })}
             </View>
 
-            {qrMode === 'code' ? (
-              <View style={styles.qrCodePreview}>
-                <View style={styles.qrSquare}>
-                  {(qrImageUri || profile?.qr_image || user?.qr_image) && !qrImageError ? (
-                    <>
-                      <Image
-                        key={`qr-${qrImageUri || profile?.qr_image || user?.qr_image}`}
-                        source={{ 
-                          uri: qrImageUri || profile?.qr_image || user?.qr_image || '',
-                        }}
-                        style={styles.qrCodeImage}
-                        resizeMode="contain"
-                        onLoad={() => {
-                          console.log('✅ QR CODE IMAGE LOADED SUCCESSFULLY');
-                          console.log('✅ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
-                          if (qrImageTimeoutRef.current) {
-                            clearTimeout(qrImageTimeoutRef.current);
-                            qrImageTimeoutRef.current = null;
-                          }
-                          setQrImageLoading(false);
-                          setQrImageError(false);
-                        }}
-                        onError={(error) => {
-                          console.log('❌ QR CODE IMAGE ERROR');
-                          console.log('❌ Image URL:', qrImageUri || profile?.qr_image || user?.qr_image);
-                          console.log('❌ Error details:', error);
-                          if (qrImageTimeoutRef.current) {
-                            clearTimeout(qrImageTimeoutRef.current);
-                            qrImageTimeoutRef.current = null;
-                          }
-                          setQrImageError(true);
-                          setQrImageLoading(false);
-                        }}
-                      />
-                      {qrImageLoading && (
-                        <View style={styles.qrLoadingOverlay}>
-                          <ActivityIndicator size="large" color={colors.primary} />
-                          <Text style={styles.qrLoadingText}>Loading QR code...</Text>
-                        </View>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <Icon name="grid" size={48} color={colors.text} />
-                      <Text style={styles.qrCodeLabel}>QR CODE</Text>
-                    </>
-                  )}
-                </View>
-                <Text style={styles.qrHint}>Show to attendees to share your contact</Text>
-              </View>
-            ) : (
-              <>
-                <View style={styles.qrScanAreaContainer}>
-                  <View style={styles.qrScanArea}>
-                    {hasScanPermission === null && (
-                      <Text style={styles.qrScanText}>Requesting camera permission...</Text>
-                    )}
-                    {hasScanPermission === false && (
-                      <View style={styles.permissionWrap}>
-                        <Text style={styles.permissionText}>Camera permission required</Text>
-                        <TouchableOpacity style={styles.scanButton} onPress={requestScannerPermission} activeOpacity={0.85}>
-                          <Text style={styles.scanButtonText}>Allow Camera</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                    {hasScanPermission && isScanning && !scanResult && (
-                      <CameraView
-                        style={StyleSheet.absoluteFillObject}
-                        barcodeScannerSettings={{
-                          barcodeTypes: ["qr"],
-                        }}
-                        onBarcodeScanned={handleBarCodeScanned}
-                      />
-                    )}
-                    {hasScanPermission && !isScanning && !scanResult && (
+            <ScrollView
+              style={styles.qrModalBody}
+              contentContainerStyle={styles.qrModalBodyContent}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+            >
+              {qrMode === 'code' ? (
+                <View style={styles.qrCodePreview}>
+                  <View style={styles.qrSquare}>
+                    {(qrImageUri || profile?.qr_image || user?.qr_image) && !qrImageError ? (
                       <>
-                        <Icon name="maximize" size={28} color={colors.text} />
-                        <Text style={styles.qrScanText}>Align QR code within frame</Text>
-                        <TouchableOpacity style={styles.scanButtonOverlay} onPress={() => setIsScanning(true)} activeOpacity={0.85}>
-                          <Text style={styles.scanButtonText}>Start Scan</Text>
-                        </TouchableOpacity>
+                        <Image
+                          key={`qr-${qrImageUri || profile?.qr_image || user?.qr_image}`}
+                          source={{
+                            uri: qrImageUri || profile?.qr_image || user?.qr_image || '',
+                          }}
+                          style={styles.qrCodeImage}
+                          resizeMode="contain"
+                          onLoad={() => {
+                            if (qrImageTimeoutRef.current) {
+                              clearTimeout(qrImageTimeoutRef.current);
+                              qrImageTimeoutRef.current = null;
+                            }
+                            setQrImageLoading(false);
+                            setQrImageError(false);
+                          }}
+                          onError={(error) => {
+                            console.error('QR code image failed to load:', error);
+                            if (qrImageTimeoutRef.current) {
+                              clearTimeout(qrImageTimeoutRef.current);
+                              qrImageTimeoutRef.current = null;
+                            }
+                            setQrImageError(true);
+                            setQrImageLoading(false);
+                          }}
+                        />
+                        {qrImageLoading && (
+                          <View style={styles.qrLoadingOverlay}>
+                            <ActivityIndicator size="large" color={colors.primary} />
+                            <Text style={styles.qrLoadingText}>Loading QR code...</Text>
+                          </View>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="grid" size={48} color={colors.text} />
+                        <Text style={styles.qrCodeLabel}>QR CODE</Text>
                       </>
                     )}
                   </View>
-                  <Text style={styles.qrHint}>Scan QR code to add contact</Text>
-                </View>
-                {scanResult && (
-                  <View style={styles.scanResultCard}>
-                    <View style={styles.scanProfileRow}>
-                      <View style={styles.scanAvatar}>
-                        <Text style={styles.scanAvatarText}>{scanResult.initials}</Text>
+                  <Text style={styles.qrHint}>
+                    {isDelegate
+                      ? 'Show to sponsors to share your contact'
+                      : 'Show to delegates to share your contact'}
+                  </Text>
+
+                  {/* Profile info under QR */}
+                  <View style={styles.qrProfileCard}>
+                    <View style={styles.qrProfileRow}>
+                      <View style={styles.qrProfileAvatar}>
+                        {displayProfile?.image ? (
+                          <Image
+                            source={{ uri: displayProfile.image }}
+                            style={styles.qrProfileAvatarImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Text style={styles.qrProfileAvatarText}>
+                            {String(displayProfile?.name || 'U')
+                              .split(' ')
+                              .filter(Boolean)
+                              .map((p) => p[0])
+                              .join('')
+                              .toUpperCase()
+                              .slice(0, 2)}
+                          </Text>
+                        )}
                       </View>
-                      <View style={styles.scanInfo}>
-                        <Text style={styles.scanName}>{scanResult.name}</Text>
-                        <Text style={styles.scanRole}>{scanResult.role}</Text>
-                        <Text style={styles.scanCompany}>{scanResult.company}</Text>
+                      <View style={styles.qrProfileInfo}>
+                        <Text style={styles.qrProfileName} numberOfLines={1}>
+                          {displayProfile?.name || '—'}
+                        </Text>
+                        <Text style={styles.qrProfileMeta} numberOfLines={1}>
+                          {displayProfile?.jobTitle || '—'}
+                        </Text>
+                        <Text style={styles.qrProfileMeta} numberOfLines={1}>
+                          {displayProfile?.company || '—'}
+                        </Text>
                       </View>
                     </View>
-                    <View style={styles.scanContactRow}>
-                      <Icon name="mail" size={16} color={colors.primary} />
-                      <Text style={styles.scanContactText}>{scanResult.email}</Text>
+
+                    <View style={styles.qrProfileContactRow}>
+                      <Icon name="mail" size={14} color={colors.primary} />
+                      <Text style={styles.qrProfileContactText} numberOfLines={1}>
+                        {displayProfile?.email || '—'}
+                      </Text>
                     </View>
-                    <View style={styles.scanContactRow}>
-                      <Icon name="phone" size={16} color={colors.primary} />
-                      <Text style={styles.scanContactText}>{scanResult.phone}</Text>
+                    <View style={styles.qrProfileContactRow}>
+                      <Icon name="phone" size={14} color={colors.primary} />
+                      <Text style={styles.qrProfileContactText} numberOfLines={1}>
+                        {displayProfile?.phone || '—'}
+                      </Text>
                     </View>
-                    <TouchableOpacity
-                      style={[styles.addContactButton, isSavingContact && styles.addContactButtonDisabled]}
-                      activeOpacity={0.85}
-                      onPress={handleAddScannedContact}
-                      disabled={isSavingContact}
-                    >
-                      {isSavingContact ? (
-                        <ActivityIndicator size="small" color={colors.white} />
-                      ) : (
-                        <Text style={styles.addContactText}>Add to Contacts</Text>
-                      )}
-                    </TouchableOpacity>
                   </View>
-                )}
-              </>
-            )}
+                </View>
+              ) : (
+                <>
+                  <View style={styles.qrScanAreaContainer}>
+                    <View style={styles.qrScanArea}>
+                      {hasScanPermission === null && (
+                        <Text style={styles.qrScanText}>Requesting camera permission...</Text>
+                      )}
+                      {hasScanPermission === false && (
+                        <View style={styles.permissionWrap}>
+                          <Text style={styles.permissionText}>Camera permission required</Text>
+                          <TouchableOpacity style={styles.scanButton} onPress={requestScannerPermission} activeOpacity={0.85}>
+                            <Text style={styles.scanButtonText}>Allow Camera</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                      {hasScanPermission && isScanning && !scanResult && (
+                        <CameraView
+                          style={StyleSheet.absoluteFillObject}
+                          barcodeScannerSettings={{
+                            barcodeTypes: ["qr"],
+                          }}
+                          onBarcodeScanned={handleBarCodeScanned}
+                        />
+                      )}
+                      {hasScanPermission && !isScanning && !scanResult && (
+                        <>
+                          <Icon name="maximize" size={28} color={colors.text} />
+                          <Text style={styles.qrScanText}>Align QR code within frame</Text>
+                          <TouchableOpacity style={styles.scanButtonOverlay} onPress={() => setIsScanning(true)} activeOpacity={0.85}>
+                            <Text style={styles.scanButtonText}>Start Scan</Text>
+                          </TouchableOpacity>
+                        </>
+                      )}
+                      {hasScanPermission && !!scanResult && (
+                        <TouchableOpacity
+                          style={styles.scanRetryInBox}
+                          activeOpacity={0.85}
+                          onPress={() => {
+                            setScanResult(null);
+                            setIsScanning(true);
+                          }}
+                        >
+                          <Icon name="rotate-ccw" size={18} color={colors.primary} />
+                          <Text style={styles.scanRetryInBoxText}>Scan again</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    <Text style={styles.qrHint}>Scan QR code to add contact</Text>
+                  </View>
+                  {scanResult && (
+                    <View style={styles.scanResultCard}>
+                      <View style={styles.scanProfileRow}>
+                        <View style={styles.scanAvatar}>
+                          {scanResult.image ? (
+                            <Image
+                              source={{ uri: scanResult.image }}
+                              style={styles.scanAvatarImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Text style={styles.scanAvatarText}>{scanResult.initials}</Text>
+                          )}
+                        </View>
+                        <View style={styles.scanInfo}>
+                          <Text style={styles.scanName} numberOfLines={1}>
+                            {scanResult.name || '—'}
+                          </Text>
+                          <Text style={styles.scanMeta} numberOfLines={1}>
+                            {scanResult.role || '—'}
+                          </Text>
+                          <Text style={styles.scanMeta} numberOfLines={1}>
+                            {scanResult.company || '—'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.scanContactLine}>
+                        <Icon name="mail" size={14} color={colors.primary} />
+                        <Text style={styles.scanContactLineText} numberOfLines={1}>
+                          {scanResult.email || '—'}
+                        </Text>
+                      </View>
+                      <View style={styles.scanContactLine}>
+                        <Icon name="phone" size={14} color={colors.primary} />
+                        <Text style={styles.scanContactLineText} numberOfLines={1}>
+                          {scanResult.phone || '—'}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[styles.addContactButton, isSavingContact && styles.addContactButtonDisabled]}
+                        activeOpacity={0.85}
+                        onPress={handleAddScannedContact}
+                        disabled={isSavingContact}
+                      >
+                        {isSavingContact ? (
+                          <ActivityIndicator size="small" color={colors.white} />
+                        ) : (
+                          <Text style={styles.addContactText}>Add to Contacts</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </>
+              )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1657,6 +2034,13 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     borderRadius: 20,
     paddingVertical: 18,
     paddingHorizontal: 18,
+    maxHeight: '88%',
+  },
+  qrModalBody: {
+    flexGrow: 0,
+  },
+  qrModalBodyContent: {
+    paddingBottom: 8,
   },
   qrModalHeader: {
     flexDirection: 'row',
@@ -1747,6 +2131,63 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   qrHint: {
     color: colors.textMuted,
   },
+  qrProfileCard: {
+    marginTop: 12,
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    width: '100%',
+  },
+  qrProfileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  qrProfileAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  qrProfileAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  qrProfileAvatarText: {
+    color: colors.white,
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  qrProfileInfo: {
+    flex: 1,
+  },
+  qrProfileName: {
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 2,
+  },
+  qrProfileMeta: {
+    color: colors.textMuted,
+    fontSize: 12,
+  },
+  qrProfileContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  qrProfileContactText: {
+    flex: 1,
+    color: colors.text,
+    fontWeight: '600',
+    fontSize: 12,
+  },
   qrScanAreaContainer: {
     alignItems: 'center',
     gap: 10,
@@ -1792,6 +2233,23 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     padding: 16,
     gap: 12,
   },
+  scanRetryInBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  scanRetryInBoxText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.primary,
+  },
   scanProfileRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1804,6 +2262,11 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  scanAvatarImage: {
+    width: '100%',
+    height: '100%',
   },
   scanAvatarText: {
     color: colors.white,
@@ -1817,12 +2280,42 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  scanRole: {
+  scanMeta: {
+    marginTop: 2,
+    fontSize: 13,
+    fontWeight: '500',
     color: colors.textMuted,
   },
-  scanCompany: {
+  scanContactLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  scanContactLineText: {
+    flex: 1,
+    color: colors.text,
+  },
+  scanRawText: {
+    marginTop: 10,
+    fontSize: 11,
     color: colors.textMuted,
+  },
+  scanDetailRow: {
+    marginTop: 10,
+  },
+  scanDetailLabel: {
     fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  scanDetailValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  scanContactStack: {
+    gap: 6,
   },
   scanContactRow: {
     flexDirection: 'row',
@@ -1879,6 +2372,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: 8,
   },
+  requiredAsterisk: {
+    color: '#EF4444',
+  },
   inputContainer: {
     position: 'relative',
     width: '100%',
@@ -1912,6 +2408,27 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     width: 24,
     height: 24,
     zIndex: 1,
+  },
+  helperText: {
+    fontSize: SIZES.body - 3,
+    color: colors.textMuted,
+  },
+  linkedinPreviewRow: {
+    marginTop: -8,
+    marginBottom: SIZES.cardSpacing,
+  },
+  linkedinPreviewText: {
+    color: colors.primary,
+    textDecorationLine: 'underline',
+  },
+  bioCounterRow: {
+    alignItems: 'flex-end',
+    marginTop: -8,
+    marginBottom: SIZES.cardSpacing,
+  },
+  bioCounterText: {
+    fontSize: SIZES.body - 3,
+    color: colors.textMuted,
   },
   saveButton: {
     width: '100%',

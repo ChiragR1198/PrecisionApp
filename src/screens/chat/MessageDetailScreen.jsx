@@ -3,29 +3,29 @@ import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  BackHandler,
-  FlatList,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  useWindowDimensions,
-  View,
+    ActivityIndicator,
+    Alert,
+    BackHandler,
+    FlatList,
+    Image,
+    KeyboardAvoidingView,
+    Platform,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useWindowDimensions,
+    View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
-  api,
-  useGetDelegateChatMessagesQuery,
-  useGetSponsorChatMessagesQuery,
-  useSendDelegateMessageMutation,
-  useSendSponsorMessageMutation,
+    api,
+    useGetDelegateChatMessagesQuery,
+    useGetSponsorChatMessagesQuery,
+    useSendDelegateMessageMutation,
+    useSendSponsorMessageMutation,
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { websocketManager } from '../../utils/websocket';

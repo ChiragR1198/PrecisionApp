@@ -3,17 +3,17 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  Image,
-  Keyboard,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  useWindowDimensions,
-  View,
+    Image,
+    Keyboard,
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useWindowDimensions,
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
@@ -234,8 +234,14 @@ export const ForgotPasswordScreen = () => {
   };
 
   const handleContactSupport = () => {
-    // Implement contact support logic
-    console.log('Contact support pressed');
+    try {
+      router.push({
+        pathname: '/contact-support',
+        params: { from: 'forgot-password' },
+      });
+    } catch (error) {
+      console.warn('⚠️ Navigation error (Contact Support):', error);
+    }
   };
 
   // Render

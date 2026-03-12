@@ -623,6 +623,18 @@ export const api = createApi({
       invalidatesTags: ['MeetingRequests'],
     }),
 
+    // 4a. Delegate Meeting Times
+    getDelegateMeetingTimes: builder.query({
+      query: ({ event_id, date }) => ({
+        url: API_ENDPOINTS.DELEGATE_MEETING_TIMES,
+        params: {
+          event_id,
+          date,
+          _t: Date.now(),
+        },
+      }),
+    }),
+
     // 5. Review Meeting Request (Delegate)
     getDelegateMeetingRequests: builder.query({
       query: () => API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
@@ -891,6 +903,18 @@ export const api = createApi({
       invalidatesTags: ['MeetingRequests'],
     }),
 
+    // 7a. Sponsor Meeting Times
+    getSponsorMeetingTimes: builder.query({
+      query: ({ event_id, date }) => ({
+        url: API_ENDPOINTS.SPONSOR_MEETING_TIMES,
+        params: {
+          event_id,
+          date,
+          _t: Date.now(),
+        },
+      }),
+    }),
+
     // 8. View Itinerary (Sponsor)
     getSponsorItinerary: builder.query({
       query: () => API_ENDPOINTS.SPONSOR_VIEW_ITINERARY,
@@ -1012,6 +1036,7 @@ export const {
   useSendDelegateMeetingRequestMutation,
   useGetDelegateMeetingRequestsQuery,
   useDelegateMeetingRequestActionMutation,
+  useGetDelegateMeetingTimesQuery,
   useGetAgendaQuery,
   useGetAgendaItemQuery,
   useGetDelegateAttendeesQuery,
@@ -1034,6 +1059,7 @@ export const {
   useGetSponsorServicesQuery,
   useGetSponsorAllAttendeesQuery,
   useSendSponsorMeetingRequestMutation,
+  useGetSponsorMeetingTimesQuery,
   useGetSponsorItineraryQuery,
   useGetSponsorProfileQuery,
   useUpdateSponsorProfileMutation,

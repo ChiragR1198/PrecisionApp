@@ -4,16 +4,16 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    ImageBackground,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  ActivityIndicator,
+  ImageBackground,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -313,7 +313,7 @@ export const DashboardScreen = () => {
       const eventId = typeof event.id === 'string' && event.id.includes(',') 
         ? Number(event.id.split(',')[0].trim())
         : Number(event.id);
-      dispatch(setSelectedEvent({ eventId, index }));
+      dispatch(setSelectedEvent({ eventId, index, dateFrom: event?.date_from, dateTo: event?.date_to }));
     }
   };
 
@@ -326,7 +326,7 @@ export const DashboardScreen = () => {
         const eventId = typeof event.id === 'string' && event.id.includes(',') 
           ? Number(event.id.split(',')[0].trim())
           : Number(event.id);
-        dispatch(setSelectedEvent({ eventId, index: selectedEventIndex }));
+        dispatch(setSelectedEvent({ eventId, index: selectedEventIndex, dateFrom: event?.date_from, dateTo: event?.date_to }));
       }
     }
   }, [EVENTS, selectedEventIndex, dispatch]);
@@ -395,6 +395,7 @@ export const DashboardScreen = () => {
       case 'Agenda':
         router.push({ pathname: '/agenda', params: Object.keys(params).length > 0 ? params : undefined });
         break;
+      case 'Event Sponsors':
       case 'Attendees':
         router.push({ pathname: '/attendees', params: Object.keys(params).length > 0 ? params : undefined });
         break;
@@ -423,8 +424,8 @@ export const DashboardScreen = () => {
       backgroundColor: '#EFF6FF',
     },
     {
-      title: 'Attendees',
-      subtitle: 'Connect with people',
+      title: isDelegate ? 'Event Sponsors' : 'Attendees',
+      subtitle: isDelegate ? 'View event sponsors' : 'View attendees',
       icon: <UsersIcon size={SIZES.quickActionIconInner} />,
       iconColor: '#22C55E',
       backgroundColor: '#F0FDF4',

@@ -26,11 +26,13 @@ import { colors, radius } from '../../constants/theme';
 import {
   useGetDelegateAttendeesQuery,
   useGetDelegateMeetingRequestsQuery,
+  useGetDelegateMeetingTimesQuery,
   useGetSponsorAllAttendeesQuery,
   useGetSponsorMeetingRequestsQuery,
+  useGetSponsorMeetingTimesQuery,
   useGetSponsorServicesQuery,
   useSendDelegateMeetingRequestMutation,
-  useSendSponsorMeetingRequestMutation
+  useSendSponsorMeetingRequestMutation,
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
@@ -44,9 +46,16 @@ const AttendeeRow = React.memo(function AttendeeRow({
   onOpenDetails,
   onOpenRequest,
 }) {
+  const availabilityLabel =
+    item.availability === 'available'
+      ? 'Available'
+      : item.availability === 'unavailable'
+      ? 'Unavailable'
+      : '';
+
   return (
     <TouchableOpacity
-      style={styles.row}
+      style={[styles.row, item.hasRequest && styles.rowRequested]}
       activeOpacity={0.8}
       onPress={() => onOpenDetails(item)}
     >
@@ -81,9 +90,29 @@ const AttendeeRow = React.memo(function AttendeeRow({
         <Text style={styles.rowMeta} numberOfLines={1}>
           {item.role}
         </Text>
-        <Text style={[styles.rowMeta1]} numberOfLines={1}>
-          {item.company}
-        </Text>
+        <View style={styles.rowMetaBottom}>
+          <Text style={styles.rowMeta1} numberOfLines={1}>
+            {item.company}
+          </Text>
+          {availabilityLabel ? (
+            <View
+              style={[
+                styles.availabilityPill,
+                item.availability === 'available' && styles.availabilityPillAvailable,
+                item.availability === 'unavailable' && styles.availabilityPillUnavailable,
+              ]}
+            >
+              <View
+                style={[
+                  styles.availabilityDot,
+                  item.availability === 'available' && styles.availabilityDotAvailable,
+                  item.availability === 'unavailable' && styles.availabilityDotUnavailable,
+                ]}
+              />
+              <Text style={styles.availabilityText}>{availabilityLabel}</Text>
+            </View>
+          ) : null}
+        </View>
       </View>
       <TouchableOpacity
         style={[styles.requestButton, item.hasRequest && styles.requestButtonDisabled]}
@@ -97,7 +126,11 @@ const AttendeeRow = React.memo(function AttendeeRow({
         disabled={item.hasRequest}
       >
         <Text style={[styles.requestButtonText, item.hasRequest && styles.requestButtonTextDisabled]}>
-          {item.hasRequest ? 'Requested' : 'Request'}
+          {item.hasRequest
+            ? item.priorityText
+              ? `Requested (${item.priorityText})`
+              : 'Requested'
+            : 'Request Meeting'}
         </Text>
       </TouchableOpacity>
     </TouchableOpacity>
@@ -109,6 +142,7 @@ export const AttendeesScreen = () => {
   const navigation = useNavigation();
   const dispatch = useAppDispatch();
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
+  const { selectedEventDateFrom } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   
@@ -116,6 +150,11 @@ export const AttendeesScreen = () => {
   const [searchQueryDebounced, setSearchQueryDebounced] = useState('');
   const [selectedServices, setSelectedServices] = useState([]);
   const [draftSelectedServices, setDraftSelectedServices] = useState([]);
+  const [locallyRequestedIds, setLocallyRequestedIds] = useState([]);
+  const [localPriorityMap, setLocalPriorityMap] = useState({});
+  const [availabilityFilter, setAvailabilityFilter] = useState('all'); // 'all' | 'available' | 'unavailable'
+  // Must be declared before meeting-times queries
+  const [meetingTimesParams, setMeetingTimesParams] = useState(null);
   
   // Conditionally fetch attendees based on user type
   const { 
@@ -239,6 +278,139 @@ export const AttendeesScreen = () => {
   
   // Fetch sponsor services for filter
   const eventId = user?.event_id || user?.events?.[0]?.id || 27;
+  const todayDate = useMemo(() => {
+    const now = new Date();
+    return now.toISOString().split('T')[0];
+  }, []);
+
+  const meetingDate = useMemo(() => {
+    const raw = selectedEventDateFrom;
+    if (!raw) return todayDate;
+    const s = String(raw);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return todayDate;
+  }, [selectedEventDateFrom, todayDate]);
+
+  const {
+    data: delegateMeetingTimesData,
+    isLoading: delegateMeetingTimesLoading,
+    error: delegateMeetingTimesError,
+    refetch: refetchDelegateMeetingTimes,
+  } = useGetDelegateMeetingTimesQuery(meetingTimesParams || {}, {
+    skip: !isAuthenticated || !user || !isDelegate || !meetingTimesParams,
+  });
+
+  const {
+    data: sponsorMeetingTimesData,
+    isLoading: sponsorMeetingTimesLoading,
+    error: sponsorMeetingTimesError,
+    refetch: refetchSponsorMeetingTimes,
+  } = useGetSponsorMeetingTimesQuery(meetingTimesParams || {}, {
+    skip: !isAuthenticated || !user || isDelegate || !meetingTimesParams,
+  });
+
+  const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
+  const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
+  const refetchMeetingTimes = isDelegate ? refetchDelegateMeetingTimes : refetchSponsorMeetingTimes;
+
+  const meetingSlotGroups = useMemo(() => {
+    if (!meetingTimesData) return [];
+
+    // Normalize possible response shapes:
+    // A) { success, data: { "YYYY-MM-DD": [...] }, dates: [...] }
+    // B) { success, data: { success, data: { "YYYY-MM-DD": [...] }, dates: [...] } }
+    const normalized =
+      meetingTimesData?.data &&
+      typeof meetingTimesData.data === 'object' &&
+      !Array.isArray(meetingTimesData.data) &&
+      meetingTimesData.data?.data &&
+      typeof meetingTimesData.data.data === 'object'
+        ? meetingTimesData.data
+        : meetingTimesData;
+
+    const formatDateDDMMYYYY = (yyyyMmDd) => {
+      if (!yyyyMmDd) return '';
+      const [y, m, d] = String(yyyyMmDd).slice(0, 10).split('-');
+      if (!y || !m || !d) return String(yyyyMmDd);
+      return `${d}-${m}-${y}`;
+    };
+
+    const pickTimePart = (value) => {
+      if (!value) return '';
+      const s = String(value);
+      if (s.includes(' ')) return s.split(' ')[1] || s; // "YYYY-MM-DD HH:MM:SS" -> "HH:MM:SS"
+      return s;
+    };
+
+    const toHHMM = (hhmmss) => {
+      const s = String(hhmmss || '');
+      return s.length >= 5 ? s.slice(0, 5) : s;
+    };
+
+    const dataObj = normalized?.data;
+    if (dataObj && typeof dataObj === 'object' && !Array.isArray(dataObj)) {
+      const dates = Array.isArray(normalized?.dates)
+        ? normalized.dates
+        : Object.keys(dataObj || {});
+
+      return (dates || [])
+        .map((dateKey) => {
+          const rawSlots = dataObj?.[dateKey] || [];
+          const items = (Array.isArray(rawSlots) ? rawSlots : [])
+            .map((slot) => {
+              const fromFull = pickTimePart(slot?.meeting_from);
+              const toFull = pickTimePart(slot?.meeting_to);
+              const from = toHHMM(fromFull);
+              const to = toHHMM(toFull);
+              if (!from || !to) return null;
+              return {
+                id: slot?.id ?? `${dateKey}-${fromFull}-${toFull}`,
+                date: dateKey,
+                from,
+                to,
+                fromFull,
+              };
+            })
+            .filter(Boolean);
+
+          return { date: dateKey, dateLabel: formatDateDDMMYYYY(dateKey), items };
+        })
+        .filter((g) => g.items.length > 0);
+    }
+
+    // fallback for older array-based responses
+    const arr = Array.isArray(normalized?.data)
+      ? normalized.data
+      : Array.isArray(normalized)
+        ? normalized
+        : Array.isArray(normalized?.data?.data)
+          ? normalized.data.data
+          : [];
+
+    const items = arr
+      .map((slot) => {
+        const rawTime = typeof slot === 'string' ? slot : (slot?.time || slot?.time_slot || slot?.label || null);
+        if (!rawTime) return null;
+        const fromFull = pickTimePart(rawTime);
+        return { id: rawTime, date: meetingDate, from: toHHMM(fromFull), to: '', fromFull };
+      })
+      .filter(Boolean);
+
+    return items.length ? [{ date: meetingDate, dateLabel: formatDateDDMMYYYY(meetingDate), items }] : [];
+  }, [meetingTimesData, meetingDate]);
+
+  useEffect(() => {
+    if (meetingTimesParams) {
+      console.log('🕒 Meeting times params (AttendeesScreen):', meetingTimesParams);
+      console.log('🕒 Meeting times data (AttendeesScreen):', JSON.stringify(meetingTimesData, null, 2));
+      if (delegateMeetingTimesError || sponsorMeetingTimesError) {
+        console.log('🕒 Meeting times error (AttendeesScreen):', delegateMeetingTimesError || sponsorMeetingTimesError);
+      }
+    }
+  }, [meetingTimesParams, meetingTimesData, delegateMeetingTimesError, sponsorMeetingTimesError]);
+
   const { 
     data: sponsorServicesData, 
     isLoading: servicesLoading 
@@ -258,14 +430,17 @@ export const AttendeesScreen = () => {
     }
   }, [error, dispatch]);
   
+  const listLabel = useMemo(() => (isDelegate ? 'Sponsors' : 'Delegates'), [isDelegate]);
+  const listLabelLower = useMemo(() => listLabel.toLowerCase(), [listLabel]);
+
   const errorMessage = useMemo(() => {
     if (!error) return '';
     if (typeof error === 'string') return error;
     if (error?.data?.message) return error.data.message;
     if (error?.message) return error.message;
     if (error?.status) return `Error ${error.status}`;
-    return 'Failed to load attendees.';
-  }, [error]);
+    return `Failed to load ${listLabelLower}.`;
+  }, [error, listLabelLower]);
 
   const attendees = useMemo(() => {
     return attendeesData?.data || attendeesData || [];
@@ -279,9 +454,8 @@ export const AttendeesScreen = () => {
   const [isSendingRequest, setIsSendingRequest] = useState(false);
   const [isRequestSuccess, setIsRequestSuccess] = useState(false);
   const modalAnim = useRef(new Animated.Value(0)).current;
-  
-
-
+  const [isTimeModalVisible, setIsTimeModalVisible] = useState(false);
+  const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
     const isIOS = Platform.OS === 'ios';
@@ -367,6 +541,12 @@ export const AttendeesScreen = () => {
       const roleKey = String(role || '').toLowerCase();
       const companyKey = String(company || '').toLowerCase();
 
+      const numericId = Number(id);
+      const hasLocalRequest = locallyRequestedIds.includes(numericId);
+      const availability = String(attendee?.status || '').toLowerCase();
+      const mappedPriorityText = attendeePriorityMap.get(numericId) || null;
+      const priorityText = localPriorityMap[numericId] || mappedPriorityText || null;
+
       return {
         id,
         name,
@@ -385,18 +565,20 @@ export const AttendeesScreen = () => {
         bio: attendee?.bio || '',
         linkedin: attendee?.linkedin_url || attendee?.linkedin || '',
         status: attendee?.status,
+        availability,
         // Precomputed keys for fast search/sort
         _nameKey: nameKey,
         _roleKey: roleKey,
         _companyKey: companyKey,
         _searchText: `${nameKey} ${roleKey} ${companyKey}`,
-        // Check if request already sent
-        hasRequest: requestedAttendeeIds.has(Number(id)),
+        // Check if request already sent (from API or this session)
+        hasRequest: hasLocalRequest || requestedAttendeeIds.has(numericId),
+        priorityText,
         // Keep raw available (used only when navigating/details)
         raw: attendee,
       };
     });
-  }, [attendees, requestedAttendeeIds]);
+  }, [attendees, requestedAttendeeIds, locallyRequestedIds, attendeePriorityMap, localPriorityMap]);
 
   // Important perf detail:
   // - Sorting can be O(n log n); don't re-sort on every search keystroke.
@@ -438,10 +620,20 @@ export const AttendeesScreen = () => {
 
   const filteredData = useMemo(() => {
     const q = searchQueryDebounced.trim().toLowerCase();
-    if (!q) return sortedData;
-    // Service filtering is handled by API, so we don't filter here.
-    return sortedData.filter((a) => (a?._searchText || '').includes(q));
-  }, [searchQueryDebounced, sortedData]);
+
+    const matchesSearch = (a) =>
+      !q || (a?._searchText || '').includes(q);
+
+    const matchesAvailability = (a) => {
+      if (availabilityFilter === 'all') return true;
+      const avail = String(a?.availability || '').toLowerCase();
+      if (availabilityFilter === 'available') return avail === 'available';
+      if (availabilityFilter === 'unavailable') return avail && avail !== 'available';
+      return true;
+    };
+
+    return sortedData.filter((a) => matchesSearch(a) && matchesAvailability(a));
+  }, [searchQueryDebounced, sortedData, availabilityFilter]);
 
   const openModal = useCallback((attendee) => {
     // Get priority from existing request or default to '1st'
@@ -451,6 +643,7 @@ export const AttendeesScreen = () => {
     setSelectedAttendee(attendee);
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
+    setSelectedTimeSlot(null);
     setIsModalVisible(true);
   }, [attendeePriorityMap]);
 
@@ -458,6 +651,7 @@ export const AttendeesScreen = () => {
     setIsModalVisible(false);
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
+    setSelectedTimeSlot(null);
   }, []);
 
   useEffect(() => {
@@ -480,7 +674,25 @@ export const AttendeesScreen = () => {
     }
   }, [isModalVisible, modalAnim, selectedAttendee]);
 
-  const handleSendMeetingRequest = async () => {
+  const openTimeModal = useCallback(() => {
+    if (!selectedAttendee) return;
+
+    const effectiveEventId = Number(eventId || 27);
+    const date = meetingDate;
+
+    setMeetingTimesParams({
+      event_id: effectiveEventId,
+      date,
+    });
+    setIsTimeModalVisible(true);
+    setSelectedTimeSlot(null);
+  }, [selectedAttendee, eventId, meetingDate, refetchMeetingTimes]);
+
+  const closeTimeModal = useCallback(() => {
+    setIsTimeModalVisible(false);
+  }, []);
+
+  const handleSendMeetingRequest = async (slot) => {
     if (!selectedAttendee) return;
 
     try {
@@ -497,16 +709,18 @@ export const AttendeesScreen = () => {
       const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
       const priorityValue = priorityMap[selectedPriority] || 1;
 
-      // Get current date and time
       const now = new Date();
-      const date = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
-      const time = now.toTimeString().split(' ')[0]; // Format: HH:MM:SS
+      const date = slot?.date || meetingTimesParams?.date || meetingDate || todayDate;
+      const time =
+        slot?.fromFull ||
+        (slot?.from ? `${slot.from}:00` : null) ||
+        now.toTimeString().split(' ')[0]; // Fallback: HH:MM:SS
 
       // Use different parameter names based on user type
       const requestData = isDelegate
         ? {
             sponsor_id: Number(selectedAttendee.id),
-            event_id: Number(user?.event_id || 27),
+            event_id: Number(eventId || 27),
             priority: priorityValue,
             date: date,
             time: time,
@@ -514,7 +728,7 @@ export const AttendeesScreen = () => {
           }
         : {
             delegate_id: Number(selectedAttendee.id),
-            event_id: Number(user?.event_id || 27),
+            event_id: Number(eventId || 27),
             priority: priorityValue,
             date: date,
             time: time,
@@ -522,6 +736,17 @@ export const AttendeesScreen = () => {
           };
 
       await createMeetingRequest(requestData).unwrap();
+
+      // Optimistically mark this attendee as requested for immediate visual feedback
+      const numericId = Number(selectedAttendee.id);
+      setLocallyRequestedIds((prev) => {
+        if (prev.includes(numericId)) return prev;
+        return [...prev, numericId];
+      });
+      setLocalPriorityMap((prev) => ({
+        ...prev,
+        [numericId]: selectedPriority,
+      }));
 
       // Refetch meeting requests to update priority map
       if (refetchMeetingRequests) {
@@ -531,6 +756,7 @@ export const AttendeesScreen = () => {
       // Show success message
       setIsSendingRequest(false);
       setIsRequestSuccess(true);
+      setIsTimeModalVisible(false);
     } catch (e) {
       console.error('Error sending meeting request:', e);
       setIsSendingRequest(false);
@@ -548,13 +774,31 @@ export const AttendeesScreen = () => {
   const onOpenDetails = useCallback((item) => {
     const payload = item?.raw ? { ...item.raw, ...item } : item;
     if (payload?.raw) delete payload.raw;
-    router.push({
-      pathname: '/delegate-details',
-      params: {
-        delegate: JSON.stringify(payload),
-      },
-    });
-  }, []);
+
+    // Navigate based on login type:
+    // - Delegate user viewing sponsors -> use DelegateDetails-style UI (profileType: 'sponsor')
+    // - Sponsor user viewing delegates -> delegate details screen (param: delegate)
+    if (isDelegate) {
+      router.push({
+        pathname: '/delegate-details',
+        params: {
+          delegate: JSON.stringify(payload),
+          profileType: 'sponsor',
+          returnTo: 'attendees',
+          eventDateFrom: selectedEventDateFrom || '',
+        },
+      });
+    } else {
+      router.push({
+        pathname: '/delegate-details',
+        params: {
+          delegate: JSON.stringify(payload),
+          returnTo: 'attendees',
+          eventDateFrom: selectedEventDateFrom || '',
+        },
+      });
+    }
+  }, [isDelegate, selectedEventDateFrom]);
 
   const onOpenRequest = openModal;
 
@@ -632,14 +876,14 @@ export const AttendeesScreen = () => {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
-          title="Attendees" 
+          title={isDelegate ? 'Event Sponsors' : 'Event Delegates'} 
           leftIcon="menu" 
           onLeftPress={() => navigation.openDrawer?.()} 
           iconSize={SIZES.headerIconSize} 
         />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading attendees...</Text>
+          <Text style={styles.loadingText}>{`Loading ${listLabelLower}...`}</Text>
         </View>
       </SafeAreaView>
     );
@@ -650,7 +894,7 @@ export const AttendeesScreen = () => {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <Header 
-          title="Attendees" 
+          title={isDelegate ? 'Event Sponsors' : 'Event Delegates'} 
           leftIcon="menu" 
           onLeftPress={() => navigation.openDrawer?.()} 
           iconSize={SIZES.headerIconSize} 
@@ -667,9 +911,9 @@ export const AttendeesScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={[]}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
-        title="Attendees" 
+        title={isDelegate ? 'Event Sponsors' : 'Event Delegates'} 
         leftIcon="menu" 
         onLeftPress={() => navigation.openDrawer?.()} 
         iconSize={SIZES.headerIconSize} 
@@ -681,13 +925,13 @@ export const AttendeesScreen = () => {
           <View style={styles.searchRow}>
             <View style={styles.searchBarWrapper}>
               <SearchBar
-                placeholder="Search attendees..."
+                placeholder={`Search ${listLabelLower}...`}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 style={styles.searchBarInline}
               />
             </View>
-            {!isDelegate && (
+            {/* {!isDelegate && ( */}
               <TouchableOpacity
                 style={[styles.filterIconBtn, selectedServices.length > 0 && styles.filterIconBtnActive]}
                 activeOpacity={0.8}
@@ -695,7 +939,7 @@ export const AttendeesScreen = () => {
               >
                 <Icon name="filter" size={18} color={colors.white} />
               </TouchableOpacity>
-            )}
+            {/* )} */}
             <TouchableOpacity
               style={styles.filterIconBtn}
               activeOpacity={0.8}
@@ -705,9 +949,35 @@ export const AttendeesScreen = () => {
             </TouchableOpacity>
           </View>
 
+          {/* Advanced Filters: Availability */}
+          <View style={styles.advancedFiltersRow}>
+            <Text style={styles.advancedFiltersLabel}>Availability</Text>
+            <View style={styles.advancedFiltersChips}>
+              {['all', 'available', 'unavailable'].map((key) => {
+                const isActive = availabilityFilter === key;
+                const label =
+                  key === 'all' ? 'All' : key === 'available' ? 'Available' : 'Unavailable';
+                return (
+                  <TouchableOpacity
+                    key={key}
+                    style={[styles.filterChip, isActive && styles.filterChipActive]}
+                    activeOpacity={0.8}
+                    onPress={() => setAvailabilityFilter(key)}
+                  >
+                    <Text
+                      style={[styles.filterChipText, isActive && styles.filterChipTextActive]}
+                    >
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
           <View style={styles.countRow}>
             <View style={styles.countDot} />
-            <Text style={styles.countText}>{String(filteredData.length)} ATTENDEES</Text>
+            <Text style={styles.countText}>{`${String(filteredData.length)} ${listLabel.toUpperCase()}`}</Text>
           </View>
 
           {filteredData.length > 0 ? (
@@ -731,7 +1001,9 @@ export const AttendeesScreen = () => {
             <View style={styles.emptyState}>
               <Icon name="users" size={48} color={colors.textMuted} />
               <Text style={styles.emptyText}>
-                {searchQuery ? 'No attendees found' : 'No attendees available'}
+                {searchQuery
+                  ? `No ${listLabelLower} found`
+                  : `No ${listLabelLower} available`}
               </Text>
               <Text style={styles.emptySubtext}>
                 {searchQuery 
@@ -933,13 +1205,119 @@ export const AttendeesScreen = () => {
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.modalButton, styles.primaryButton]}
-                        onPress={handleSendMeetingRequest}
+                        onPress={openTimeModal}
                       >
-                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Select Time</Text>
                       </TouchableOpacity>
                     </View>
                   </>
                 )}
+              </>
+            )}
+          </Animated.View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Time Slot Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isTimeModalVisible}
+        onRequestClose={closeTimeModal}
+      >
+        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
+          <Pressable 
+            style={StyleSheet.absoluteFill} 
+            onPress={closeTimeModal}
+          />
+          <Animated.View
+            style={[
+              styles.modalCard2,
+              {
+                transform: [
+                  {
+                    translateY: modalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.modalHeader2}>
+              <Text style={styles.modalTitle2}>Select Time Slot</Text>
+              <TouchableOpacity onPress={closeTimeModal}>
+                <Text style={styles.closeText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {meetingTimesLoading ? (
+              <View style={styles.loadingContainerModal}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingTextModal}>Loading time slots...</Text>
+              </View>
+            ) : meetingSlotGroups.length === 0 ? (
+              <View style={styles.loadingContainerModal}>
+                <Text style={styles.loadingTextModal}>No time slots available.</Text>
+              </View>
+            ) : (
+              <>
+                <ScrollView
+                  style={{ maxHeight: 260 }}
+                  contentContainerStyle={{ paddingVertical: 4 }}
+                  showsVerticalScrollIndicator
+                >
+                  {meetingSlotGroups.map((group) => (
+                    <View key={group.date} style={styles.slotGroup}>
+                      <Text style={styles.slotGroupTitle}>{group.dateLabel}</Text>
+                      {group.items.map((it) => {
+                        const key = `${it.date}-${it.fromFull || it.from}-${it.to}`;
+                        const isActive =
+                          selectedTimeSlot &&
+                          selectedTimeSlot.date === it.date &&
+                          selectedTimeSlot.fromFull === it.fromFull &&
+                          selectedTimeSlot.to === it.to;
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            style={[styles.priorityChip, isActive && styles.priorityChipActive, { marginVertical: 4 }]}
+                            onPress={() => setSelectedTimeSlot(isActive ? null : it)}
+                            activeOpacity={0.85}
+                          >
+                            <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>
+                              {it.to ? `${it.from} to ${it.to}` : it.from}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ))}
+                </ScrollView>
+                <View style={styles.separator3}/>
+                <View style={styles.modalButtonRow}>
+                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
+                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalButton,
+                      styles.primaryButton,
+                      (!selectedTimeSlot || isSendingRequest) && { opacity: 0.6 },
+                    ]}
+                    onPress={() => {
+                      if (!selectedTimeSlot) return;
+                      handleSendMeetingRequest(selectedTimeSlot);
+                    }}
+                    disabled={!selectedTimeSlot || isSendingRequest}
+                  >
+                    {isSendingRequest ? (
+                      <ActivityIndicator size="small" color={colors.white} />
+                    ) : (
+                      <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               </>
             )}
           </Animated.View>
@@ -956,6 +1334,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   contentWrap: {
     flex: 1,
+    paddingBottom: 14,
   },
   content: {
     width: '100%',
@@ -1037,14 +1416,55 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 13,
     letterSpacing: 0.3,
   },
+  advancedFiltersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  advancedFiltersLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  advancedFiltersChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  filterChip: {
+    borderRadius: 9999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  filterChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  filterChipText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  filterChipTextActive: {
+    color: colors.white,
+  },
   listContent: {
-    paddingBottom: 30,
+    paddingBottom: 130,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 16,
     paddingHorizontal: 8,
+  },
+  rowRequested: {
+    backgroundColor: 'rgba(16, 185, 129, 0.06)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.6)',
   },
   avatar: {
     backgroundColor: colors.primary,
@@ -1071,6 +1491,12 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 13,
     color: colors.primary,
   },
+  rowMetaBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   requestButton: {
     backgroundColor: colors.primary,
     borderRadius: radius.pill,
@@ -1088,6 +1514,38 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   requestButtonTextDisabled: {
     color: colors.textMuted || '#6B7280',
+  },
+  availabilityPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 9999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    backgroundColor: colors.gray100,
+  },
+  availabilityPillAvailable: {
+    backgroundColor: '#DCFCE7',
+  },
+  availabilityPillUnavailable: {
+    backgroundColor: '#FEE2E2',
+  },
+  availabilityDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.gray400 || '#9CA3AF',
+    marginRight: 4,
+  },
+  availabilityDotAvailable: {
+    backgroundColor: '#16A34A',
+  },
+  availabilityDotUnavailable: {
+    backgroundColor: '#DC2626',
+  },
+  availabilityText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.text,
   },
   separator: {
     height: 1,
@@ -1393,6 +1851,17 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   primaryButtonText: {
     color: colors.white,
+  },
+  slotGroup: {
+    marginBottom: 8,
+  },
+  slotGroupTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginTop: 6,
+    marginBottom: 6,
+    paddingHorizontal: 4,
   },
   successContainer: {
     alignItems: 'center',
