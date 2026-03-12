@@ -82,6 +82,7 @@ export const DelegateDetailsScreen = () => {
   // selected slot shape: { date: 'YYYY-MM-DD', from: 'HH:MM', to: 'HH:MM', fromFull: 'HH:MM:SS' }
   const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
+  const [isBioExpanded, setIsBioExpanded] = useState(false);
 
   // Determine user type
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -253,6 +254,27 @@ export const DelegateDetailsScreen = () => {
     const parsedDelegate = JSON.parse(params.delegate);
     return parsedDelegate;
   }, [params]);
+
+  const cleanedBio = useMemo(() => {
+    if (!delegate?.bio) return '';
+    return delegate.bio
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }, [delegate]);
+
+  const bioPreview = useMemo(() => {
+    if (!cleanedBio) return '';
+    if (cleanedBio.length <= 280) return cleanedBio;
+    return `${cleanedBio.slice(0, 280).trim()}...`;
+  }, [cleanedBio]);
+
+  const showBioReadMore = useMemo(
+    () => cleanedBio.length > 280,
+    [cleanedBio]
+  );
 
   // If this profile already has a meeting request (from AttendeesScreen/API),
   // initialise the requested state and priority so the UI shows it as already sent.
@@ -625,26 +647,34 @@ export const DelegateDetailsScreen = () => {
             </View>
           </View>
 
-          {/* Bio Section */}
-          {(() => {
-            const cleanedBio = delegate.bio
-              ? delegate.bio
-                  .replace(/<br\s*\/?>/gi, '\n')
-                  .replace(/<\/p>/gi, '\n\n')
-                  .replace(/<[^>]*>/g, '')
-                  .replace(/\s+/g, ' ')
-                  .trim()
-              : '';
-
-            return cleanedBio ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Bio</Text>
-                <View style={styles.bioCard}>
-                  <Text style={styles.bioText}>{cleanedBio}</Text>
-                </View>
+          {/* Bio Section with inline Read More */}
+          {cleanedBio ? (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Bio</Text>
+              <View style={styles.bioCard}>
+                <Text style={styles.bioText}>
+                  {isBioExpanded ? cleanedBio : bioPreview}
+                </Text>
+                {showBioReadMore && (
+                  <TouchableOpacity
+                    style={styles.readMoreButton}
+                    activeOpacity={0.8}
+                    onPress={() => setIsBioExpanded((v) => !v)}
+                  >
+                    <Text style={styles.readMoreText}>
+                      {isBioExpanded ? 'Show Less' : 'Read More'}
+                    </Text>
+                    <Icon
+                      name={isBioExpanded ? 'chevron-up' : 'chevron-down'}
+                      size={16}
+                      color={colors.primary}
+                      style={styles.readMoreIcon}
+                    />
+                  </TouchableOpacity>
+                )}
               </View>
-            ) : null;
-          })()}
+            </View>
+          ) : null}
 
           {/* Address Section */}
           {delegate.address && (
@@ -996,6 +1026,21 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: SIZES.body,
     color: colors.text,
     lineHeight: 20,
+  },
+  readMoreButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginTop: 12,
+  },
+  readMoreText: {
+    color: colors.primary,
+    fontWeight: '600',
+    fontSize: 14,
+    marginRight: 4,
+  },
+  readMoreIcon: {
+    marginLeft: 2,
   },
   addressCard: {
     padding: SIZES.paddingHorizontal / 2,

@@ -111,6 +111,7 @@ export const SponsorDetailsScreen = () => {
   const isDelegate = loginType === 'delegate';
   const insets = useSafeAreaInsets();
   const [isBookingMeeting, setIsBookingMeeting] = useState(false);
+  const [isAboutExpanded, setIsAboutExpanded] = useState(false);
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
 
@@ -177,6 +178,17 @@ export const SponsorDetailsScreen = () => {
 
     return parsed;
   }, [params]);
+
+  const ABOUT_TEXT = useMemo(() => (sponsor?.about || '').trim(), [sponsor]);
+  const PREVIEW_ABOUT_TEXT = useMemo(() => {
+    if (!ABOUT_TEXT) return '';
+    if (ABOUT_TEXT.length <= 280) return ABOUT_TEXT;
+    return `${ABOUT_TEXT.slice(0, 280).trim()}...`;
+  }, [ABOUT_TEXT]);
+  const shouldShowReadMore = useMemo(
+    () => ABOUT_TEXT.length > 280,
+    [ABOUT_TEXT]
+  );
 
   const isDelegateProfile = useMemo(() => {
     const tier = String(sponsor?.tier || '').toLowerCase();
@@ -523,15 +535,34 @@ export const SponsorDetailsScreen = () => {
             </View>
           </View>
 
-          {/* About Section */}
-          {sponsor.about && sponsor.about.trim() && (
+          {/* About Section with inline Read More */}
+          {ABOUT_TEXT && (
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <InfoIcon />
                 <Text style={styles.sectionTitle}>About</Text>
               </View>
               <View style={styles.aboutCard}>
-                <Text style={styles.aboutText}>{sponsor.about}</Text>
+                <Text style={styles.aboutText}>
+                  {isAboutExpanded ? ABOUT_TEXT : PREVIEW_ABOUT_TEXT}
+                </Text>
+                {shouldShowReadMore && (
+                  <TouchableOpacity
+                    style={styles.readMoreButton}
+                    activeOpacity={0.8}
+                    onPress={() => setIsAboutExpanded((v) => !v)}
+                  >
+                    <Text style={styles.readMoreText}>
+                      {isAboutExpanded ? 'Show Less' : 'Read More'}
+                    </Text>
+                    <Feather
+                      name={isAboutExpanded ? 'chevron-up' : 'chevron-down'}
+                      size={14}
+                      color={colors.primary}
+                      style={styles.readMoreIcon}
+                    />
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           )}
@@ -775,6 +806,21 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '400',
     color: colors.textMuted,
     lineHeight: 22,
+  },
+  readMoreButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginTop: 12,
+  },
+  readMoreText: {
+    color: colors.primary,
+    fontWeight: '600',
+    fontSize: 14,
+    marginRight: 4,
+  },
+  readMoreIcon: {
+    marginLeft: 2,
   },
   bottomButtonContainer: {
     position: 'absolute',

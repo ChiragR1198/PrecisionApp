@@ -637,8 +637,16 @@ export const api = createApi({
 
     // 5. Review Meeting Request (Delegate)
     getDelegateMeetingRequests: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
+      query: () => ({
+        url: API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['MeetingRequests'],
+      // Force refetch on mount to avoid showing stale meeting requests
+      refetchOnMountOrArgChange: true,
+      // Don't keep old data around when screen unmounts
+      keepUnusedDataFor: 0,
     }),
 
     // 6. Meeting Request Action (Delegate)
@@ -847,8 +855,16 @@ export const api = createApi({
 
     // 4. Meeting Request from Delegate (Sponsor)
     getSponsorMeetingRequests: builder.query({
-      query: () => API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
+      query: () => ({
+        url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
+        // Add timestamp to force fresh request (bypass cache)
+        params: { _t: Date.now() },
+      }),
       providesTags: ['MeetingRequests'],
+      // Force refetch on mount to avoid showing stale meeting requests
+      refetchOnMountOrArgChange: true,
+      // Don't keep old data around when screen unmounts
+      keepUnusedDataFor: 0,
     }),
 
     // 4a. Sponsor Meeting Request Action
