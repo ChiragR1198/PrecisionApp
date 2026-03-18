@@ -136,7 +136,9 @@ const checkTokenExpiry = async () => {
 const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   // Check token expiry before making request (for protected endpoints)
   const isAuthEndpoint = args.url?.includes('/auth/') || args.url?.includes('/login') || args.url?.includes('/logout');
-  if (!isAuthEndpoint) {
+  const isContactEndpoint = args.url?.includes('contact/submit');
+  const isPublicEndpoint = isAuthEndpoint || isContactEndpoint;
+  if (!isPublicEndpoint) {
     const isExpired = await checkTokenExpiry();
     if (isExpired) {
       return {
@@ -148,13 +150,13 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       };
     }
   }
-  
-  // Check token before making request
+
+  // Check token before making request (contact form works without login)
   const tokenBeforeRequest = await AsyncStorage.getItem('auth_token');
   console.log('🌐 API Request:', args.url || args, 'Token present:', tokenBeforeRequest ? 'Yes' : 'No');
-  
-  // For authenticated endpoints (not login/logout), ensure token is available
-  if (!isAuthEndpoint && !tokenBeforeRequest) {
+
+  // For authenticated endpoints (not login/logout/contact), ensure token is available
+  if (!isPublicEndpoint && !tokenBeforeRequest) {
     // Silently skip if no token (user might have logged out)
     // Don't log error as this is expected behavior after logout
     return {
@@ -172,7 +174,32 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   if (result.error) {
     const errorStatus = result.error.status;
     const isFetchError = errorStatus === 'FETCH_ERROR';
-    
+    const isPushRegister = typeof args.url === 'string' && args.url.includes('push/register-token');
+
+    // Push register is optional (backend may not have endpoint deployed yet) - don't log as error
+    if (isPushRegister && (errorStatus === 404 || errorStatus === 'PARSING_ERROR')) {
+      console.warn('⚠️ Push registration skipped (endpoint not available or returned 404). Notifications may not work until backend is updated.');
+      return result;
+    }
+
+    // PARSING_ERROR on meeting request often means backend returned non-JSON (e.g. PHP warning) - let caller handle
+    const isMeetingRequest = typeof args.url === 'string' && (args.url.includes('send-meeting-request'));
+    if (isMeetingRequest && errorStatus === 'PARSING_ERROR') {
+      console.warn('⚠️ Send meeting request: response was not valid JSON. Request may still have succeeded.');
+      return result;
+    }
+    // PARSING_ERROR on chat send-message: backend often saved message but returned non-JSON - don't log as error
+    const isChatSendMessage = typeof args.url === 'string' && (args.url.includes('chat/send-message'));
+    if (isChatSendMessage && errorStatus === 'PARSING_ERROR') {
+      console.warn('⚠️ Send message: response was not valid JSON. Message may have been sent.');
+      return result;
+    }
+    // 409 DUPLICATE_MEETING is a business rule, not a bug - show backend message in UI, don't log as error
+    if (isMeetingRequest && errorStatus === 409) {
+      console.warn('Meeting request: ', result.error.data?.message || 'Duplicate or conflict.');
+      return result;
+    }
+
     // For FETCH_ERROR, retry with exponential backoff (might be timing/network issue)
     if (isFetchError && !isAuthEndpoint) {
       const maxRetries = 2;
@@ -615,24 +642,25 @@ export const api = createApi({
 
     // 4. Send Meeting Request (Delegate)
     sendDelegateMeetingRequest: builder.mutation({
-      query: ({ sponsor_id, event_id, priority, date, time, message = '' }) => ({
+      query: ({ sponsor_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message = '' }) => ({
         url: API_ENDPOINTS.DELEGATE_SEND_MEETING_REQUEST,
         method: 'POST',
-        body: { sponsor_id, event_id, priority, date, time, message },
+        body: { sponsor_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message },
       }),
       invalidatesTags: ['MeetingRequests'],
     }),
 
-    // 4a. Delegate Meeting Times
+    // 4a. Delegate Meeting Times (single date or date_from+date_to; optional target_sponsor_id to exclude sponsor's booked slots)
     getDelegateMeetingTimes: builder.query({
-      query: ({ event_id, date }) => ({
-        url: API_ENDPOINTS.DELEGATE_MEETING_TIMES,
-        params: {
-          event_id,
-          date,
-          _t: Date.now(),
-        },
-      }),
+      query: ({ event_id, date, date_from, date_to, target_sponsor_id }) => {
+        const params = { event_id, _t: Date.now() };
+        if (date_from != null && date_to != null) {
+          params.date_from = date_from;
+          params.date_to = date_to;
+        } else if (date != null) params.date = date;
+        if (target_sponsor_id != null) params.target_sponsor_id = target_sponsor_id;
+        return { url: API_ENDPOINTS.DELEGATE_MEETING_TIMES, params };
+      },
     }),
 
     // 5. Review Meeting Request (Delegate)
@@ -911,24 +939,26 @@ export const api = createApi({
 
     // 7. Send Meeting Request (Sponsor)
     sendSponsorMeetingRequest: builder.mutation({
-      query: ({ delegate_id, event_id, priority, date, time, message = '' }) => ({
+      query: ({ delegate_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message = '' }) => ({
         url: API_ENDPOINTS.SPONSOR_SEND_MEETING_REQUEST,
         method: 'POST',
-        body: { delegate_id, event_id, priority, date, time, message },
+        body: { delegate_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message },
       }),
       invalidatesTags: ['MeetingRequests'],
     }),
 
     // 7a. Sponsor Meeting Times
+    // Sponsor Meeting Times (single date or date_from+date_to; optional target_delegate_id to exclude delegate's booked slots)
     getSponsorMeetingTimes: builder.query({
-      query: ({ event_id, date }) => ({
-        url: API_ENDPOINTS.SPONSOR_MEETING_TIMES,
-        params: {
-          event_id,
-          date,
-          _t: Date.now(),
-        },
-      }),
+      query: ({ event_id, date, date_from, date_to, target_delegate_id }) => {
+        const params = { event_id, _t: Date.now() };
+        if (date_from != null && date_to != null) {
+          params.date_from = date_from;
+          params.date_to = date_to;
+        } else if (date != null) params.date = date;
+        if (target_delegate_id != null) params.target_delegate_id = target_delegate_id;
+        return { url: API_ENDPOINTS.SPONSOR_MEETING_TIMES, params };
+      },
     }),
 
     // 8. View Itinerary (Sponsor)
@@ -1027,6 +1057,24 @@ export const api = createApi({
       }),
       invalidatesTags: ['Contacts'],
     }),
+
+    // Push: Register device token for notifications (delegate or sponsor - auth from Bearer)
+    registerPushToken: builder.mutation({
+      query: ({ token, platform = 'expo' }) => ({
+        url: API_ENDPOINTS.PUSH_REGISTER_TOKEN,
+        method: 'POST',
+        body: { token, platform },
+      }),
+    }),
+
+    // Contact Us form (no auth required)
+    submitContactForm: builder.mutation({
+      query: ({ full_name, email, message }) => ({
+        url: API_ENDPOINTS.CONTACT_SUBMIT,
+        method: 'POST',
+        body: { full_name, email, message },
+      }),
+    }),
   }),
 });
 
@@ -1045,6 +1093,8 @@ export const {
   useSponsorForgotPasswordMutation,
   useSponsorResetPasswordMutation,
   useSponsorChangePasswordMutation,
+  useRegisterPushTokenMutation,
+  useSubmitContactFormMutation,
 
   // Delegate Endpoints
   useGetDelegateEventsQuery,

@@ -5,7 +5,11 @@ import authReducer from './slices/authSlice';
 import eventReducer from './slices/eventSlice';
 
 // AGGRESSIVE cleanup of ALL old Redux/persist state
+// Skip on web/SSR where AsyncStorage may use window (undefined in Node/some contexts)
 const clearOldReduxState = async () => {
+  if (typeof window === 'undefined' && typeof global?.expo === 'undefined') {
+    return; // Skip in Node/SSR or when not in Expo/RN
+  }
   try {
     console.log('🧹 Starting aggressive state cleanup...');
     const keys = await AsyncStorage.getAllKeys();
@@ -23,19 +27,17 @@ const clearOldReduxState = async () => {
       console.log('✅ No old state to clear');
     }
   } catch (error) {
+    if (error?.message?.includes('window is not defined')) {
+      return; // Web/SSR: AsyncStorage not available, skip silently
+    }
     console.error('❌ Failed to clear old state:', error);
   }
 };
 
-// Run cleanup SYNCHRONOUSLY before store creation
-let cleanupComplete = false;
+// Run cleanup before store creation; safe to call on web/RN
 clearOldReduxState().then(() => {
   console.log('✅ Store cleanup complete');
-  cleanupComplete = true;
-}).catch(err => {
-  console.error('Cleanup error:', err);
-  cleanupComplete = true;
-});
+}).catch(() => {});
 
 // Create store with ONLY auth and api reducers (clean slate)
 export const store = configureStore({
@@ -58,6 +60,3 @@ export const store = configureStore({
   preloadedState: undefined,
   devTools: false, // Disable DevTools to prevent interference
 });
-
-export type RootState = ReturnType<typeof store.getState>;
-export type AppDispatch = typeof store.dispatch;

@@ -1,11 +1,14 @@
 import { Drawer } from 'expo-router/drawer';
 import React from 'react';
 import { colors } from '../../src/constants/theme';
+import { PushNotificationSetup } from '../../src/components/notifications/PushNotificationSetup';
 import { CustomDrawerContent } from '../../src/navigation/CustomDrawerContent';
 
 export default function DrawerLayout() {
   return (
-    <Drawer
+    <>
+      <PushNotificationSetup />
+      <Drawer
       initialRouteName="dashboard"
       screenOptions={{
         headerShown: false,
@@ -50,6 +53,7 @@ export default function DrawerLayout() {
         options={{ drawerLabel: 'Change Password' }}
       />
     </Drawer>
+    </>
   );
 }
 

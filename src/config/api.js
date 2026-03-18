@@ -5,8 +5,11 @@
  * To change the API base URL, update the API_BASE_URL constant below.
  */
 
+// Token jis backend par save hota hai, wahi DB mein dikhega (e.g. local DB = local URL use karo)
 export const API_BASE_URL = 'https://stage1.events.precision-globe.com/mobile/';
 // export const API_BASE_URL = 'https://events.precision-globe.com/mobile/';
+// Local testing (MAMP): tokens localhost DB (mobile_device_tokens) mein save honge
+// export const API_BASE_URL = 'http://localhost:8888/precision-backend/mobile/';
 
 // API Endpoints - Only endpoints from Postman Collection
 export const API_ENDPOINTS = {
@@ -76,6 +79,12 @@ export const API_ENDPOINTS = {
   // ============ AGENDA ============
   AGENDA_BY_ID: (id) => `/agenda/${id}`,
   AGENDA_ITEM_BY_ID: (id) => `/agenda/item/${id}`,
+
+  // ============ PUSH NOTIFICATIONS ============
+  PUSH_REGISTER_TOKEN: 'push/register-token',
+
+  // ============ CONTACT US ============
+  CONTACT_SUBMIT: 'contact/submit',
 };
 
 export default {
