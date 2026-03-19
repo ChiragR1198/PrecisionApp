@@ -68,7 +68,7 @@ export const DelegateDetailsScreen = () => {
   const params = useLocalSearchParams();
   const [priority, setPriority] = useState('1st');
   const { user } = useAppSelector((state) => state.auth);
-  const { selectedEventDateFrom } = useAppSelector((state) => state.event);
+  const { selectedEventDateFrom, selectedEventDateTo } = useAppSelector((state) => state.event);
   const [hasRequested, setHasRequested] = useState(false);
   const [requestedPriorityText, setRequestedPriorityText] = useState(null);
   
@@ -202,15 +202,22 @@ export const DelegateDetailsScreen = () => {
           const t = slot.slice(0, 5);
           return { id: slot, date: meetingDate, from: t, to: '', fromFull: slot };
         }
-        const rawTime = slot?.time || slot?.time_slot || slot?.label || null;
-        if (!rawTime) return null;
-        const fromFull = pickTimePart(rawTime);
-        return { id: rawTime, date: meetingDate, from: toHHMM(fromFull), to: '', fromFull };
+        // Backend returns meeting_from / meeting_to (e.g. "2026-04-30 01:05:00")
+        const fromFull = pickTimePart(slot?.meeting_from || slot?.time || slot?.time_slot || slot?.label);
+        const toFull = pickTimePart(slot?.meeting_to);
+        if (!fromFull) return null;
+        return {
+          id: slot?.id ?? `${meetingDate}-${fromFull}-${toFull}`,
+          date: meetingDate,
+          from: toHHMM(fromFull),
+          to: toHHMM(toFull) || '',
+          fromFull,
+        };
       })
       .filter(Boolean);
 
     return items.length
-      ? [{ date: meetingDate, dateLabel: meetingDate, items }]
+      ? [{ date: meetingDate, dateLabel: formatDateDDMMYYYY(meetingDate), items }]
       : [];
   }, [meetingTimesData, meetingDate]);
 
@@ -409,11 +416,17 @@ export const DelegateDetailsScreen = () => {
     if (!delegate || !delegate.id) return;
 
     const effectiveEventId = Number(eventId || 27);
-    const date = meetingDate;
+    const dateFrom = meetingDate;
+    const dateToRaw = params?.eventDateTo || selectedEventDateTo;
+    const dateTo = dateToRaw ? String(dateToRaw).slice(0, 10) : dateFrom;
+    const targetId = delegate?.id != null ? Number(delegate.id) : null;
 
     setMeetingTimesParams({
       event_id: effectiveEventId,
-      date,
+      date_from: dateFrom,
+      date_to: dateTo,
+      ...(isDelegate && targetId ? { target_sponsor_id: targetId } : {}),
+      ...(!isDelegate && targetId ? { target_delegate_id: targetId } : {}),
     });
     setSelectedTimeSlot(null);
     setModalStep('time');
@@ -431,35 +444,38 @@ export const DelegateDetailsScreen = () => {
         return;
       }
 
+      // Backend expects meeting_date (Y-m-d), meeting_time_from, meeting_time_to (H:i or H:i:s)
+      const meetingDateVal = slot?.date || meetingDate || todayDate;
+      const meetingTimeFrom = slot?.from ?? (slot?.fromFull ? String(slot.fromFull).slice(0, 5) : '');
+      const meetingTimeTo = slot?.to ?? '';
+
+      if (!meetingDateVal || !meetingTimeFrom || !meetingTimeTo) {
+        Alert.alert('Error', 'Meeting time slot is required: please select a time slot.');
+        return;
+      }
+
       setIsSendingRequest(true);
 
-      // Map priority text to number: 1st=1, 2nd=2
       const priorityMap = { '1st': 1, '2nd': 2 };
       const priorityValue = priorityMap[priority] || 1;
 
-      const now = new Date();
-      const date = slot?.date || meetingDate || todayDate;
-      const time =
-        slot?.fromFull ||
-        (slot?.from ? `${slot.from}:00` : null) ||
-        now.toTimeString().split(' ')[0]; // Fallback: HH:MM:SS
-
-      // Use different parameter names based on user type
       const payload = isDelegate
         ? {
             sponsor_id: Number(delegate.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
-            date: date,
-            time: time,
+            meeting_date: meetingDateVal,
+            meeting_time_from: meetingTimeFrom,
+            meeting_time_to: meetingTimeTo,
             message: '',
           }
         : {
             delegate_id: Number(delegate.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
-            date: date,
-            time: time,
+            meeting_date: meetingDateVal,
+            meeting_time_from: meetingTimeFrom,
+            meeting_time_to: meetingTimeTo,
             message: '',
           };
 
@@ -471,8 +487,22 @@ export const DelegateDetailsScreen = () => {
       setIsRequestSuccess(true);
       setSelectedTimeSlot(null);
     } catch (e) {
-      console.error('Error sending meeting request:', e);
-      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
+      const isParsingError = e?.status === 'PARSING_ERROR';
+      if (isParsingError) {
+        setModalStep('priority');
+        setHasRequested(true);
+        setRequestedPriorityText(priority);
+        setIsRequestSuccess(true);
+        setSelectedTimeSlot(null);
+        Alert.alert(
+          'Request sent',
+          'Your meeting request may have been sent. Please check Meeting Requests to confirm.'
+        );
+      } else {
+        const msg = e?.data?.message || e?.message || 'Failed to send meeting request';
+        if (e?.status !== 409) console.error('Error sending meeting request:', e);
+        Alert.alert('Error', msg);
+      }
     } finally {
       setIsSendingRequest(false);
     }

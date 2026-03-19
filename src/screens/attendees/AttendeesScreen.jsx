@@ -142,7 +142,7 @@ export const AttendeesScreen = () => {
   const navigation = useNavigation();
   const dispatch = useAppDispatch();
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
-  const { selectedEventDateFrom } = useAppSelector((state) => state.event);
+  const { selectedEventDateFrom, selectedEventDateTo } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   
@@ -380,7 +380,7 @@ export const AttendeesScreen = () => {
         .filter((g) => g.items.length > 0);
     }
 
-    // fallback for older array-based responses
+    // fallback for array-based responses (e.g. { data: [ { meeting_from, meeting_to }, ... ] })
     const arr = Array.isArray(normalized?.data)
       ? normalized.data
       : Array.isArray(normalized)
@@ -391,10 +391,17 @@ export const AttendeesScreen = () => {
 
     const items = arr
       .map((slot) => {
-        const rawTime = typeof slot === 'string' ? slot : (slot?.time || slot?.time_slot || slot?.label || null);
-        if (!rawTime) return null;
-        const fromFull = pickTimePart(rawTime);
-        return { id: rawTime, date: meetingDate, from: toHHMM(fromFull), to: '', fromFull };
+        // Backend returns meeting_from / meeting_to (e.g. "2026-04-30 01:05:00")
+        const fromFull = pickTimePart(slot?.meeting_from || slot?.time || slot?.time_slot || slot?.label);
+        const toFull = pickTimePart(slot?.meeting_to);
+        if (!fromFull) return null;
+        return {
+          id: slot?.id ?? `${meetingDate}-${fromFull}-${toFull}`,
+          date: meetingDate,
+          from: toHHMM(fromFull),
+          to: toHHMM(toFull) || '',
+          fromFull,
+        };
       })
       .filter(Boolean);
 
@@ -679,15 +686,20 @@ export const AttendeesScreen = () => {
     if (!selectedAttendee) return;
 
     const effectiveEventId = Number(eventId || 27);
-    const date = meetingDate;
+    const dateFrom = selectedEventDateFrom ? String(selectedEventDateFrom).slice(0, 10) : meetingDate;
+    const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : dateFrom;
+    const targetId = selectedAttendee?.id != null ? Number(selectedAttendee.id) : null;
 
     setMeetingTimesParams({
       event_id: effectiveEventId,
-      date,
+      date_from: dateFrom,
+      date_to: dateTo,
+      ...(isDelegate && targetId ? { target_sponsor_id: targetId } : {}),
+      ...(!isDelegate && targetId ? { target_delegate_id: targetId } : {}),
     });
     setSelectedTimeSlot(null);
     setModalStep('time');
-  }, [selectedAttendee, eventId, meetingDate]);
+  }, [selectedAttendee, eventId, meetingDate, selectedEventDateFrom, selectedEventDateTo, isDelegate]);
 
   const closeTimeModal = useCallback(() => {
     setModalStep('priority');
@@ -703,36 +715,39 @@ export const AttendeesScreen = () => {
         return;
       }
 
-      // Show loader
+      // Backend expects meeting_date (Y-m-d), meeting_time_from, meeting_time_to (H:i or H:i:s)
+      const meetingDate = slot?.date || meetingTimesParams?.date || meetingDate || todayDate;
+      const meetingTimeFrom = slot?.from ?? (slot?.fromFull ? String(slot.fromFull).slice(0, 5) : '');
+      const meetingTimeTo = slot?.to ?? '';
+
+      if (!meetingDate || !meetingTimeFrom || !meetingTimeTo) {
+        Alert.alert('Error', 'Meeting time slot is required: please select a time slot.');
+        return;
+      }
+
       setIsSendingRequest(true);
       setIsRequestSuccess(false);
 
       const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
       const priorityValue = priorityMap[selectedPriority] || 1;
 
-      const now = new Date();
-      const date = slot?.date || meetingTimesParams?.date || meetingDate || todayDate;
-      const time =
-        slot?.fromFull ||
-        (slot?.from ? `${slot.from}:00` : null) ||
-        now.toTimeString().split(' ')[0]; // Fallback: HH:MM:SS
-
-      // Use different parameter names based on user type
       const requestData = isDelegate
         ? {
             sponsor_id: Number(selectedAttendee.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
-            date: date,
-            time: time,
+            meeting_date: meetingDate,
+            meeting_time_from: meetingTimeFrom,
+            meeting_time_to: meetingTimeTo,
             message: '',
           }
         : {
             delegate_id: Number(selectedAttendee.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
-            date: date,
-            time: time,
+            meeting_date: meetingDate,
+            meeting_time_from: meetingTimeFrom,
+            meeting_time_to: meetingTimeTo,
             message: '',
           };
 
@@ -759,10 +774,21 @@ export const AttendeesScreen = () => {
       setIsRequestSuccess(true);
       setModalStep('priority');
     } catch (e) {
-      console.error('Error sending meeting request:', e);
       setIsSendingRequest(false);
       setIsRequestSuccess(false);
-      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
+      const isParsingError = e?.status === 'PARSING_ERROR';
+      if (isParsingError) {
+        console.warn('Meeting request response was not valid JSON (backend may have sent empty/wrong response). Refreshing list.');
+        if (refetchMeetingRequests) refetchMeetingRequests();
+        Alert.alert(
+          'Request sent',
+          'Your meeting request may have been sent. Please check Meeting Requests to confirm.'
+        );
+      } else {
+        const msg = e?.data?.message || e?.message || 'Failed to send meeting request';
+        if (e?.status !== 409) console.error('Error sending meeting request:', e);
+        Alert.alert('Error', msg);
+      }
     }
   };
 

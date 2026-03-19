@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "PrecisionGlobalSummits",
+    "name": "PEG Summits",
     "slug": "PrecisionGlobalSummits",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "owner": "raviridge2021",
     "orientation": "portrait",
     "icon": "./src/assets/images/app-icon1.png",
@@ -17,7 +17,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.precisionglobe.app",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to your camera to take photos.",
         "NSMicrophoneUsageDescription": "This app needs access to your microphone for video recording.",
@@ -44,7 +44,8 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.precisionglobe.app"
     },

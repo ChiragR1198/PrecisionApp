@@ -4,10 +4,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+    ActivityIndicator,
     Alert,
     KeyboardAvoidingView,
-    Linking,
+    Modal,
     Platform,
+    Pressable,
     ScrollView,
     StyleSheet,
     Text,
@@ -17,20 +19,20 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSubmitContactFormMutation } from '../../store/api';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
-
-const INFO_EMAIL = 'info@precisionglobe.com';
-const SUBJECT = 'New contact from PrecisionGlobe app';
 
 export const ContactUsScreen = () => {
   const navigation = useNavigation();
   const params = useLocalSearchParams?.() || {};
   const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const [submitContactForm, { isLoading: isSubmitting }] = useSubmitContactFormMutation();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isTabletDevice = SCREEN_WIDTH >= 768;
@@ -70,32 +72,23 @@ export const ContactUsScreen = () => {
       return;
     }
 
-    const bodyLines = [
-      'This message was sent from the PrecisionGlobe mobile app.',
-      '',
-      `Name: ${trimmedName}`,
-      `Email: ${trimmedEmail}`,
-      '',
-      'Message:',
-      trimmedMessage,
-    ];
-
-    const mailtoUrl = `mailto:${INFO_EMAIL}?subject=${encodeURIComponent(
-      SUBJECT,
-    )}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
-
     try {
-      const canOpen = await Linking.canOpenURL(mailtoUrl);
-      if (!canOpen) {
-        throw new Error('No email client available');
+      const result = await submitContactForm({
+        full_name: trimmedName,
+        email: trimmedEmail,
+        message: trimmedMessage,
+      }).unwrap();
+      if (result?.success) {
+        setName('');
+        setEmail('');
+        setMessage('');
+        setShowSuccessModal(true);
+      } else {
+        Alert.alert('Error', result?.message || 'Failed to send. Please try again.');
       }
-      await Linking.openURL(mailtoUrl);
-    } catch (error) {
-      console.error('ContactUsScreen - mailto error:', error);
-      Alert.alert(
-        'Unable to open email',
-        `Please email us at ${INFO_EMAIL} from your mail client.`,
-      );
+    } catch (err) {
+      const msg = err?.data?.message || err?.message || 'Unable to send. Please try again later.';
+      Alert.alert('Error', msg);
     }
   };
 
@@ -188,20 +181,64 @@ export const ContactUsScreen = () => {
                 </View>
               </View>
 
-              <TouchableOpacity style={styles.button} activeOpacity={0.9} onPress={handleSubmit}>
+              <TouchableOpacity
+                style={styles.button}
+                activeOpacity={0.9}
+                onPress={handleSubmit}
+                disabled={isSubmitting}
+              >
                 <LinearGradient
                   colors={colors.gradient}
                   style={styles.buttonGradient}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                 >
-                  <Text style={styles.buttonText}>Send Message</Text>
+                  {isSubmitting ? (
+                    <ActivityIndicator color={colors.white} size="small" />
+                  ) : (
+                    <Text style={styles.buttonText}>Send Message</Text>
+                  )}
                 </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Success popup (same style as profile update) */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={showSuccessModal}
+        onRequestClose={() => setShowSuccessModal(false)}
+      >
+        <View style={styles.successModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowSuccessModal(false)} />
+          <View style={styles.successModalCard}>
+            <View style={styles.successIconContainer}>
+              <Icon name="check-circle" size={64} color={colors.primary} />
+            </View>
+            <Text style={styles.successTitle}>Message Sent</Text>
+            <Text style={styles.successMessage}>
+              Thank you. We will get back to you at your email address.
+            </Text>
+            <TouchableOpacity
+              style={styles.successButton}
+              onPress={() => setShowSuccessModal(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={colors.gradient}
+                style={styles.successButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.successButtonText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -306,6 +343,63 @@ const createStyles = (SIZES, isTablet) =>
     buttonText: {
       fontSize: SIZES.body,
       fontWeight: '700',
+      color: colors.white,
+    },
+    // Success popup (profile update style)
+    successModalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+    },
+    successModalCard: {
+      width: '100%',
+      maxWidth: 340,
+      backgroundColor: colors.white,
+      borderRadius: 20,
+      paddingVertical: 28,
+      paddingHorizontal: 24,
+      alignItems: 'center',
+      shadowColor: '#000',
+      shadowOpacity: 0.15,
+      shadowRadius: 20,
+      shadowOffset: { width: 0, height: 10 },
+      elevation: 10,
+    },
+    successIconContainer: {
+      marginBottom: 16,
+    },
+    successTitle: {
+      fontSize: 22,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: 12,
+      textAlign: 'center',
+    },
+    successMessage: {
+      fontSize: 15,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginBottom: 24,
+      lineHeight: 22,
+      paddingHorizontal: 8,
+    },
+    successButton: {
+      width: '100%',
+      height: 48,
+      borderRadius: radius.md,
+      overflow: 'hidden',
+    },
+    successButtonGradient: {
+      flex: 1,
+      height: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    successButtonText: {
+      fontSize: 15,
+      fontWeight: '600',
       color: colors.white,
     },
   });
