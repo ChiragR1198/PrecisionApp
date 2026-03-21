@@ -150,11 +150,11 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       };
     }
   }
-
+  
   // Check token before making request (contact form works without login)
   const tokenBeforeRequest = await AsyncStorage.getItem('auth_token');
   console.log('🌐 API Request:', args.url || args, 'Token present:', tokenBeforeRequest ? 'Yes' : 'No');
-
+  
   // For authenticated endpoints (not login/logout/contact), ensure token is available
   if (!isPublicEndpoint && !tokenBeforeRequest) {
     // Silently skip if no token (user might have logged out)
@@ -199,7 +199,7 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       console.warn('Meeting request: ', result.error.data?.message || 'Duplicate or conflict.');
       return result;
     }
-
+    
     // For FETCH_ERROR, retry with exponential backoff (might be timing/network issue)
     if (isFetchError && !isAuthEndpoint) {
       const maxRetries = 2;
@@ -318,6 +318,7 @@ export const api = createApi({
     'Messages',
     'Sponsors',
     'MeetingRequests',
+    'MeetingRequestOutcomes',
     'Profile',
     'Contacts',
   ],
@@ -646,30 +647,49 @@ export const api = createApi({
         url: API_ENDPOINTS.DELEGATE_SEND_MEETING_REQUEST,
         method: 'POST',
         body: { sponsor_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message },
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: true };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
       }),
       invalidatesTags: ['MeetingRequests'],
     }),
 
-    // 4a. Delegate Meeting Times (single date or date_from+date_to; optional target_sponsor_id to exclude sponsor's booked slots)
+    // 4a. Delegate Meeting Times (supports event_id+date OR date_from+date_to+target_sponsor_id)
     getDelegateMeetingTimes: builder.query({
-      query: ({ event_id, date, date_from, date_to, target_sponsor_id }) => {
+      query: (args = {}) => {
+        const raw = Number(args?.event_id);
+        const event_id = (Number.isFinite(raw) && raw > 0) ? raw : 27;
         const params = { event_id, _t: Date.now() };
-        if (date_from != null && date_to != null) {
-          params.date_from = date_from;
-          params.date_to = date_to;
-        } else if (date != null) params.date = date;
-        if (target_sponsor_id != null) params.target_sponsor_id = target_sponsor_id;
+        if (args?.date != null) params.date = args.date;
+        if (args?.date_from != null && args?.date_to != null) {
+          params.date_from = args.date_from;
+          params.date_to = args.date_to;
+          if (args?.target_sponsor_id != null) params.target_sponsor_id = args.target_sponsor_id;
+        }
         return { url: API_ENDPOINTS.DELEGATE_MEETING_TIMES, params };
       },
     }),
 
-    // 5. Review Meeting Request (Delegate)
+    // 5. Review Meeting Request (Delegate) - inbox: sponsors who requested delegate
     getDelegateMeetingRequests: builder.query({
-      query: () => ({
-        url: API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
-        // Add timestamp to force fresh request (bypass cache)
-        params: { _t: Date.now() },
-      }),
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
+          params,
+        };
+      },
       providesTags: ['MeetingRequests'],
       // Force refetch on mount to avoid showing stale meeting requests
       refetchOnMountOrArgChange: true,
@@ -683,8 +703,38 @@ export const api = createApi({
         url: API_ENDPOINTS.DELEGATE_MEETING_REQUEST_ACTION,
         method: 'POST',
         body: { meeting_request_id, action }, // action: "accept" or "reject"
+        // Backend may return empty/non-JSON body for 2xx responses (common for action endpoints).
+        // Prevent PARSING_ERROR from bubbling up to the UI.
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: true };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
       }),
-      invalidatesTags: ['MeetingRequests'],
+      invalidatesTags: ['MeetingRequests', 'MeetingRequestOutcomes'],
+    }),
+
+    // 5b. Delegate: outcomes of sent requests (sponsor accepted/declined) - for "Accepted"/"Declined" on Event Sponsors
+    getDelegateMeetingRequestOutcomes: builder.query({
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.DELEGATE_MEETING_REQUEST_ACCEPTED_BY_SPONSOR,
+          params,
+        };
+      },
+      providesTags: ['MeetingRequestOutcomes'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
     }),
 
     // 7. Agenda
@@ -881,13 +931,20 @@ export const api = createApi({
       providesTags: ['Sponsors'],
     }),
 
-    // 4. Meeting Request from Delegate (Sponsor)
+    // 4. Meeting Request from Delegate (Sponsor) - inbox: delegates who requested sponsor
     getSponsorMeetingRequests: builder.query({
-      query: () => ({
-        url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
-        // Add timestamp to force fresh request (bypass cache)
-        params: { _t: Date.now() },
-      }),
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
+          params,
+        };
+      },
       providesTags: ['MeetingRequests'],
       // Force refetch on mount to avoid showing stale meeting requests
       refetchOnMountOrArgChange: true,
@@ -901,8 +958,38 @@ export const api = createApi({
         url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_ACTION,
         method: 'POST',
         body: { meeting_request_id, action }, // action: "accept" or "reject"
+        // Backend may return empty/non-JSON body for 2xx responses (common for action endpoints).
+        // Prevent PARSING_ERROR from bubbling up to the UI.
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: true };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
       }),
-      invalidatesTags: ['MeetingRequests'],
+      invalidatesTags: ['MeetingRequests', 'MeetingRequestOutcomes'],
+    }),
+
+    // 4b. Sponsor: outcomes of sent requests (delegate accepted/declined) - for "Accepted"/"Declined" on Event Delegates
+    getSponsorMeetingRequestOutcomes: builder.query({
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_ACCEPTED_BY_DELEGATE,
+          params,
+        };
+      },
+      providesTags: ['MeetingRequestOutcomes'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
     }),
 
     // 5. Sponsor Services
@@ -943,20 +1030,31 @@ export const api = createApi({
         url: API_ENDPOINTS.SPONSOR_SEND_MEETING_REQUEST,
         method: 'POST',
         body: { delegate_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message },
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: true };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
       }),
-      invalidatesTags: ['MeetingRequests'],
+      invalidatesTags: ['MeetingRequests', 'MeetingRequestOutcomes'],
     }),
 
     // 7a. Sponsor Meeting Times
-    // Sponsor Meeting Times (single date or date_from+date_to; optional target_delegate_id to exclude delegate's booked slots)
     getSponsorMeetingTimes: builder.query({
-      query: ({ event_id, date, date_from, date_to, target_delegate_id }) => {
+      query: (args = {}) => {
+        const raw = Number(args?.event_id);
+        const event_id = (Number.isFinite(raw) && raw > 0) ? raw : 27;
         const params = { event_id, _t: Date.now() };
-        if (date_from != null && date_to != null) {
-          params.date_from = date_from;
-          params.date_to = date_to;
-        } else if (date != null) params.date = date;
-        if (target_delegate_id != null) params.target_delegate_id = target_delegate_id;
+        if (args?.date != null) params.date = args.date;
+        if (args?.date_from != null && args?.date_to != null) {
+          params.date_from = args.date_from;
+          params.date_to = args.date_to;
+          if (args?.target_delegate_id != null) params.target_delegate_id = args.target_delegate_id;
+        }
         return { url: API_ENDPOINTS.SPONSOR_MEETING_TIMES, params };
       },
     }),
@@ -1101,6 +1199,7 @@ export const {
   useGetAllDelegatesQuery,
   useSendDelegateMeetingRequestMutation,
   useGetDelegateMeetingRequestsQuery,
+  useGetDelegateMeetingRequestOutcomesQuery,
   useDelegateMeetingRequestActionMutation,
   useGetDelegateMeetingTimesQuery,
   useGetAgendaQuery,
@@ -1121,6 +1220,7 @@ export const {
   useGetSponsorEventQuery,
   useGetEventSponsorQuery,
   useGetSponsorMeetingRequestsQuery,
+  useGetSponsorMeetingRequestOutcomesQuery,
   useSponsorMeetingRequestActionMutation,
   useGetSponsorServicesQuery,
   useGetSponsorAllAttendeesQuery,

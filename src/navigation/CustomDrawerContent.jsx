@@ -23,9 +23,9 @@ const NAV_ITEMS = [
   { label: 'Sponsors', route: 'sponsors', icon: 'briefcase' },
   { label: 'Itinerary', route: 'itinerary', icon: 'map-pin' },
   { label: 'Contacts', route: 'contacts', icon: 'book' },
-  // { label: 'Contact Us', route: 'contact-us', icon: 'mail' },
   { label: 'Profile', route: 'profile', icon: 'user' },
   { label: 'Change Password', route: 'change-password', icon: 'key' },
+  { label: 'Contact Us', route: 'contact-us', icon: 'mail' },
   { label: 'Logout', icon: 'log-out', action: 'logout' },
 ];
 

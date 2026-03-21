@@ -212,7 +212,6 @@ export const DashboardScreen = () => {
   useEffect(() => {
     if (error && (error.status === 401 || error.status === 'NO_TOKEN' || error.status === 403 || error.status === 'AUTH_REQUIRED')) {
       // Token expired, invalid, or permission denied - redirect to login
-      console.log('🚪 Auth error detected - redirecting to login. Status:', error.status);
       dispatch(clearAuth());
       // Use setTimeout to ensure navigation happens after component is mounted
       setTimeout(() => {
@@ -230,62 +229,48 @@ export const DashboardScreen = () => {
   // Transform API event data to display format
   const EVENTS = useMemo(() => {
     if (!eventsData) {
-      console.log('📊 Dashboard: No eventsData');
       return [];
     }
-    
-    console.log('📊 Dashboard: Raw eventsData:', JSON.stringify(eventsData, null, 2));
-    
+
     // Handle different API response structures
     let events = [];
-    
+
     // Case 1: eventsData.data is an array (most common)
     if (Array.isArray(eventsData.data)) {
       events = eventsData.data;
-      console.log('📊 Dashboard: Found events in eventsData.data:', events.length);
     }
     // Case 2: eventsData itself is an array
     else if (Array.isArray(eventsData)) {
       events = eventsData;
-      console.log('📊 Dashboard: eventsData is direct array:', events.length);
     }
     // Case 3: eventsData.data is a single object
     else if (eventsData.data && typeof eventsData.data === 'object' && !Array.isArray(eventsData.data)) {
       events = [eventsData.data];
-      console.log('📊 Dashboard: Single event object in eventsData.data');
     }
     // Case 4: eventsData is a single object
     else if (eventsData && typeof eventsData === 'object' && !Array.isArray(eventsData) && eventsData.id) {
       events = [eventsData];
-      console.log('📊 Dashboard: eventsData is single event object');
     }
-    
+
     if (events.length === 0) {
-      console.log('📊 Dashboard: No events found');
       return [];
     }
-    
-    console.log('📊 Dashboard: Extracted events before deduplication:', events.length, events.map(e => e?.id));
-    
+
     // Remove duplicates based on event ID (handle both string and number IDs)
     const seenIds = new Set();
     const uniqueEvents = events.filter((event) => {
       if (!event || !event.id) {
-        console.warn('⚠️ Dashboard: Event without ID:', event);
         return false;
       }
       // Normalize ID to string for comparison
       const eventId = String(event.id);
       if (seenIds.has(eventId)) {
-        console.warn('⚠️ Dashboard: Duplicate event found, filtering out:', eventId);
         return false; // Duplicate, filter it out
       }
       seenIds.add(eventId);
       return true;
     });
-    
-    console.log('📊 Dashboard: Unique events after deduplication:', uniqueEvents.length, uniqueEvents.map(e => e?.id));
-    
+
     // Transform to display format
     const transformed = uniqueEvents.map(event => ({
       id: event.id,
@@ -295,9 +280,7 @@ export const DashboardScreen = () => {
       date_from: event.date_from,
       date_to: event.date_to,
     }));
-    
-    console.log('📊 Dashboard: Final EVENTS array:', transformed.length, transformed.map(e => ({ id: e.id, title: e.title })));
-    
+
     return transformed;
   }, [eventsData, user, isDelegate]);
 
@@ -378,7 +361,6 @@ export const DashboardScreen = () => {
   ]);
 
   const handleQuickAction = (action) => {
-    console.log(`${action} pressed`);
     // Navigate to respective screens with eventId if available
     const params = {};
     if (selectedEvent?.id) {

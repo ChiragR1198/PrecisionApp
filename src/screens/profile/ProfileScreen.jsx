@@ -348,7 +348,7 @@ export const ProfileScreen = () => {
           country: '',
           state: '',
           address: profile.address || '',
-          linkedinUrl: '',
+          linkedinUrl: profile.linkedin_url || '',
           bio: stripHtmlTags(profile.biography || ''),
           companyInformation: stripHtmlTags(profile.company_information || ''),
           tel: profile.tel || '',
@@ -1255,16 +1255,26 @@ export const ProfileScreen = () => {
             <TouchableOpacity onPress={handleChangePhoto} activeOpacity={0.8}>
               <Text style={styles.changePhotoText}>Change Photo</Text>
             </TouchableOpacity>
-            
-            {/* QR Code Section */}
-            <TouchableOpacity 
-              style={styles.qrCodeContainer}
-              onPress={handleOpenQRModal}
-              activeOpacity={0.8}
-            >
-              <ScannerIcon size={SIZES.cameraIconSize} />
-              <Text style={styles.qrCodeText}>QR Code</Text>
-            </TouchableOpacity>
+
+            {/* Book a meeting (left) + QR Code (right) - side by side */}
+            <View style={styles.bookMeetingQrRow}>
+              <TouchableOpacity
+                style={styles.bookMeetingButton}
+                onPress={() => router.push('/(drawer)/attendees')}
+                activeOpacity={0.85}
+              >
+                <Icon name="users" size={18} color={colors.white} />
+                <Text style={styles.bookMeetingText}>Book a meeting</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.qrCodeButton}
+                onPress={handleOpenQRModal}
+                activeOpacity={0.8}
+              >
+                <ScannerIcon size={SIZES.cameraIconSize} />
+                <Text style={styles.qrCodeText}>QR Code</Text>
+              </TouchableOpacity>
+            </View>
           </LinearGradient>
 
           {/* My Profile Section */}
@@ -1362,33 +1372,34 @@ export const ProfileScreen = () => {
                     styles={styles}
                     iconSize={SIZES.iconSize}
                   />
-                  
-                  <FormField
-                    label="LinkedIn URL"
-                    value={formData.linkedinUrl}
-                    onChangeText={(value) => handleInputChange('linkedinUrl', value)}
-                    placeholder="https://linkedin.com/in/yourprofile"
-                    icon={LinkIcon}
-                    styles={styles}
-                    iconSize={SIZES.iconSize}
-                    keyboardType="url"
-                  />
-                  {formData.linkedinUrl ? (
-                    <TouchableOpacity
-                      style={styles.linkedinPreviewRow}
-                      onPress={handleOpenLinkedIn}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.helperText}>
-                        Preview:{' '}
-                        <Text style={styles.linkedinPreviewText}>
-                          {formData.linkedinUrl.replace(/^https?:\/\//, '')}
-                        </Text>
-                      </Text>
-                    </TouchableOpacity>
-                  ) : null}
                 </>
               )}
+              
+              {/* LinkedIn URL - both delegate and sponsor */}
+              <FormField
+                label="LinkedIn URL"
+                value={formData.linkedinUrl}
+                onChangeText={(value) => handleInputChange('linkedinUrl', value)}
+                placeholder="https://linkedin.com/in/yourprofile"
+                icon={LinkIcon}
+                styles={styles}
+                iconSize={SIZES.iconSize}
+                keyboardType="url"
+              />
+              {formData.linkedinUrl ? (
+                <TouchableOpacity
+                  style={styles.linkedinPreviewRow}
+                  onPress={handleOpenLinkedIn}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.helperText}>
+                    Preview:{' '}
+                    <Text style={styles.linkedinPreviewText}>
+                      {formData.linkedinUrl.replace(/^https?:\/\//, '')}
+                    </Text>
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
               
               {/* <FormField
                 label="Address"
@@ -2007,6 +2018,43 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.white,
     fontSize: SIZES.body,
     fontWeight: '500',
+  },
+  bookMeetingQrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 12,
+    width: '100%',
+    paddingHorizontal: 20,
+  },
+  bookMeetingButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    backgroundColor: '#DC2626',
+  },
+  bookMeetingText: {
+    fontSize: SIZES.body,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  qrCodeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
   qrCodeContainer: {
     flexDirection: 'row',

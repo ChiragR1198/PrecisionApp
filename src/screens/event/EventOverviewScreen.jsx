@@ -146,7 +146,6 @@ export const EventOverviewScreen = () => {
   useEffect(() => {
     if (error && (error.status === 401 || error.status === 'NO_TOKEN' || error.status === 403 || error.status === 'AUTH_REQUIRED')) {
       // Token expired or invalid - redirect to login
-      console.log('🚪 EventOverview: Auth error detected - redirecting to login. Status:', error.status);
       dispatch(clearAuth());
       // Use setTimeout to ensure navigation happens after component is mounted
       setTimeout(() => {

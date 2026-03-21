@@ -118,9 +118,6 @@ export const AgendaScreen = () => {
     return 'Failed to load agenda.';
   }, [error]);
 
-  console.log('eventId', eventId);
-  console.log('agendaResponse', agendaResponse);
-  
   const [selectedDateIndex, setSelectedDateIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
 

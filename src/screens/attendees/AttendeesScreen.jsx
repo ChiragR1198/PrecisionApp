@@ -1,16 +1,18 @@
 import Icon from '@expo/vector-icons/Feather';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   FlatList,
   Image,
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -25,9 +27,11 @@ import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import {
   useGetDelegateAttendeesQuery,
+  useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingRequestsQuery,
   useGetDelegateMeetingTimesQuery,
   useGetSponsorAllAttendeesQuery,
+  useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingRequestsQuery,
   useGetSponsorMeetingTimesQuery,
   useGetSponsorServicesQuery,
@@ -38,6 +42,53 @@ import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
 
 const UserIcon = Icons.User;
+
+function extractOutcomesList(response) {
+  if (response == null) return [];
+  if (Array.isArray(response)) return response;
+  const candidates = [
+    response.data,
+    response?.data?.data,
+    response?.data?.records,
+    response?.data?.items,
+    response?.data?.list,
+    response?.data?.meetings,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+  return [];
+}
+
+function pickOutcomeFlag(map, attendee, isDelegate) {
+  if (!map || !(map instanceof Map) || map.size === 0) return null;
+  const raw = attendee && typeof attendee === 'object' ? attendee : {};
+  const candidateKeys = isDelegate
+    ? [raw.id, raw.user_id, raw.sponsor_id, raw.sponsorId, raw.member_id, raw.sponsor_user_id]
+    : [raw.id, raw.user_id, raw.delegate_id, raw.delegateId, raw.member_id];
+  for (const c of candidateKeys) {
+    if (c == null || c === '') continue;
+    const n = Number(c);
+    if (!Number.isFinite(n)) continue;
+    const flag = map.get(n) ?? map.get(String(n));
+    if (flag === 1 || flag === 2) return flag;
+  }
+  return null;
+}
+
+function normalizeOutcomeAccepted(raw) {
+  if (raw === true) return 1;
+  if (raw === false) return 2;
+  if (raw === 1 || raw === '1') return 1;
+  if (raw === 2 || raw === '2') return 2;
+  const s = String(raw ?? '').toLowerCase().trim();
+  if (s === 'true' || s === 'accepted' || s === 'accept' || s === '1') return 1;
+  if (s === 'false' || s === 'declined' || s === 'reject' || s === 'rejected' || s === '2') return 2;
+  const n = Number(raw);
+  if (n === 1) return 1;
+  if (n === 2) return 2;
+  return null;
+}
 
 const AttendeeRow = React.memo(function AttendeeRow({
   item,
@@ -53,9 +104,46 @@ const AttendeeRow = React.memo(function AttendeeRow({
       ? 'Unavailable'
       : '';
 
+  const requestLabel =
+    item.requestOutcome === 'accepted'
+      ? 'Accepted'
+      : item.requestOutcome === 'declined'
+        ? 'Declined'
+        : item.hasRequest
+          ? item.priorityText
+            ? `Requested (${item.priorityText})`
+            : 'Requested'
+          : 'Request Meeting';
+
+  const requestDisabled =
+    item.requestOutcome === 'accepted' ||
+    (item.hasRequest && item.requestOutcome !== 'declined');
+
+  const rowHighlight =
+    item.requestOutcome === 'accepted'
+      ? styles.rowAccepted
+      : item.requestOutcome === 'declined'
+        ? styles.rowDeclined
+        : item.hasRequest
+          ? styles.rowRequested
+          : null;
+
+  const requestBtnStyle = [
+    styles.requestButton,
+    item.requestOutcome === 'accepted' && styles.requestButtonAccepted,
+    item.requestOutcome === 'declined' && styles.requestButtonDeclined,
+    item.hasRequest && !item.requestOutcome && styles.requestButtonDisabled,
+  ];
+  const requestTextStyle = [
+    styles.requestButtonText,
+    item.requestOutcome === 'accepted' && styles.requestButtonTextAccepted,
+    item.requestOutcome === 'declined' && styles.requestButtonTextDeclined,
+    item.hasRequest && !item.requestOutcome && styles.requestButtonTextDisabled,
+  ];
+
   return (
     <TouchableOpacity
-      style={[styles.row, item.hasRequest && styles.rowRequested]}
+      style={[styles.row, rowHighlight]}
       activeOpacity={0.8}
       onPress={() => onOpenDetails(item)}
     >
@@ -115,23 +203,15 @@ const AttendeeRow = React.memo(function AttendeeRow({
         </View>
       </View>
       <TouchableOpacity
-        style={[styles.requestButton, item.hasRequest && styles.requestButtonDisabled]}
+        style={requestBtnStyle}
         activeOpacity={0.85}
         onPress={(e) => {
           e.stopPropagation();
-          if (!item.hasRequest) {
-            onOpenRequest(item);
-          }
+          if (!requestDisabled) onOpenRequest(item);
         }}
-        disabled={item.hasRequest}
+        disabled={requestDisabled}
       >
-        <Text style={[styles.requestButtonText, item.hasRequest && styles.requestButtonTextDisabled]}>
-          {item.hasRequest
-            ? item.priorityText
-              ? `Requested (${item.priorityText})`
-              : 'Requested'
-            : 'Request Meeting'}
-        </Text>
+        <Text style={requestTextStyle}>{requestLabel}</Text>
       </TouchableOpacity>
     </TouchableOpacity>
   );
@@ -142,7 +222,7 @@ export const AttendeesScreen = () => {
   const navigation = useNavigation();
   const dispatch = useAppDispatch();
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
-  const { selectedEventDateFrom, selectedEventDateTo } = useAppSelector((state) => state.event);
+  const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   
@@ -159,18 +239,20 @@ export const AttendeesScreen = () => {
   // Conditionally fetch attendees based on user type
   const { 
     data: delegateAttendeesData, 
-    isLoading: delegateLoading, 
+    isLoading: delegateLoading,
+    isFetching: delegateAttendeesFetching,
     error: delegateError, 
     refetch: delegateRefetch 
   } = useGetDelegateAttendeesQuery(undefined, {
     skip: !isAuthenticated || !user || !isDelegate, // Skip for sponsors
     refetchOnMountOrArgChange: true,
   });
-  
+
   // For sponsors, pass selectedServices to filter attendees by service
   const { 
     data: sponsorAttendeesData, 
-    isLoading: sponsorLoading, 
+    isLoading: sponsorLoading,
+    isFetching: sponsorAttendeesFetching,
     error: sponsorError, 
     refetch: sponsorRefetch 
   } = useGetSponsorAllAttendeesQuery(selectedServices.length > 0 ? selectedServices : undefined, {
@@ -180,6 +262,7 @@ export const AttendeesScreen = () => {
   
   const attendeesData = isDelegate ? delegateAttendeesData : sponsorAttendeesData;
   const isLoading = isDelegate ? delegateLoading : sponsorLoading;
+  const isFetchingAttendees = isDelegate ? delegateAttendeesFetching : sponsorAttendeesFetching;
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? delegateRefetch : sponsorRefetch;
   
@@ -206,78 +289,95 @@ export const AttendeesScreen = () => {
   
   const meetingRequestsData = isDelegate ? delegateMeetingRequestsData : sponsorMeetingRequestsData;
   const refetchMeetingRequests = isDelegate ? refetchDelegateMeetingRequests : refetchSponsorMeetingRequests;
-  
-  // --- Begin requestedAttendeeIds block ---
-  // Extract requested attendee IDs from meeting requests
-  const requestedAttendeeIds = useMemo(() => {
-    if (!meetingRequestsData) return new Set();
-    
-    // Handle different response formats
-    let requests = [];
-    if (Array.isArray(meetingRequestsData?.data)) {
-      requests = meetingRequestsData.data;
-    } else if (Array.isArray(meetingRequestsData)) {
-      requests = meetingRequestsData;
-    } else if (Array.isArray(meetingRequestsData?.data?.data)) {
-      requests = meetingRequestsData.data.data;
+
+  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
+  const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
+    ? rawEventId
+    : (Number(rawEventId) || 27);
+
+  const {
+    data: delegateOutcomesData,
+    refetch: refetchDelegateOutcomes,
+    isFetching: isFetchingDelegateOutcomes,
+  } = useGetDelegateMeetingRequestOutcomesQuery(
+    { event_id: eventId },
+    {
+      skip: !isAuthenticated || !user || !isDelegate,
+      refetchOnMountOrArgChange: true,
     }
-    
-    // Extract attendee IDs based on user type
-    const ids = requests
-      .map((request) => {
-        if (isDelegate) {
-          // For delegates, get sponsor_id (the sponsor they requested)
-          return request?.sponsor_id || request?.sponsorId;
-        } else {
-          // For sponsors, get delegate_id (the delegate they requested)
-          return request?.delegate_id || request?.delegateId;
-        }
-      })
-      .filter((id) => id != null)
-      .map((id) => Number(id));
-    
-    return new Set(ids);
-  }, [meetingRequestsData, isDelegate]);
-  // --- End requestedAttendeeIds block ---
-  
-  // Map attendee IDs to their priority values from meeting requests
-  const attendeePriorityMap = useMemo(() => {
-    if (!meetingRequestsData) return new Map();
-    
-    // Handle different response formats
-    let requests = [];
-    if (Array.isArray(meetingRequestsData?.data)) {
-      requests = meetingRequestsData.data;
-    } else if (Array.isArray(meetingRequestsData)) {
-      requests = meetingRequestsData;
-    } else if (Array.isArray(meetingRequestsData?.data?.data)) {
-      requests = meetingRequestsData.data.data;
+  );
+  const {
+    data: sponsorOutcomesData,
+    refetch: refetchSponsorOutcomes,
+    isFetching: isFetchingSponsorOutcomes,
+  } = useGetSponsorMeetingRequestOutcomesQuery(
+    { event_id: eventId },
+    {
+      skip: !isAuthenticated || !user || isDelegate,
+      refetchOnMountOrArgChange: true,
     }
-    
-    const priorityMap = new Map();
-    requests.forEach((request) => {
-      let attendeeId;
-      if (isDelegate) {
-        attendeeId = request?.sponsor_id || request?.sponsorId;
-      } else {
-        attendeeId = request?.delegate_id || request?.delegateId;
-      }
-      
-      if (attendeeId != null) {
-        const priority = request?.priority;
-        if (priority != null) {
-          // Convert number priority (1, 2) to string format ('1st', '2nd')
-          const priorityText = priority === 1 ? '1st' : priority === 2 ? '2nd' : '1st';
-          priorityMap.set(Number(attendeeId), priorityText);
-        }
+  );
+  const meetingOutcomesData = isDelegate ? delegateOutcomesData : sponsorOutcomesData;
+  const refetchMeetingOutcomes = isDelegate ? refetchDelegateOutcomes : refetchSponsorOutcomes;
+  const isFetchingOutcomes = isDelegate ? isFetchingDelegateOutcomes : isFetchingSponsorOutcomes;
+
+  const attendeeOutcomeMap = useMemo(() => {
+    const list = extractOutcomesList(meetingOutcomesData);
+    const map = new Map();
+    list.forEach((row) => {
+      const id = isDelegate
+        ? Number(row?.sponsor_id ?? row?.sponsorId ?? row?.sponsorID ?? row?.sponsor_user_id)
+        : Number(row?.delegate_id ?? row?.delegateId ?? row?.delegateID ?? row?.user_id);
+      if (!Number.isFinite(id)) return;
+      const acceptRaw = row?.is_accepted ?? row?.isAccepted;
+      const flag =
+        acceptRaw != null && acceptRaw !== ''
+          ? normalizeOutcomeAccepted(acceptRaw)
+          : normalizeOutcomeAccepted(row?.status);
+      if (flag != null) {
+        map.set(id, flag);
+        map.set(String(id), flag);
       }
     });
-    
-    return priorityMap;
-  }, [meetingRequestsData, isDelegate]);
+    return map;
+  }, [meetingOutcomesData, isDelegate]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refetchMeetingOutcomes();
+      refetchMeetingRequests();
+    }, [refetchMeetingOutcomes, refetchMeetingRequests])
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        refetchMeetingOutcomes();
+        refetchMeetingRequests();
+      }
+    });
+    return () => sub.remove();
+  }, [refetchMeetingOutcomes, refetchMeetingRequests]);
   
-  // Fetch sponsor services for filter
-  const eventId = user?.event_id || user?.events?.[0]?.id || 27;
+  // --- requestedAttendeeIds: ONLY outgoing (I requested them), NOT inbox (they requested me) ---
+  // meeting-request APIs return INCOMING: delegate inbox = sponsors who requested delegate;
+  // sponsor inbox = delegates who requested sponsor. Using those would wrongly mark "Requested"
+  // on people who requested us. So we use only local optimistic state (this session).
+  const requestedAttendeeIds = useMemo(() => {
+    return new Set(locallyRequestedIds.filter((id) => Number.isFinite(id)));
+  }, [locallyRequestedIds]);
+
+  // --- attendeePriorityMap: priority for OUR sent requests only (local optimistic state) ---
+  const attendeePriorityMap = useMemo(() => {
+    const map = new Map();
+    Object.entries(localPriorityMap || {}).forEach(([id, text]) => {
+      const n = Number(id);
+      if (Number.isFinite(n) && text) map.set(n, text);
+    });
+    return map;
+  }, [localPriorityMap]);
+  
+  // Fetch sponsor services for filter (ensure valid number to avoid NaN → 403)
   const todayDate = useMemo(() => {
     const now = new Date();
     return now.toISOString().split('T')[0];
@@ -371,6 +471,7 @@ export const AttendeesScreen = () => {
                 from,
                 to,
                 fromFull,
+                toFull,
               };
             })
             .filter(Boolean);
@@ -380,7 +481,7 @@ export const AttendeesScreen = () => {
         .filter((g) => g.items.length > 0);
     }
 
-    // fallback for array-based responses (e.g. { data: [ { meeting_from, meeting_to }, ... ] })
+    // fallback for array-based responses (API returns { data: [{ meeting_from, meeting_to }, ...] })
     const arr = Array.isArray(normalized?.data)
       ? normalized.data
       : Array.isArray(normalized)
@@ -391,32 +492,29 @@ export const AttendeesScreen = () => {
 
     const items = arr
       .map((slot) => {
-        // Backend returns meeting_from / meeting_to (e.g. "2026-04-30 01:05:00")
-        const fromFull = pickTimePart(slot?.meeting_from || slot?.time || slot?.time_slot || slot?.label);
+        const fromFull = pickTimePart(slot?.meeting_from);
         const toFull = pickTimePart(slot?.meeting_to);
-        if (!fromFull) return null;
+        const from = toHHMM(fromFull);
+        const to = toHHMM(toFull);
+        if (!from || !to) {
+          const rawTime = slot?.time || slot?.time_slot || slot?.label || null;
+          if (!rawTime) return null;
+          const t = pickTimePart(rawTime);
+          return { id: slot?.id ?? rawTime, date: meetingDate, from: toHHMM(t), to: '', fromFull: t };
+        }
         return {
           id: slot?.id ?? `${meetingDate}-${fromFull}-${toFull}`,
           date: meetingDate,
-          from: toHHMM(fromFull),
-          to: toHHMM(toFull) || '',
+          from,
+          to,
           fromFull,
+          toFull,
         };
       })
       .filter(Boolean);
 
     return items.length ? [{ date: meetingDate, dateLabel: formatDateDDMMYYYY(meetingDate), items }] : [];
   }, [meetingTimesData, meetingDate]);
-
-  useEffect(() => {
-    if (meetingTimesParams) {
-      console.log('🕒 Meeting times params (AttendeesScreen):', meetingTimesParams);
-      console.log('🕒 Meeting times data (AttendeesScreen):', JSON.stringify(meetingTimesData, null, 2));
-      if (delegateMeetingTimesError || sponsorMeetingTimesError) {
-        console.log('🕒 Meeting times error (AttendeesScreen):', delegateMeetingTimesError || sponsorMeetingTimesError);
-      }
-    }
-  }, [meetingTimesParams, meetingTimesData, delegateMeetingTimesError, sponsorMeetingTimesError]);
 
   const { 
     data: sponsorServicesData, 
@@ -429,7 +527,6 @@ export const AttendeesScreen = () => {
   // Handle authentication errors - redirect to login
   useEffect(() => {
     if (error && (error.status === 401 || error.status === 'NO_TOKEN' || error.status === 403 || error.status === 'AUTH_REQUIRED')) {
-      console.log('🚪 Auth error detected - redirecting to login. Status:', error.status);
       dispatch(clearAuth());
       setTimeout(() => {
         router.replace('/login');
@@ -548,11 +645,23 @@ export const AttendeesScreen = () => {
       const roleKey = String(role || '').toLowerCase();
       const companyKey = String(company || '').toLowerCase();
 
-      const numericId = Number(id);
-      const hasLocalRequest = locallyRequestedIds.includes(numericId);
+      const numericId = Number(
+        id ?? attendee?.user_id ?? attendee?.sponsor_id ?? attendee?.delegate_id
+      ) || Number(id);
+      const hasLocalRequest = Number.isFinite(numericId) && locallyRequestedIds.includes(numericId);
       const availability = String(attendee?.status || '').toLowerCase();
       const mappedPriorityText = attendeePriorityMap.get(numericId) || null;
       const priorityText = localPriorityMap[numericId] || mappedPriorityText || null;
+
+      const outcomeFlag =
+        pickOutcomeFlag(attendeeOutcomeMap, attendee, isDelegate) ??
+        (Number.isFinite(numericId) ? attendeeOutcomeMap.get(numericId) ?? attendeeOutcomeMap.get(String(numericId)) : null);
+      const requestOutcome =
+        outcomeFlag === 1 ? 'accepted' : outcomeFlag === 2 ? 'declined' : null;
+
+      const hasPendingRequest =
+        !requestOutcome &&
+        (hasLocalRequest || requestedAttendeeIds.has(numericId));
 
       return {
         id,
@@ -578,14 +687,23 @@ export const AttendeesScreen = () => {
         _roleKey: roleKey,
         _companyKey: companyKey,
         _searchText: `${nameKey} ${roleKey} ${companyKey}`,
-        // Check if request already sent (from API or this session)
-        hasRequest: hasLocalRequest || requestedAttendeeIds.has(numericId),
+        // Pending = sent but no accept/decline yet. Accepted/Declined come from outcomes API.
+        hasRequest: hasPendingRequest,
+        requestOutcome,
         priorityText,
         // Keep raw available (used only when navigating/details)
         raw: attendee,
       };
     });
-  }, [attendees, requestedAttendeeIds, locallyRequestedIds, attendeePriorityMap, localPriorityMap]);
+  }, [
+    attendees,
+    requestedAttendeeIds,
+    locallyRequestedIds,
+    attendeePriorityMap,
+    localPriorityMap,
+    attendeeOutcomeMap,
+    isDelegate,
+  ]);
 
   // Important perf detail:
   // - Sorting can be O(n log n); don't re-sort on every search keystroke.
@@ -685,18 +803,21 @@ export const AttendeesScreen = () => {
   const openTimeModal = useCallback(() => {
     if (!selectedAttendee) return;
 
-    const effectiveEventId = Number(eventId || 27);
-    const dateFrom = selectedEventDateFrom ? String(selectedEventDateFrom).slice(0, 10) : meetingDate;
-    const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : dateFrom;
-    const targetId = selectedAttendee?.id != null ? Number(selectedAttendee.id) : null;
+    const raw = Number(eventId);
+    const effectiveEventId = (Number.isFinite(raw) && raw > 0) ? raw : 27;
+    const date = meetingDate;
+    const dateFrom = selectedEventDateFrom ? String(selectedEventDateFrom).slice(0, 10) : null;
+    const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : null;
 
-    setMeetingTimesParams({
-      event_id: effectiveEventId,
-      date_from: dateFrom,
-      date_to: dateTo,
-      ...(isDelegate && targetId ? { target_sponsor_id: targetId } : {}),
-      ...(!isDelegate && targetId ? { target_delegate_id: targetId } : {}),
-    });
+    const params = { event_id: effectiveEventId, date };
+    if (dateFrom && dateTo) {
+      params.date_from = dateFrom;
+      params.date_to = dateTo;
+      if (isDelegate && selectedAttendee?.id) params.target_sponsor_id = Number(selectedAttendee.id);
+      if (!isDelegate && selectedAttendee?.id) params.target_delegate_id = Number(selectedAttendee.id);
+    }
+
+    setMeetingTimesParams(params);
     setSelectedTimeSlot(null);
     setModalStep('time');
   }, [selectedAttendee, eventId, meetingDate, selectedEventDateFrom, selectedEventDateTo, isDelegate]);
@@ -704,6 +825,18 @@ export const AttendeesScreen = () => {
   const closeTimeModal = useCallback(() => {
     setModalStep('priority');
   }, []);
+
+  // Default slot when meeting-times API returns no slots (e.g. staging)
+  const getDefaultSlot = useCallback(() => {
+    const d = meetingTimesParams?.date || meetingDate || todayDate;
+    return {
+      date: d,
+      from: '09:00',
+      to: '09:30',
+      fromFull: '09:00:00',
+      toFull: '09:30:00',
+    };
+  }, [meetingTimesParams?.date, meetingDate, todayDate]);
 
   const handleSendMeetingRequest = async (slot) => {
     if (!selectedAttendee) return;
@@ -715,28 +848,31 @@ export const AttendeesScreen = () => {
         return;
       }
 
-      // Backend expects meeting_date (Y-m-d), meeting_time_from, meeting_time_to (H:i or H:i:s)
-      const meetingDate = slot?.date || meetingTimesParams?.date || meetingDate || todayDate;
-      const meetingTimeFrom = slot?.from ?? (slot?.fromFull ? String(slot.fromFull).slice(0, 5) : '');
-      const meetingTimeTo = slot?.to ?? '';
-
-      if (!meetingDate || !meetingTimeFrom || !meetingTimeTo) {
-        Alert.alert('Error', 'Meeting time slot is required: please select a time slot.');
-        return;
-      }
-
+      // Show loader
       setIsSendingRequest(true);
       setIsRequestSuccess(false);
 
       const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
       const priorityValue = priorityMap[selectedPriority] || 1;
 
+      const effectiveSlot = slot || getDefaultSlot();
+      const meetingDateVal = effectiveSlot?.date || meetingTimesParams?.date || meetingDate || todayDate;
+      const meetingTimeFrom = effectiveSlot?.fromFull || (effectiveSlot?.from ? `${effectiveSlot.from}:00` : null);
+      const meetingTimeTo = effectiveSlot?.toFull || (effectiveSlot?.to ? `${effectiveSlot.to}:00` : null);
+
+      if (!meetingTimeFrom || !meetingTimeTo) {
+        Alert.alert('Error', 'Please select a valid time slot');
+        setIsSendingRequest(false);
+        return;
+      }
+
+      // API expects meeting_date, meeting_time_from, meeting_time_to
       const requestData = isDelegate
         ? {
             sponsor_id: Number(selectedAttendee.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
-            meeting_date: meetingDate,
+            meeting_date: meetingDateVal,
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
             message: '',
@@ -745,7 +881,7 @@ export const AttendeesScreen = () => {
             delegate_id: Number(selectedAttendee.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
-            meeting_date: meetingDate,
+            meeting_date: meetingDateVal,
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
             message: '',
@@ -774,21 +910,10 @@ export const AttendeesScreen = () => {
       setIsRequestSuccess(true);
       setModalStep('priority');
     } catch (e) {
+      console.error('Error sending meeting request:', e);
       setIsSendingRequest(false);
       setIsRequestSuccess(false);
-      const isParsingError = e?.status === 'PARSING_ERROR';
-      if (isParsingError) {
-        console.warn('Meeting request response was not valid JSON (backend may have sent empty/wrong response). Refreshing list.');
-        if (refetchMeetingRequests) refetchMeetingRequests();
-        Alert.alert(
-          'Request sent',
-          'Your meeting request may have been sent. Please check Meeting Requests to confirm.'
-        );
-      } else {
-        const msg = e?.data?.message || e?.message || 'Failed to send meeting request';
-        if (e?.status !== 409) console.error('Error sending meeting request:', e);
-        Alert.alert('Error', msg);
-      }
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
     }
   };
 
@@ -828,6 +953,12 @@ export const AttendeesScreen = () => {
   }, [isDelegate, selectedEventDateFrom]);
 
   const onOpenRequest = openModal;
+
+  const onRefreshAttendees = useCallback(() => {
+    refetch();
+    refetchMeetingOutcomes();
+    refetchMeetingRequests();
+  }, [refetch, refetchMeetingOutcomes, refetchMeetingRequests]);
 
   const renderItem = useCallback(
     ({ item }) => (
@@ -1010,7 +1141,9 @@ export const AttendeesScreen = () => {
           {filteredData.length > 0 ? (
             <FlatList
               data={filteredData}
-              keyExtractor={(item) => String(item.id)}
+              keyExtractor={(item) =>
+                `${String(item.id)}-${item.requestOutcome ?? 'n'}-${item.hasRequest ? 'p' : 'o'}`
+              }
               renderItem={renderItem}
               ItemSeparatorComponent={itemSeparator}
               contentContainerStyle={styles.listContent}
@@ -1022,7 +1155,16 @@ export const AttendeesScreen = () => {
               updateCellsBatchingPeriod={50}
               windowSize={7}
               getItemLayout={getItemLayout}
-              extraData={sortBy}
+              extraData={[sortBy, attendeeOutcomeMap.size]}
+              refreshControl={
+                <RefreshControl
+                  refreshing={!isLoading && (isFetchingAttendees || isFetchingOutcomes)}
+                  onRefresh={onRefreshAttendees}
+                  colors={[colors.primary]}
+                  tintColor={colors.primary}
+                  progressViewOffset={Platform.OS === 'android' ? 8 : undefined}
+                />
+              }
             />
           ) : (
             <View style={styles.emptyState}>
@@ -1180,6 +1322,24 @@ export const AttendeesScreen = () => {
                 ) : meetingSlotGroups.length === 0 ? (
                   <View style={styles.loadingContainerModal}>
                     <Text style={styles.loadingTextModal}>No time slots available.</Text>
+                    <Text style={[styles.loadingTextModal, { marginTop: 8, fontSize: 12 }]}>
+                      You can still send a request with a default time.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.modalButton, styles.primaryButton, { marginTop: 16, opacity: isSendingRequest ? 0.6 : 1 }]}
+                      onPress={() => handleSendMeetingRequest(getDefaultSlot())}
+                      disabled={isSendingRequest}
+                      activeOpacity={0.85}
+                    >
+                      {isSendingRequest ? (
+                        <ActivityIndicator size="small" color={colors.white} />
+                      ) : (
+                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send with Default Time</Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.modalButton, styles.cancelButton, { marginTop: 8 }]} onPress={closeTimeModal} activeOpacity={0.85}>
+                      <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
+                    </TouchableOpacity>
                   </View>
                 ) : (
                   <>
@@ -1451,6 +1611,18 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(16, 185, 129, 0.6)',
   },
+  rowAccepted: {
+    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.5)',
+  },
+  rowDeclined: {
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
   avatar: {
     backgroundColor: colors.primary,
     alignItems: 'center',
@@ -1492,6 +1664,14 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     backgroundColor: colors.gray200 || '#E5E7EB',
     opacity: 0.7,
   },
+  requestButtonAccepted: {
+    backgroundColor: '#22C55E',
+    opacity: 1,
+  },
+  requestButtonDeclined: {
+    backgroundColor: '#EF4444',
+    opacity: 1,
+  },
   requestButtonText: {
     color: colors.white,
     fontWeight: '600',
@@ -1499,6 +1679,12 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   requestButtonTextDisabled: {
     color: colors.textMuted || '#6B7280',
+  },
+  requestButtonTextAccepted: {
+    color: colors.white,
+  },
+  requestButtonTextDeclined: {
+    color: colors.white,
   },
   availabilityPill: {
     flexDirection: 'row',

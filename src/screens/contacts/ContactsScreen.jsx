@@ -186,7 +186,7 @@ export const ContactsScreen = () => {
         {!isDelegate ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>Contacts Not Available</Text>
-            <Text style={styles.emptySubtitle}>Only delegate users can view and manage contacts.</Text>
+            {/* <Text style={styles.emptySubtitle}>Only delegate users can view and manage contacts.</Text> */}
           </View>
         ) : isLoading ? (
           <View style={styles.loadingContainer}>

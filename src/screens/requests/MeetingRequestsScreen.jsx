@@ -1,15 +1,17 @@
 import Icon from '@expo/vector-icons/Feather';
-import { useNavigation } from '@react-navigation/native';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   FlatList,
   Image,
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -29,6 +31,29 @@ import {
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
+/** Normalize API shapes: { data: [] }, { data: { data: [] } }, { data: { records: [] } }, etc. */
+function extractMeetingRequestsList(response) {
+  if (response == null) return [];
+  if (Array.isArray(response)) return response;
+
+  const candidates = [
+    response.data,
+    response?.data?.data,
+    response?.data?.records,
+    response?.data?.items,
+    response?.data?.meetings,
+    response?.data?.list,
+    response?.records,
+    response?.items,
+  ];
+
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+
+  return [];
+}
+
 // const FILTERS = ['All', 'Sponsors', 'Delegates']; // Filters disabled as per request
 
 // Static dummy contacts list (now unused; kept for reference only)
@@ -47,17 +72,52 @@ export const MeetingRequestsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const { user } = useAppSelector((state) => state.auth);
+  const { selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
-  
+
+  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
+  const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
+    ? rawEventId
+    : (Number(rawEventId) || 27);
+
   // Use appropriate hook based on user type
-  const { data: delegateRequestsData, isLoading: isLoadingDelegate, error: delegateError, refetch: refetchDelegate } = useGetDelegateMeetingRequestsQuery(undefined, { skip: !isDelegate });
-  const { data: sponsorRequestsData, isLoading: isLoadingSponsor, error: sponsorError, refetch: refetchSponsor } = useGetSponsorMeetingRequestsQuery(undefined, { skip: isDelegate });
+  const {
+    data: delegateRequestsData,
+    isLoading: isLoadingDelegate,
+    isFetching: isFetchingDelegate,
+    error: delegateError,
+    refetch: refetchDelegate,
+  } = useGetDelegateMeetingRequestsQuery({ event_id: eventId }, { skip: !isDelegate });
+  const {
+    data: sponsorRequestsData,
+    isLoading: isLoadingSponsor,
+    isFetching: isFetchingSponsor,
+    error: sponsorError,
+    refetch: refetchSponsor,
+  } = useGetSponsorMeetingRequestsQuery({ event_id: eventId }, { skip: isDelegate });
   
   const requestsData = isDelegate ? delegateRequestsData : sponsorRequestsData;
   const isLoading = isDelegate ? isLoadingDelegate : isLoadingSponsor;
   const error = isDelegate ? delegateError : sponsorError;
   const refetch = isDelegate ? refetchDelegate : refetchSponsor;
+  const isFetching = isDelegate ? isFetchingDelegate : isFetchingSponsor;
+
+  useFocusEffect(
+    useCallback(() => {
+      refetch();
+    }, [refetch])
+  );
+
+  // App background se wapas aane par list refresh (taake nayi requests dikhen)
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        refetch();
+      }
+    });
+    return () => sub.remove();
+  }, [refetch]);
   
   // Use appropriate mutation based on user type
   const [updateDelegateMeetingRequest] = useDelegateMeetingRequestActionMutation();
@@ -89,21 +149,24 @@ export const MeetingRequestsScreen = () => {
   const actionModalAnim = useRef(new Animated.Value(0)).current;
   
   const requests = useMemo(() => {
-    let list = [];
-    const response = requestsData;
-    
-    // Handle different response formats
-    if (Array.isArray(response?.data)) {
-      list = response.data;
-    } else if (Array.isArray(response)) {
-      list = response;
-    } else if (Array.isArray(response?.data?.data)) {
-      list = response.data.data;
+    const list = extractMeetingRequestsList(requestsData);
+
+    if (__DEV__ && requestsData && list.length === 0) {
+      const hasPayload =
+        requestsData &&
+        typeof requestsData === 'object' &&
+        Object.keys(requestsData).length > 0;
+      if (hasPayload) {
+        console.warn(
+          '[MeetingRequests] API returned data but no list array was found. Keys:',
+          Object.keys(requestsData)
+        );
+      }
     }
-    
+
     // Transform to expected format based on user type
     return list.map((item) => {
-      const itemId = String(item.id || item.meeting_request_id);
+      const itemId = String(item.id ?? item.meeting_request_id ?? '');
       // Get locally updated action if exists, otherwise use API data
       const localAction = actionUpdates[itemId];
       const apiAction = item.is_accepted !== null && item.is_accepted !== undefined ? Number(item.is_accepted) : null;
@@ -112,13 +175,17 @@ export const MeetingRequestsScreen = () => {
       // For delegate: shows sponsor info (who sent request to delegate)
       // For sponsor: shows delegate info (who sent request to sponsor)
       if (isDelegate) {
-        // Delegate viewing requests - show sponsor info
-        // API response has: sponsor_name, sponsor_company, sponsor_image
+        // Delegate inbox: sponsor-related rows (server shape may vary)
         return {
-          id: itemId,
+          id: itemId || `row-${item.sponsor_id ?? ''}-${item.delegate_id ?? ''}`,
           name: item.sponsor_name || item.name || 'Unknown Sponsor',
           company: item.sponsor_company || item.company || '',
-          type: item.from === 'sponsor' ? 'Sponsor' : 'Delegate',
+          type:
+            item.from === 'sponsor'
+              ? 'Sponsor'
+              : item.from === 'delegate'
+                ? 'Delegate'
+                : 'Sponsor',
           avatar: item.sponsor_image ? { uri: item.sponsor_image } : UserAvatar,
           currentAction: currentAction,
           raw: item,
@@ -132,11 +199,14 @@ export const MeetingRequestsScreen = () => {
           item.name || 
           'Unknown Delegate';
         return {
-          id: itemId,
+          id: itemId || `row-${item.delegate_id ?? ''}`,
           name: delegateName,
           company: item.delegate_company || item.company || '',
           type: item.from === 'delegate' ? 'Delegate' : 'Sponsor',
-          avatar: item.delegate_image ? { uri: item.delegate_image } : UserAvatar,
+          avatar:
+            item.delegate_image || item.delegate_avatar || item.image
+              ? { uri: item.delegate_image || item.delegate_avatar || item.image }
+              : UserAvatar,
           currentAction: currentAction,
           raw: item,
         };
@@ -379,6 +449,23 @@ export const MeetingRequestsScreen = () => {
         leftIcon="menu"
         onLeftPress={() => navigation.openDrawer?.()}
         iconSize={SIZES.headerIconSize}
+        right={
+          <TouchableOpacity
+            onPress={() => refetch()}
+            disabled={isFetching}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh meeting requests"
+            activeOpacity={0.7}
+          >
+            <Icon
+              name="refresh-cw"
+              size={Math.max(20, (SIZES.headerIconSize || 22) - 2)}
+              color={colors.white}
+              style={{ opacity: isFetching ? 0.5 : 1 }}
+            />
+          </TouchableOpacity>
+        }
       />
 
       <View style={styles.contentWrap}>
@@ -401,15 +488,31 @@ export const MeetingRequestsScreen = () => {
         ) : (
           <FlatList
             data={filteredContacts}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => String(item.id || `mr-${index}`)}
             renderItem={renderContact}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
+            refreshControl={
+              <RefreshControl
+                refreshing={isFetching && !isLoading}
+                onRefresh={() => refetch()}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+                progressViewOffset={Platform.OS === 'android' ? 8 : undefined}
+              />
+            }
             contentContainerStyle={[
               styles.listContent,
               filteredContacts.length === 0 && { flex: 1, alignItems: 'center', justifyContent: 'center' },
             ]}
             ListEmptyComponent={
-              <Text style={styles.emptyText}>No meeting requests found.</Text>
+              <View style={styles.emptyWrap}>
+                <Text style={styles.emptyText}>No meeting requests found.</Text>
+                <Text style={styles.emptyHint}>
+                  {isDelegate
+                    ? 'Jo request aapne sponsor ko bheji hai, woh sponsor ke login par “Meeting Requests” mein dikhegi. Yahan woh entries aayengi jo server is delegate inbox endpoint par bhejta hai.'
+                    : 'Jo delegates ne aapko meeting request bheji hai, woh yahan dikhengi. Neeche kheench kar refresh bhi kar sakte ho.'}
+                </Text>
+              </View>
             }
             showsVerticalScrollIndicator={false}
           />
@@ -493,7 +596,6 @@ export const MeetingRequestsScreen = () => {
                       try {
                         // Note: This modal functionality seems unused based on the commented code above
                         // Keeping it for potential future use but it may need different implementation
-                        console.log('Modal send request - functionality may need review');
                         closeModal();
                       } catch (error) {
                         console.error('Error sending meeting request:', error);
@@ -602,6 +704,17 @@ const createStyles = (SIZES) => StyleSheet.create({
   searchBar: {
     marginTop: 12,
   },
+  loadingText: {
+    marginTop: 12,
+    fontSize: SIZES.body,
+    color: colors.textMuted,
+  },
+  errorText: {
+    fontSize: SIZES.body,
+    color: '#DC2626',
+    textAlign: 'center',
+    paddingHorizontal: 24,
+  },
   // Filter styles commented out as per request
   // filtersRow: {
   //   flexDirection: 'row',
@@ -627,6 +740,24 @@ const createStyles = (SIZES) => StyleSheet.create({
   // },
   listContent: {
     paddingBottom: 30,
+  },
+  emptyWrap: {
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  emptyHint: {
+    marginTop: 12,
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  emptyText: {
+    fontSize: SIZES.body,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
   },
   contactRow: {
     flexDirection: 'row',

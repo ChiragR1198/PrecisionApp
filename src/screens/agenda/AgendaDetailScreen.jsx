@@ -2,7 +2,6 @@ import Icon from '@expo/vector-icons/Feather';
 import FontAwesome6 from '@expo/vector-icons/FontAwesome6';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -76,31 +75,16 @@ const normalizeWhitespace = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' 
 export const AgendaDetailScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
-  const navigation = useNavigation();
-  
   const { data: agendaData, isLoading, error, refetch } = useGetAgendaItemQuery(
     params?.agendaId,
     { skip: !params?.agendaId }
   );
 
-  // Debug: Log navigation state on mount
-  useEffect(() => {
-    console.log('🔙 AgendaDetailScreen mounted');
-    console.log('🔙 Navigation state:', {
-      canGoBack: navigation.canGoBack(),
-      state: navigation.getState(),
-    });
-    console.log('🔙 Router state:', router);
-  }, []);
-
   // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
-    console.log('🔙 AgendaDetailScreen: handleBack called');
-    
     // For expo-router with drawer navigation, explicitly navigate to agenda screen
     // router.back() sometimes doesn't work properly with drawer navigator
     try {
-      console.log('🔙 Navigating to agenda screen');
       // Get eventId from params to preserve it when navigating back
       const eventId = params?.eventId || null;
       if (eventId) {
@@ -115,7 +99,6 @@ export const AgendaDetailScreen = () => {
       console.error('❌ Navigation failed:', error);
       // Last resort: try router.back()
       try {
-        console.log('🔙 Fallback: trying router.back()');
         router.back();
       } catch (backError) {
         console.error('❌ Router.back() also failed:', backError);
@@ -126,15 +109,12 @@ export const AgendaDetailScreen = () => {
   // Handle Android hardware back button
   useEffect(() => {
     if (Platform.OS === 'android') {
-      console.log('🔙 Setting up Android BackHandler');
       const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-        console.log('🔙 Hardware back button pressed');
         handleBack();
         return true; // Prevent default behavior (exit app)
       });
 
       return () => {
-        console.log('🔙 Removing BackHandler');
         backHandler.remove();
       };
     }
@@ -275,7 +255,6 @@ export const AgendaDetailScreen = () => {
           title="Agenda Detail" 
           leftIcon="arrow-left" 
           onLeftPress={() => {
-            console.log('🔙 Header back button pressed (loading state)');
             handleBack();
           }} 
           iconSize={SIZES.headerIconSize} 
@@ -295,7 +274,6 @@ export const AgendaDetailScreen = () => {
           title="Agenda Detail" 
           leftIcon="arrow-left" 
           onLeftPress={() => {
-            console.log('🔙 Header back button pressed (error state)');
             handleBack();
           }} 
           iconSize={SIZES.headerIconSize} 
@@ -314,7 +292,6 @@ export const AgendaDetailScreen = () => {
         title="Agenda Detail" 
         leftIcon="arrow-left" 
         onLeftPress={() => {
-          console.log('🔙 Header back button pressed (main state)');
           handleBack();
         }} 
         iconSize={SIZES.headerIconSize} 

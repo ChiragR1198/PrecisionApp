@@ -696,6 +696,53 @@ export const MessageDetailScreen = () => {
     }
   }, [navigation, params?.returnTo, params?.returnSponsor, params?.returnDelegate]);
 
+  const handleOpenProfile = useCallback(() => {
+    if (!thread) return;
+
+    const targetId = String(thread.user_id || thread.id || '').trim();
+    if (!targetId) {
+      Alert.alert('Error', 'Invalid profile information');
+      return;
+    }
+
+    const profileName = thread.name || thread.user_name || 'Unknown';
+    const profileImage = thread.avatar || thread.user_image || null;
+    const userType = String(thread.user_type || '').toLowerCase();
+    const currentReturnTo = Array.isArray(params?.returnTo) ? params.returnTo[0] : params?.returnTo;
+
+    if (userType === 'sponsor') {
+      router.push({
+        pathname: '/sponsor-details',
+        params: {
+          returnTo: 'message-detail',
+          returnThread: JSON.stringify(thread),
+          returnToFromThread: currentReturnTo || 'messages',
+          sponsor: JSON.stringify({
+            id: targetId,
+            name: profileName,
+            image: profileImage,
+            tier: 'Sponsor',
+          }),
+        },
+      });
+      return;
+    }
+
+    router.push({
+      pathname: '/delegate-details',
+      params: {
+        returnTo: 'message-detail',
+        returnThread: JSON.stringify(thread),
+        returnToFromThread: currentReturnTo || 'messages',
+        delegate: JSON.stringify({
+          id: targetId,
+          name: profileName,
+          image: profileImage,
+        }),
+      },
+    });
+  }, [thread, params?.returnTo]);
+
   // Handle Android hardware back button
   useEffect(() => {
     if (Platform.OS === 'android') {
@@ -733,7 +780,11 @@ export const MessageDetailScreen = () => {
         onLeftPress={handleBack}
         iconSize={SIZES.headerIconSize}
         center={
-          <View style={[styles.headerCenter, { alignSelf: 'flex-start' }]}>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={handleOpenProfile}
+            style={[styles.headerCenter, { alignSelf: 'flex-start' }]}
+          >
             {threadAvatar ? (
               <Image source={{ uri: threadAvatar }} style={styles.headerAvatar} />
             ) : (
@@ -752,7 +803,7 @@ export const MessageDetailScreen = () => {
               <Text style={styles.headerName}>{threadName}</Text>
               {/* <Text style={styles.headerStatus}>{thread.status || 'Online'}</Text> */}
             </View>
-          </View>
+          </TouchableOpacity>
         }
         right={
           <TouchableOpacity activeOpacity={0.7}>

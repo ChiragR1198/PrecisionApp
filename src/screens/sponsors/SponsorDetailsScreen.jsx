@@ -229,23 +229,38 @@ export const SponsorDetailsScreen = () => {
 
   // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
-    console.log('🔙 SponsorDetailsScreen: handleBack called');
-
     const returnTo = params?.returnTo;
+    const returnThread = params?.returnThread;
+    const returnToFromThread = params?.returnToFromThread;
 
-    // If we came from attendees, go back there; otherwise go to sponsors list
+    if (returnTo === 'message-detail' && returnThread) {
+      try {
+        router.push({
+          pathname: '/message-detail',
+          params: {
+            thread: returnThread,
+            returnTo: returnToFromThread || 'messages',
+          },
+        });
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to message-detail failed:', error);
+      }
+    }
+
+    // Respect explicit return target when provided
     const targetPath =
       returnTo === 'attendees'
         ? '/(drawer)/attendees'
+        : returnTo === 'messages'
+          ? '/(drawer)/messages'
         : '/(drawer)/sponsors';
 
     try {
-      console.log('🔙 Navigating to', targetPath);
       router.push(targetPath);
     } catch (error) {
       console.error('❌ Navigation failed:', error);
       try {
-        console.log('🔙 Fallback: trying router.back()');
         router.back();
       } catch (backError) {
         console.error('❌ Router.back() also failed:', backError);
@@ -256,15 +271,12 @@ export const SponsorDetailsScreen = () => {
   // Handle Android hardware back button
   useEffect(() => {
     if (Platform.OS === 'android') {
-      console.log('🔙 Setting up Android BackHandler (SponsorDetailsScreen)');
       const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-        console.log('🔙 Hardware back button pressed (SponsorDetailsScreen)');
         handleBack();
         return true; // Prevent default behavior (exit app)
       });
 
       return () => {
-        console.log('🔙 Removing BackHandler (SponsorDetailsScreen)');
         backHandler.remove();
       };
     }
@@ -318,8 +330,10 @@ export const SponsorDetailsScreen = () => {
       setIsBookingMeeting(true);
 
       const now = new Date();
-      const date = now.toISOString().split('T')[0]; // YYYY-MM-DD
-      const time = now.toTimeString().split(' ')[0]; // HH:MM:SS
+      const meeting_date = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      const meeting_time_from = now.toTimeString().split(' ')[0]; // HH:MM:SS
+      const endMs = now.getTime() + 15 * 60 * 1000;
+      const meeting_time_to = new Date(endMs).toTimeString().split(' ')[0]; // HH:MM:SS (+15 min)
 
       // Delegate -> Sponsor booking (when viewing a sponsor profile)
       if (isDelegate && !isDelegateProfile) {
@@ -327,8 +341,9 @@ export const SponsorDetailsScreen = () => {
           sponsor_id: Number(targetId),
           event_id: Number(user?.event_id || 27),
           priority: 1,
-          date,
-          time,
+          meeting_date,
+          meeting_time_from,
+          meeting_time_to,
           message: '',
         }).unwrap();
       }
@@ -338,8 +353,9 @@ export const SponsorDetailsScreen = () => {
           delegate_id: Number(targetId),
           event_id: Number(user?.event_id || 27),
           priority: 1,
-          date,
-          time,
+          meeting_date,
+          meeting_time_from,
+          meeting_time_to,
           message: '',
         }).unwrap();
       } else {

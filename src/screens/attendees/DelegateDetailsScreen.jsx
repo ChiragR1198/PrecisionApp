@@ -1,6 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -25,7 +25,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
+  useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
+  useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
   useSendSponsorMeetingRequestMutation,
@@ -62,13 +64,60 @@ const ExternalLinkIcon = ({ color = colors.textMuted, size = 16 }) => (
 
 const meetingRed = '#DC2626';
 
+function extractOutcomesList(response) {
+  if (response == null) return [];
+  if (Array.isArray(response)) return response;
+  const candidates = [
+    response.data,
+    response?.data?.data,
+    response?.data?.records,
+    response?.data?.items,
+    response?.data?.list,
+    response?.data?.meetings,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+  return [];
+}
+
+function normalizeOutcomeAccepted(raw) {
+  if (raw === true) return 1;
+  if (raw === false) return 2;
+  if (raw === 1 || raw === '1') return 1;
+  if (raw === 2 || raw === '2') return 2;
+  const s = String(raw ?? '').toLowerCase().trim();
+  if (s === 'true' || s === 'accepted' || s === 'accept' || s === '1') return 1;
+  if (s === 'false' || s === 'declined' || s === 'reject' || s === 'rejected' || s === '2') return 2;
+  const n = Number(raw);
+  if (n === 1) return 1;
+  if (n === 2) return 2;
+  return null;
+}
+
+function pickOutcomeFlag(map, attendee, isDelegate) {
+  if (!map || !(map instanceof Map) || map.size === 0) return null;
+  const raw = attendee && typeof attendee === 'object' ? attendee : {};
+  const candidateKeys = isDelegate
+    ? [raw.id, raw.user_id, raw.sponsor_id, raw.sponsorId, raw.member_id, raw.sponsor_user_id]
+    : [raw.id, raw.user_id, raw.delegate_id, raw.delegateId, raw.member_id];
+  for (const c of candidateKeys) {
+    if (c == null || c === '') continue;
+    const n = Number(c);
+    if (!Number.isFinite(n)) continue;
+    const flag = map.get(n) ?? map.get(String(n));
+    if (flag === 1 || flag === 2) return flag;
+  }
+  return null;
+}
+
 export const DelegateDetailsScreen = () => {
   const navigation = useNavigation();
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const [priority, setPriority] = useState('1st');
   const { user } = useAppSelector((state) => state.auth);
-  const { selectedEventDateFrom, selectedEventDateTo } = useAppSelector((state) => state.event);
+  const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
   const [hasRequested, setHasRequested] = useState(false);
   const [requestedPriorityText, setRequestedPriorityText] = useState(null);
   
@@ -93,7 +142,55 @@ export const DelegateDetailsScreen = () => {
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
   const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
 
-  const eventId = user?.event_id || user?.events?.[0]?.id || 27;
+  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
+  const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
+    ? rawEventId
+    : (Number(rawEventId) || 27);
+
+  const {
+    data: delegateOutcomesData,
+    refetch: refetchDelegateOutcomes,
+  } = useGetDelegateMeetingRequestOutcomesQuery(
+    { event_id: eventId },
+    { skip: !user || !isDelegate, refetchOnMountOrArgChange: true }
+  );
+  const {
+    data: sponsorOutcomesData,
+    refetch: refetchSponsorOutcomes,
+  } = useGetSponsorMeetingRequestOutcomesQuery(
+    { event_id: eventId },
+    { skip: !user || isDelegate, refetchOnMountOrArgChange: true }
+  );
+  const meetingOutcomesData = isDelegate ? delegateOutcomesData : sponsorOutcomesData;
+  const refetchMeetingOutcomes = isDelegate ? refetchDelegateOutcomes : refetchSponsorOutcomes;
+
+  useFocusEffect(
+    useCallback(() => {
+      refetchMeetingOutcomes();
+    }, [refetchMeetingOutcomes])
+  );
+
+  const attendeeOutcomeMap = useMemo(() => {
+    const list = extractOutcomesList(meetingOutcomesData);
+    const map = new Map();
+    list.forEach((row) => {
+      const id = isDelegate
+        ? Number(row?.sponsor_id ?? row?.sponsorId ?? row?.sponsorID ?? row?.sponsor_user_id)
+        : Number(row?.delegate_id ?? row?.delegateId ?? row?.delegateID ?? row?.user_id);
+      if (!Number.isFinite(id)) return;
+      const acceptRaw = row?.is_accepted ?? row?.isAccepted;
+      const flag =
+        acceptRaw != null && acceptRaw !== ''
+          ? normalizeOutcomeAccepted(acceptRaw)
+          : normalizeOutcomeAccepted(row?.status);
+      if (flag != null) {
+        map.set(id, flag);
+        map.set(String(id), flag);
+      }
+    });
+    return map;
+  }, [meetingOutcomesData, isDelegate]);
+
   const todayDate = useMemo(() => {
     const now = new Date();
     return now.toISOString().split('T')[0];
@@ -175,6 +272,7 @@ export const DelegateDetailsScreen = () => {
               from,
               to,
               fromFull,
+              toFull,
             };
           })
           .filter(Boolean);
@@ -187,7 +285,7 @@ export const DelegateDetailsScreen = () => {
       }).filter((g) => g.items.length > 0);
     }
 
-    // Fallback: older array-based responses
+    // Fallback: array-based responses (API returns { data: [{ meeting_from, meeting_to }, ...] })
     const arr = Array.isArray(meetingTimesData?.data)
       ? meetingTimesData.data
       : Array.isArray(meetingTimesData)
@@ -202,16 +300,23 @@ export const DelegateDetailsScreen = () => {
           const t = slot.slice(0, 5);
           return { id: slot, date: meetingDate, from: t, to: '', fromFull: slot };
         }
-        // Backend returns meeting_from / meeting_to (e.g. "2026-04-30 01:05:00")
-        const fromFull = pickTimePart(slot?.meeting_from || slot?.time || slot?.time_slot || slot?.label);
+        const fromFull = pickTimePart(slot?.meeting_from);
         const toFull = pickTimePart(slot?.meeting_to);
-        if (!fromFull) return null;
+        const from = toHHMM(fromFull);
+        const to = toHHMM(toFull);
+        if (!from || !to) {
+          const rawTime = slot?.time || slot?.time_slot || slot?.label || null;
+          if (!rawTime) return null;
+          const t = pickTimePart(rawTime);
+          return { id: slot?.id ?? rawTime, date: meetingDate, from: toHHMM(t), to: '', fromFull: t };
+        }
         return {
           id: slot?.id ?? `${meetingDate}-${fromFull}-${toFull}`,
           date: meetingDate,
-          from: toHHMM(fromFull),
-          to: toHHMM(toFull) || '',
+          from,
+          to,
           fromFull,
+          toFull,
         };
       })
       .filter(Boolean);
@@ -220,16 +325,6 @@ export const DelegateDetailsScreen = () => {
       ? [{ date: meetingDate, dateLabel: formatDateDDMMYYYY(meetingDate), items }]
       : [];
   }, [meetingTimesData, meetingDate]);
-
-  useEffect(() => {
-    if (meetingTimesParams) {
-      console.log('🕒 Meeting times params (DelegateDetailsScreen):', meetingTimesParams);
-      console.log('🕒 Meeting times data (DelegateDetailsScreen):', JSON.stringify(meetingTimesData, null, 2));
-      if (delegateMeetingTimesError || sponsorMeetingTimesError) {
-        console.log('🕒 Meeting times error (DelegateDetailsScreen):', delegateMeetingTimesError || sponsorMeetingTimesError);
-      }
-    }
-  }, [meetingTimesParams, meetingTimesData, delegateMeetingTimesError, sponsorMeetingTimesError]);
 
   // Determine which profile type we are showing (default: delegate)
   const profileType = useMemo(() => {
@@ -282,6 +377,34 @@ export const DelegateDetailsScreen = () => {
     () => cleanedBio.length > 280,
     [cleanedBio]
   );
+
+  const numericDelegateId = useMemo(
+    () => Number(delegate?.id ?? delegate?.user_id ?? delegate?.sponsor_id ?? delegate?.delegate_id) || null,
+    [delegate]
+  );
+
+  const requestOutcome = useMemo(() => {
+    const flag = pickOutcomeFlag(attendeeOutcomeMap, delegate, isDelegate)
+      ?? (Number.isFinite(numericDelegateId) ? attendeeOutcomeMap.get(numericDelegateId) ?? attendeeOutcomeMap.get(String(numericDelegateId)) : null);
+    return flag === 1 ? 'accepted' : flag === 2 ? 'declined' : null;
+  }, [attendeeOutcomeMap, delegate, isDelegate, numericDelegateId]);
+
+  const hasPendingRequest = useMemo(
+    () =>
+      !requestOutcome &&
+      (hasRequested || Boolean(delegate?.hasRequest)),
+    [requestOutcome, hasRequested, delegate?.hasRequest]
+  );
+
+  const meetingRequestLabel = useMemo(() => {
+    if (requestOutcome === 'accepted') return 'Accepted';
+    if (requestOutcome === 'declined') return 'Declined';
+    if (hasPendingRequest)
+      return requestedPriorityText ? `Requested (${requestedPriorityText})` : 'Requested';
+    return 'Book a meeting';
+  }, [requestOutcome, hasPendingRequest, requestedPriorityText]);
+
+  const meetingRequestDisabled = requestOutcome === 'accepted' || hasPendingRequest;
 
   // If this profile already has a meeting request (from AttendeesScreen/API),
   // initialise the requested state and priority so the UI shows it as already sent.
@@ -352,24 +475,37 @@ export const DelegateDetailsScreen = () => {
 
   // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
-    console.log('🔙 DelegateDetailsScreen: handleBack called');
-
     const rawReturnTo = params?.returnTo;
+    const returnThread = params?.returnThread;
+    const returnToFromThread = params?.returnToFromThread;
+
+    if (rawReturnTo === 'message-detail' && returnThread) {
+      try {
+        router.push({
+          pathname: '/message-detail',
+          params: {
+            thread: returnThread,
+            returnTo: returnToFromThread || 'messages',
+          },
+        });
+        return;
+      } catch (error) {
+        console.error('❌ Navigation to message-detail failed:', error);
+      }
+    }
+
     const targetPath = rawReturnTo ? `/(drawer)/${rawReturnTo}` : null;
 
     try {
       if (targetPath) {
-        console.log('🔙 Navigating to', targetPath);
         router.push(targetPath);
       } else {
-        console.log('🔙 No explicit returnTo, using router.back()');
         router.back();
       }
     } catch (error) {
       console.error('❌ Navigation failed:', error);
       // Fallback: try router.back() one more time
       try {
-        console.log('🔙 Fallback: trying router.back()');
         router.back();
       } catch (backError) {
         console.error('❌ Router.back() also failed:', backError);
@@ -380,15 +516,12 @@ export const DelegateDetailsScreen = () => {
   // Handle Android hardware back button
   useEffect(() => {
     if (Platform.OS === 'android') {
-      console.log('🔙 Setting up Android BackHandler (DelegateDetailsScreen)');
       const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-        console.log('🔙 Hardware back button pressed (DelegateDetailsScreen)');
         handleBack();
         return true; // Prevent default behavior (exit app)
       });
 
       return () => {
-        console.log('🔙 Removing BackHandler (DelegateDetailsScreen)');
         backHandler.remove();
       };
     }
@@ -403,7 +536,7 @@ export const DelegateDetailsScreen = () => {
   };
 
   const openMeetingModal = () => {
-    if (hasRequested) return;
+    if (meetingRequestDisabled) return;
     setIsModalVisible(true);
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
@@ -415,19 +548,21 @@ export const DelegateDetailsScreen = () => {
   const openTimeModal = () => {
     if (!delegate || !delegate.id) return;
 
-    const effectiveEventId = Number(eventId || 27);
-    const dateFrom = meetingDate;
-    const dateToRaw = params?.eventDateTo || selectedEventDateTo;
-    const dateTo = dateToRaw ? String(dateToRaw).slice(0, 10) : dateFrom;
-    const targetId = delegate?.id != null ? Number(delegate.id) : null;
+    const raw = Number(eventId);
+    const effectiveEventId = (Number.isFinite(raw) && raw > 0) ? raw : 27;
+    const date = meetingDate;
+    const dateFrom = selectedEventDateFrom ? String(selectedEventDateFrom).slice(0, 10) : null;
+    const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : null;
 
-    setMeetingTimesParams({
-      event_id: effectiveEventId,
-      date_from: dateFrom,
-      date_to: dateTo,
-      ...(isDelegate && targetId ? { target_sponsor_id: targetId } : {}),
-      ...(!isDelegate && targetId ? { target_delegate_id: targetId } : {}),
-    });
+    const params = { event_id: effectiveEventId, date };
+    if (dateFrom && dateTo) {
+      params.date_from = dateFrom;
+      params.date_to = dateTo;
+      if (isDelegate) params.target_sponsor_id = Number(delegate.id);
+      else params.target_delegate_id = Number(delegate.id);
+    }
+
+    setMeetingTimesParams(params);
     setSelectedTimeSlot(null);
     setModalStep('time');
   };
@@ -435,6 +570,17 @@ export const DelegateDetailsScreen = () => {
   const closeTimeModal = () => {
     setModalStep('priority');
   };
+
+  const getDefaultSlot = useCallback(() => {
+    const d = meetingTimesParams?.date || meetingDate || todayDate;
+    return {
+      date: d,
+      from: '09:00',
+      to: '09:30',
+      fromFull: '09:00:00',
+      toFull: '09:30:00',
+    };
+  }, [meetingTimesParams?.date, meetingDate, todayDate]);
 
   const handleSendMeetingRequest = async (slot) => {
     try {
@@ -444,21 +590,24 @@ export const DelegateDetailsScreen = () => {
         return;
       }
 
-      // Backend expects meeting_date (Y-m-d), meeting_time_from, meeting_time_to (H:i or H:i:s)
-      const meetingDateVal = slot?.date || meetingDate || todayDate;
-      const meetingTimeFrom = slot?.from ?? (slot?.fromFull ? String(slot.fromFull).slice(0, 5) : '');
-      const meetingTimeTo = slot?.to ?? '';
-
-      if (!meetingDateVal || !meetingTimeFrom || !meetingTimeTo) {
-        Alert.alert('Error', 'Meeting time slot is required: please select a time slot.');
-        return;
-      }
-
       setIsSendingRequest(true);
 
+      // Map priority text to number: 1st=1, 2nd=2
       const priorityMap = { '1st': 1, '2nd': 2 };
       const priorityValue = priorityMap[priority] || 1;
 
+      const effectiveSlot = slot || getDefaultSlot();
+      const meetingDateVal = effectiveSlot?.date || meetingDate || todayDate;
+      const meetingTimeFrom = effectiveSlot?.fromFull || (effectiveSlot?.from ? `${effectiveSlot.from}:00` : null);
+      const meetingTimeTo = effectiveSlot?.toFull || (effectiveSlot?.to ? `${effectiveSlot.to}:00` : null);
+
+      if (!meetingTimeFrom || !meetingTimeTo) {
+        Alert.alert('Error', 'Please select a valid time slot');
+        setIsSendingRequest(false);
+        return;
+      }
+
+      // API expects meeting_date, meeting_time_from, meeting_time_to
       const payload = isDelegate
         ? {
             sponsor_id: Number(delegate.id),
@@ -487,22 +636,8 @@ export const DelegateDetailsScreen = () => {
       setIsRequestSuccess(true);
       setSelectedTimeSlot(null);
     } catch (e) {
-      const isParsingError = e?.status === 'PARSING_ERROR';
-      if (isParsingError) {
-        setModalStep('priority');
-        setHasRequested(true);
-        setRequestedPriorityText(priority);
-        setIsRequestSuccess(true);
-        setSelectedTimeSlot(null);
-        Alert.alert(
-          'Request sent',
-          'Your meeting request may have been sent. Please check Meeting Requests to confirm.'
-        );
-      } else {
-        const msg = e?.data?.message || e?.message || 'Failed to send meeting request';
-        if (e?.status !== 409) console.error('Error sending meeting request:', e);
-        Alert.alert('Error', msg);
-      }
+      console.error('Error sending meeting request:', e);
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
     } finally {
       setIsSendingRequest(false);
     }
@@ -584,7 +719,7 @@ export const DelegateDetailsScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
-        title={isSponsorProfile ? 'Sponsor Details' : 'Delegatee Details'} 
+        title={isSponsorProfile ? 'Sponsor Details' : 'Delegate Details'} 
         leftIcon="arrow-left" 
         onLeftPress={handleBack}
         iconSize={SIZES.headerIconSize} 
@@ -614,23 +749,28 @@ export const DelegateDetailsScreen = () => {
             <Text style={styles.delegateRole}>{delegate.role}</Text>
             <Text style={styles.delegateCompany}>{delegate.company}</Text>
 
-            {/* Action row: Book a meeting (left) + Start chat icon (right) */}
+            {/* Action row: Book a meeting (left) + Start chat icon (right) - synced with AttendeesScreen */}
             <View style={styles.actionRow}>
               <TouchableOpacity
-                style={[styles.bookMeetingButton, hasRequested && styles.bookMeetingButtonDisabled]}
+                style={[
+                  styles.bookMeetingButton,
+                  requestOutcome === 'accepted' && styles.bookMeetingButtonAccepted,
+                  requestOutcome === 'declined' && styles.bookMeetingButtonDeclined,
+                  hasPendingRequest && styles.bookMeetingButtonDisabled,
+                ]}
                 onPress={openMeetingModal}
                 activeOpacity={0.85}
-                disabled={hasRequested}
+                disabled={meetingRequestDisabled}
               >
                 <View style={styles.bookMeetingLeftIcon}>
                   <Icon name="users" size={18} color={colors.white} />
                 </View>
-                <Text style={[styles.bookMeetingText, hasRequested && styles.bookMeetingTextDisabled]}>
-                  {hasRequested
-                    ? requestedPriorityText
-                      ? `Requested (${requestedPriorityText})`
-                      : 'Requested'
-                    : 'Book a meeting'}
+                <Text style={[
+                  styles.bookMeetingText,
+                  (requestOutcome === 'accepted' || requestOutcome === 'declined') && styles.bookMeetingTextState,
+                  hasPendingRequest && styles.bookMeetingTextDisabled,
+                ]}>
+                  {meetingRequestLabel}
                 </Text>
               </TouchableOpacity>
 
@@ -787,6 +927,24 @@ export const DelegateDetailsScreen = () => {
                 ) : meetingSlotGroups.length === 0 ? (
                   <View style={styles.loadingContainerModal}>
                     <Text style={styles.loadingTextModal}>No time slots available.</Text>
+                    <Text style={[styles.loadingTextModal, { marginTop: 8, fontSize: 12 }]}>
+                      You can still send a request with a default time.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.modalButton, styles.primaryButton, { marginTop: 16, opacity: isSendingRequest ? 0.6 : 1 }]}
+                      onPress={() => handleSendMeetingRequest(getDefaultSlot())}
+                      disabled={isSendingRequest}
+                      activeOpacity={0.85}
+                    >
+                      {isSendingRequest ? (
+                        <ActivityIndicator size="small" color={colors.white} />
+                      ) : (
+                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send with Default Time</Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.modalButton, styles.cancelButton, { marginTop: 8 }]} onPress={closeTimeModal} activeOpacity={0.85}>
+                      <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
+                    </TouchableOpacity>
                   </View>
                 ) : (
                   <>
@@ -1006,6 +1164,14 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     backgroundColor: colors.gray200,
     opacity: 0.9,
   },
+  bookMeetingButtonAccepted: {
+    backgroundColor: '#22C55E',
+    opacity: 1,
+  },
+  bookMeetingButtonDeclined: {
+    backgroundColor: '#EF4444',
+    opacity: 1,
+  },
   bookMeetingLeftIcon: {
     width: 22,
     alignItems: 'center',
@@ -1017,6 +1183,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   bookMeetingTextDisabled: {
     color: colors.textMuted,
+  },
+  bookMeetingTextState: {
+    color: colors.white,
   },
   chatIconButton: {
     width: 48,
