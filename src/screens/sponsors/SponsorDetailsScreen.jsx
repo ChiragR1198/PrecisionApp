@@ -10,15 +10,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   BackHandler,
   Image,
   Linking,
-  Modal,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -26,7 +23,7 @@ import {
   useWindowDimensions,
   View
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
@@ -157,6 +154,7 @@ const getColorFromString = (str, colorArray) => {
 export const SponsorDetailsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
+  const insets = useSafeAreaInsets();
   const { user } = useAppSelector((state) => state.auth);
   const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -820,6 +818,7 @@ export const SponsorDetailsScreen = () => {
 
             {!!sponsor?.name && (
               <View style={styles.actionRow}>
+                {/*
                 <TouchableOpacity
                   style={[
                     styles.bookMeetingButton,
@@ -845,8 +844,9 @@ export const SponsorDetailsScreen = () => {
                     {meetingRequestLabel}
                   </Text>
                 </TouchableOpacity>
+                */}
 
-                <TouchableOpacity style={styles.chatIconButton} onPress={handleStartChat} activeOpacity={0.85}>
+                {/* <TouchableOpacity style={styles.chatIconButton} onPress={handleStartChat} activeOpacity={0.85}>
                   <LinearGradient
                     colors={colors.gradient}
                     style={styles.chatIconGradient}
@@ -855,7 +855,7 @@ export const SponsorDetailsScreen = () => {
                   >
                     <MessageCircleIcon />
                   </LinearGradient>
-                </TouchableOpacity>
+                </TouchableOpacity> */}
               </View>
             )}
           </LinearGradient>
@@ -940,6 +940,28 @@ export const SponsorDetailsScreen = () => {
         </View>
       </ScrollView>
 
+      {!!sponsor?.name && (
+        <View
+          style={[
+            styles.bottomButtonContainer,
+            { bottom: 0, paddingBottom: Math.max(insets.bottom, 0) + 16 },
+          ]}
+        >
+          <TouchableOpacity style={styles.startChatButton} onPress={handleStartChat} activeOpacity={0.8}>
+            <LinearGradient
+              colors={colors.gradient}
+              style={styles.startChatGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+            >
+              <MessageCircleIcon />
+              <Text style={styles.startChatText}>Start Chat</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/*
       <Modal transparent animationType="fade" visible={isModalVisible} onRequestClose={closeModal}>
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
@@ -1149,6 +1171,7 @@ export const SponsorDetailsScreen = () => {
           </Animated.View>
         </SafeAreaView>
       </Modal>
+      */}
     </SafeAreaView>
   );
 };
@@ -1162,7 +1185,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 32,
+    paddingBottom: 100,
   },
   content: {
     width: '100%',
@@ -1400,6 +1423,36 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   readMoreIcon: {
     marginLeft: 2,
+  },
+  bottomButtonContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    paddingHorizontal: SIZES.paddingHorizontal,
+    paddingTop: 12,
+    backgroundColor: colors.background,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  startChatButton: {
+    width: '100%',
+    maxWidth: SIZES.contentMaxWidth,
+    alignSelf: 'center',
+    borderRadius: radius.md,
+    overflow: 'hidden',
+  },
+  startChatGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    gap: 10,
+  },
+  startChatText: {
+    fontSize: SIZES.body,
+    fontWeight: '600',
+    color: colors.white,
   },
   modalBackdrop2: {
     flex: 1,

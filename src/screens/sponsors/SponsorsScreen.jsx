@@ -1,23 +1,19 @@
-import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   FlatList,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
-  Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -37,6 +33,9 @@ import {
 import { useAppSelector } from '../../store/hooks';
 
 const UserIcon = Icons.User;
+const ChatIcon = ({ color = colors.icon, size = 24 }) => (
+  <MaterialCommunityIcons name="chat" size={size} color={color} />
+);
 
 function extractOutcomesList(response) {
   if (response == null) return [];
@@ -91,6 +90,7 @@ const SponsorListRow = React.memo(function SponsorListRow({
   styles,
   onOpenDetails,
   onOpenRequest,
+  onStartChat,
 }) {
   const tierStyle =
     {
@@ -171,6 +171,7 @@ const SponsorListRow = React.memo(function SponsorListRow({
           </Text>
         </View>
       </View>
+      {/*
       <TouchableOpacity
         style={requestBtnStyle}
         activeOpacity={0.85}
@@ -181,6 +182,17 @@ const SponsorListRow = React.memo(function SponsorListRow({
         disabled={requestDisabled}
       >
         <Text style={requestTextStyle}>{requestLabel}</Text>
+      </TouchableOpacity>
+      */}
+      <TouchableOpacity
+        style={styles.chatButton}
+        activeOpacity={0.7}
+        onPress={(e) => {
+          e.stopPropagation();
+          onStartChat(item);
+        }}
+      >
+        <ChatIcon color={colors.primary} />
       </TouchableOpacity>
     </TouchableOpacity>
   );
@@ -887,6 +899,39 @@ export const SponsorsScreen = () => {
     [selectedEventDateFrom]
   );
 
+  const onStartChat = useCallback(
+    (item) => {
+      const itemId = item?.id || item?.raw?.id;
+      if (!itemId) {
+        Alert.alert('Error', 'Invalid user information');
+        return;
+      }
+
+      const recipientType = isDelegate ? 'delegate' : 'sponsor';
+      const thread = {
+        id: String(itemId),
+        user_id: Number(itemId),
+        user_type: recipientType,
+        name: item?.name,
+        user_name: item?.name,
+        avatar: item?.image,
+        user_image: item?.image,
+        company: item?.company,
+        email: item?.email,
+      };
+
+      router.push({
+        pathname: '/message-detail',
+        params: {
+          thread: JSON.stringify(thread),
+          returnTo: 'sponsors',
+          returnItem: JSON.stringify(item),
+        },
+      });
+    },
+    [isDelegate]
+  );
+
   const renderSponsor = useCallback(
     ({ item }) => (
       <SponsorListRow
@@ -895,9 +940,10 @@ export const SponsorsScreen = () => {
         styles={styles}
         onOpenDetails={onOpenDetails}
         onOpenRequest={openModal}
+        onStartChat={onStartChat}
       />
     ),
-    [SIZES, styles, onOpenDetails, openModal]
+    [SIZES, styles, onOpenDetails, openModal, onStartChat]
   );
 
   // The content and contentWrap styles are restructured to ensure FlatList fills and scrolls
@@ -958,6 +1004,7 @@ export const SponsorsScreen = () => {
         )}
       </KeyboardAvoidingView>
 
+      {/*
       <Modal
         transparent
         animationType="fade"
@@ -1171,6 +1218,7 @@ export const SponsorsScreen = () => {
           </Animated.View>
         </SafeAreaView>
       </Modal>
+      */}
     </SafeAreaView>
   );
 };
@@ -1301,6 +1349,12 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   requestButtonTextDeclined: {
     color: colors.white,
+  },
+  chatButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingLeft: 8,
+    paddingVertical: 6,
   },
   modalBackdrop2: {
     flex: 1,
