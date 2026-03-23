@@ -1,13 +1,18 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,13 +22,169 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
+import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useGetAllDelegatesQuery, useGetEventSponsorQuery } from '../../store/api';
+import {
+  useGetAllDelegatesQuery,
+  useGetDelegateMeetingRequestOutcomesQuery,
+  useGetDelegateMeetingTimesQuery,
+  useGetEventSponsorQuery,
+  useGetSponsorMeetingRequestOutcomesQuery,
+  useGetSponsorMeetingTimesQuery,
+  useSendDelegateMeetingRequestMutation,
+  useSendSponsorMeetingRequestMutation,
+} from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
-const ChatIcon = ({ color = colors.icon, size = 24 }) => (
-  <MaterialCommunityIcons name="chat" size={size} color={color} />
-);
+const UserIcon = Icons.User;
+
+function extractOutcomesList(response) {
+  if (response == null) return [];
+  if (Array.isArray(response)) return response;
+  const candidates = [
+    response.data,
+    response?.data?.data,
+    response?.data?.records,
+    response?.data?.items,
+    response?.data?.list,
+    response?.data?.meetings,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+  return [];
+}
+
+function normalizeOutcomeAccepted(raw) {
+  if (raw === true) return 1;
+  if (raw === false) return 2;
+  if (raw === 1 || raw === '1') return 1;
+  if (raw === 2 || raw === '2') return 2;
+  const s = String(raw ?? '').toLowerCase().trim();
+  if (s === 'true' || s === 'accepted' || s === 'accept' || s === '1') return 1;
+  if (s === 'false' || s === 'declined' || s === 'reject' || s === 'rejected' || s === '2') return 2;
+  const n = Number(raw);
+  if (n === 1) return 1;
+  if (n === 2) return 2;
+  return null;
+}
+
+function pickOutcomeFlag(map, attendee, viewerIsDelegate) {
+  if (!map || !(map instanceof Map) || map.size === 0) return null;
+  const raw = attendee && typeof attendee === 'object' ? attendee : {};
+  const candidateKeys = viewerIsDelegate
+    ? [raw.id, raw.user_id, raw.sponsor_id, raw.sponsorId, raw.member_id, raw.sponsor_user_id]
+    : [raw.id, raw.user_id, raw.delegate_id, raw.delegateId, raw.member_id];
+  for (const c of candidateKeys) {
+    if (c == null || c === '') continue;
+    const n = Number(c);
+    if (!Number.isFinite(n)) continue;
+    const flag = map.get(n) ?? map.get(String(n));
+    if (flag === 1 || flag === 2) return flag;
+  }
+  return null;
+}
+
+const SponsorListRow = React.memo(function SponsorListRow({
+  item,
+  SIZES,
+  styles,
+  onOpenDetails,
+  onOpenRequest,
+}) {
+  const tierStyle =
+    {
+      Delegate: { bg: colors.gray100, text: colors.text },
+      Sponsor: { bg: colors.gray100, text: colors.text },
+      'Event Sponsor': { bg: colors.gray100, text: colors.text },
+    }[item.tier] || { bg: colors.gray100, text: colors.text };
+  const badgeStyle = item.badgeColor || tierStyle;
+
+  const requestLabel =
+    item.requestOutcome === 'accepted'
+      ? 'Accepted'
+      : item.requestOutcome === 'declined'
+        ? 'Declined'
+        : item.hasRequest
+          ? item.priorityText
+            ? `Requested (${item.priorityText})`
+            : 'Requested'
+          : 'Request Meeting';
+
+  const requestDisabled =
+    item.requestOutcome === 'accepted' ||
+    (item.hasRequest && item.requestOutcome !== 'declined');
+
+  const rowHighlight =
+    item.requestOutcome === 'accepted'
+      ? styles.rowAccepted
+      : item.requestOutcome === 'declined'
+        ? styles.rowDeclined
+        : item.hasRequest
+          ? styles.rowRequested
+          : null;
+
+  const requestBtnStyle = [
+    styles.requestButton,
+    item.requestOutcome === 'accepted' && styles.requestButtonAccepted,
+    item.requestOutcome === 'declined' && styles.requestButtonDeclined,
+    item.hasRequest && !item.requestOutcome && styles.requestButtonDisabled,
+  ];
+  const requestTextStyle = [
+    styles.requestButtonText,
+    item.requestOutcome === 'accepted' && styles.requestButtonTextAccepted,
+    item.requestOutcome === 'declined' && styles.requestButtonTextDeclined,
+    item.hasRequest && !item.requestOutcome && styles.requestButtonTextDisabled,
+  ];
+
+  return (
+    <TouchableOpacity
+      style={[styles.card, rowHighlight]}
+      activeOpacity={0.8}
+      onPress={() => onOpenDetails(item)}
+    >
+      <View style={styles.logoWrapper}>
+        <View
+          style={[
+            styles.logo,
+            { backgroundColor: item.logoBg, width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md },
+          ]}
+        >
+          {item.image ? (
+            <Image
+              source={{ uri: item.image }}
+              style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md }}
+              resizeMode="cover"
+            />
+          ) : (
+            <Text style={styles.logoText}>{item.logoText}</Text>
+          )}
+        </View>
+      </View>
+      <View style={styles.cardInfo}>
+        <Text style={styles.cardTitle} numberOfLines={1}>
+          {item.name}
+        </Text>
+        <View style={[styles.badge, { backgroundColor: badgeStyle.bg }]}>
+          <Text style={[styles.badgeText, { color: badgeStyle.text }]} numberOfLines={1}>
+            {item.company || item.tier}
+          </Text>
+        </View>
+      </View>
+      <TouchableOpacity
+        style={requestBtnStyle}
+        activeOpacity={0.85}
+        onPress={(e) => {
+          e.stopPropagation();
+          if (!requestDisabled) onOpenRequest(item);
+        }}
+        disabled={requestDisabled}
+      >
+        <Text style={requestTextStyle}>{requestLabel}</Text>
+      </TouchableOpacity>
+    </TouchableOpacity>
+  );
+});
 
 const TIER_STYLES = {
   'Platinum Sponsor': { bg: 'rgba(167, 139, 250, 0.15)', text: '#6D28D9' },
@@ -188,19 +349,57 @@ export const SponsorsScreen = () => {
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const isSponsor = loginType === 'sponsor';
-  
-  // Get event ID for sponsor query
-  const eventId = user?.event_id || user?.events?.[0]?.id || 27;
-  
+  const { isAuthenticated } = useAppSelector((state) => state.auth);
+  const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
+
+  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
+  const eventId =
+    typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0
+      ? rawEventId
+      : Number(rawEventId) || 27;
+
   // Fetch delegates (for delegate login)
   const { data: delegatesData, isLoading: delegatesLoading, error: delegatesError } = useGetAllDelegatesQuery(undefined, {
-    skip: !isDelegate,
+    skip: !isAuthenticated || !user || !isDelegate,
   });
-  
+
   // Fetch event sponsors (for sponsor login)
   const { data: sponsorsData, isLoading: sponsorsLoading, error: sponsorsError } = useGetEventSponsorQuery(eventId, {
-    skip: !isSponsor || !eventId,
+    skip: !isAuthenticated || !user || !isSponsor || !eventId,
   });
+
+  const {
+    data: delegateOutcomesData,
+    refetch: refetchDelegateOutcomes,
+  } = useGetDelegateMeetingRequestOutcomesQuery(
+    { event_id: eventId },
+    { skip: !isAuthenticated || !user || !isDelegate, refetchOnMountOrArgChange: true }
+  );
+  const {
+    data: sponsorOutcomesData,
+    refetch: refetchSponsorOutcomes,
+  } = useGetSponsorMeetingRequestOutcomesQuery(
+    { event_id: eventId },
+    { skip: !isAuthenticated || !user || isDelegate, refetchOnMountOrArgChange: true }
+  );
+  const meetingOutcomesData = isDelegate ? delegateOutcomesData : sponsorOutcomesData;
+  const refetchMeetingOutcomes = isDelegate ? refetchDelegateOutcomes : refetchSponsorOutcomes;
+
+  const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
+  const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
+  const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
+
+  const [locallyRequestedIds, setLocallyRequestedIds] = useState([]);
+  const [localPriorityMap, setLocalPriorityMap] = useState({});
+  const [selectedAttendee, setSelectedAttendee] = useState(null);
+  const [selectedPriority, setSelectedPriority] = useState('1st');
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [isSendingRequest, setIsSendingRequest] = useState(false);
+  const [isRequestSuccess, setIsRequestSuccess] = useState(false);
+  const modalAnim = useRef(new Animated.Value(0)).current;
+  const [modalStep, setModalStep] = useState('priority');
+  const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
+  const [meetingTimesParams, setMeetingTimesParams] = useState(null);
   
   // Combine loading and error states
   const isLoading = isDelegate ? delegatesLoading : sponsorsLoading;
@@ -214,6 +413,173 @@ export const SponsorsScreen = () => {
     if (error?.status) return `Error ${error.status}`;
     return isDelegate ? 'Failed to load delegates.' : 'Failed to load sponsors.';
   }, [error, isDelegate]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refetchMeetingOutcomes();
+    }, [refetchMeetingOutcomes])
+  );
+
+  const attendeeOutcomeMap = useMemo(() => {
+    const list = extractOutcomesList(meetingOutcomesData);
+    const map = new Map();
+    list.forEach((row) => {
+      const id = isDelegate
+        ? Number(row?.sponsor_id ?? row?.sponsorId ?? row?.sponsorID ?? row?.sponsor_user_id)
+        : Number(row?.delegate_id ?? row?.delegateId ?? row?.delegateID ?? row?.user_id);
+      if (!Number.isFinite(id)) return;
+      const acceptRaw = row?.is_accepted ?? row?.isAccepted;
+      const flag =
+        acceptRaw != null && acceptRaw !== ''
+          ? normalizeOutcomeAccepted(acceptRaw)
+          : normalizeOutcomeAccepted(row?.status);
+      if (flag != null) {
+        map.set(id, flag);
+        map.set(String(id), flag);
+      }
+    });
+    return map;
+  }, [meetingOutcomesData, isDelegate]);
+
+  const todayDate = useMemo(() => new Date().toISOString().split('T')[0], []);
+
+  const meetingDate = useMemo(() => {
+    const raw = selectedEventDateFrom;
+    if (!raw) return todayDate;
+    const s = String(raw);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return todayDate;
+  }, [selectedEventDateFrom, todayDate]);
+
+  const {
+    data: delegateMeetingTimesData,
+    isLoading: delegateMeetingTimesLoading,
+  } = useGetDelegateMeetingTimesQuery(meetingTimesParams || {}, {
+    skip: !isAuthenticated || !user || !isDelegate || !meetingTimesParams,
+  });
+
+  const {
+    data: sponsorMeetingTimesData,
+    isLoading: sponsorMeetingTimesLoading,
+  } = useGetSponsorMeetingTimesQuery(meetingTimesParams || {}, {
+    skip: !isAuthenticated || !user || isDelegate || !meetingTimesParams,
+  });
+
+  const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
+  const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
+
+  const meetingSlotGroups = useMemo(() => {
+    if (!meetingTimesData) return [];
+
+    const normalized =
+      meetingTimesData?.data &&
+      typeof meetingTimesData.data === 'object' &&
+      !Array.isArray(meetingTimesData.data) &&
+      meetingTimesData.data?.data &&
+      typeof meetingTimesData.data.data === 'object'
+        ? meetingTimesData.data
+        : meetingTimesData;
+
+    const formatDateDDMMYYYY = (yyyyMmDd) => {
+      if (!yyyyMmDd) return '';
+      const [y, m, d] = String(yyyyMmDd).slice(0, 10).split('-');
+      if (!y || !m || !d) return String(yyyyMmDd);
+      return `${d}-${m}-${y}`;
+    };
+
+    const pickTimePart = (value) => {
+      if (!value) return '';
+      const s = String(value);
+      if (s.includes(' ')) return s.split(' ')[1] || s;
+      return s;
+    };
+
+    const toHHMM = (hhmmss) => {
+      const s = String(hhmmss || '');
+      return s.length >= 5 ? s.slice(0, 5) : s;
+    };
+
+    const dataObj = normalized?.data;
+    if (dataObj && typeof dataObj === 'object' && !Array.isArray(dataObj)) {
+      const dates = Array.isArray(normalized?.dates)
+        ? normalized.dates
+        : Object.keys(dataObj || {});
+
+      return (dates || [])
+        .map((dateKey) => {
+          const rawSlots = dataObj?.[dateKey] || [];
+          const items = (Array.isArray(rawSlots) ? rawSlots : [])
+            .map((slot) => {
+              const fromFull = pickTimePart(slot?.meeting_from);
+              const toFull = pickTimePart(slot?.meeting_to);
+              const from = toHHMM(fromFull);
+              const to = toHHMM(toFull);
+              if (!from || !to) return null;
+              return {
+                id: slot?.id ?? `${dateKey}-${fromFull}-${toFull}`,
+                date: dateKey,
+                from,
+                to,
+                fromFull,
+                toFull,
+              };
+            })
+            .filter(Boolean);
+
+          return { date: dateKey, dateLabel: formatDateDDMMYYYY(dateKey), items };
+        })
+        .filter((g) => g.items.length > 0);
+    }
+
+    const arr = Array.isArray(normalized?.data)
+      ? normalized.data
+      : Array.isArray(normalized)
+        ? normalized
+        : Array.isArray(normalized?.data?.data)
+          ? normalized.data.data
+          : [];
+
+    const items = arr
+      .map((slot) => {
+        const fromFull = pickTimePart(slot?.meeting_from);
+        const toFull = pickTimePart(slot?.meeting_to);
+        const from = toHHMM(fromFull);
+        const to = toHHMM(toFull);
+        if (!from || !to) {
+          const rawTime = slot?.time || slot?.time_slot || slot?.label || null;
+          if (!rawTime) return null;
+          const t = pickTimePart(rawTime);
+          return { id: slot?.id ?? rawTime, date: meetingDate, from: toHHMM(t), to: '', fromFull: t };
+        }
+        return {
+          id: slot?.id ?? `${meetingDate}-${fromFull}-${toFull}`,
+          date: meetingDate,
+          from,
+          to,
+          fromFull,
+          toFull,
+        };
+      })
+      .filter(Boolean);
+
+    return items.length ? [{ date: meetingDate, dateLabel: formatDateDDMMYYYY(meetingDate), items }] : [];
+  }, [meetingTimesData, meetingDate]);
+
+  const requestedAttendeeIds = useMemo(
+    () => new Set(locallyRequestedIds.filter((id) => Number.isFinite(id))),
+    [locallyRequestedIds]
+  );
+
+  const attendeePriorityMap = useMemo(() => {
+    const map = new Map();
+    Object.entries(localPriorityMap || {}).forEach(([id, text]) => {
+      const n = Number(id);
+      if (Number.isFinite(n) && text) map.set(n, text);
+    });
+    return map;
+  }, [localPriorityMap]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -326,100 +692,213 @@ export const SponsorsScreen = () => {
 
   const filteredSponsors = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    // Use API data if available, otherwise fallback to hardcoded SPONSORS (for non-logged-in or fallback)
-    const baseList = isDelegate ? delegates : (isSponsor ? sponsors : SPONSORS);
+    const baseList = isDelegate ? delegates : isSponsor ? sponsors : SPONSORS;
     if (!q) return baseList;
     return baseList.filter((sponsor) => sponsor.name.toLowerCase().includes(q));
   }, [searchQuery, isDelegate, isSponsor, delegates, sponsors]);
 
-  const renderSponsor = ({ item }) => {
-    const tierStyle = TIER_STYLES[item.tier] || { bg: colors.gray100, text: colors.text };
-    // Use delegate-specific badge color if available, otherwise use tier style
-    const badgeStyle = item.badgeColor || tierStyle;
-    return (
-      <TouchableOpacity 
-        style={styles.card} 
-        activeOpacity={0.8}
-        onPress={() => {
-          router.push({
-            pathname: '/sponsor-details',
-            params: {
-              sponsor: JSON.stringify(item)
-            }
-          });
-        }}
-      >
-        <View style={styles.logoWrapper}>
-          <View
-            style={[
-              styles.logo,
-              { backgroundColor: item.logoBg, width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md },
-            ]}
-          >
-            {item.image ? (
-              <Image
-                source={{ uri: item.image }}
-                style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md }}
-                resizeMode="cover"
-              />
-            ) : (
-              <Text style={styles.logoText}>{item.logoText}</Text>
-            )}
-          </View>
-        </View>
-        <View style={styles.cardInfo}>
-          <Text style={styles.cardTitle}>{item.name}</Text>
-          <View style={[styles.badge, { backgroundColor: badgeStyle.bg }]}>
-            <Text style={[styles.badgeText, { color: badgeStyle.text }]}>{item.company || item.tier}</Text>
-          </View>
-        </View>
-        <TouchableOpacity 
-          style={styles.chatButton} 
-          activeOpacity={0.7}
-          onPress={(e) => {
-            e.stopPropagation();
-            
-            // Get the ID from item (could be from delegates or sponsors)
-            const itemId = item.id || item.raw?.id;
-            
-            if (!itemId) {
-              Alert.alert('Error', 'Invalid user information');
-              return;
-            }
+  const listWithMeetingState = useMemo(() => {
+    return filteredSponsors.map((item) => {
+      const attendee = item.raw ? { ...item, ...item.raw } : item;
+      const numericId = Number(item.id ?? item.raw?.id) || Number(item.id);
+      const outcomeFlag =
+        pickOutcomeFlag(attendeeOutcomeMap, attendee, isDelegate) ??
+        (Number.isFinite(numericId)
+          ? attendeeOutcomeMap.get(numericId) ?? attendeeOutcomeMap.get(String(numericId))
+          : null);
+      const requestOutcome =
+        outcomeFlag === 1 ? 'accepted' : outcomeFlag === 2 ? 'declined' : null;
+      const hasLocalRequest = Number.isFinite(numericId) && locallyRequestedIds.includes(numericId);
+      const mappedPriorityText = attendeePriorityMap.get(numericId) || null;
+      const priorityText = localPriorityMap[numericId] || mappedPriorityText || null;
+      const hasPendingRequest =
+        !requestOutcome && (hasLocalRequest || requestedAttendeeIds.has(numericId));
 
-            // Determine user_type based on what we're viewing
-            // If viewing delegates (isDelegate = true), recipient is delegate
-            // If viewing sponsors (isSponsor = true), recipient is sponsor
-            const recipientType = isDelegate ? 'delegate' : 'sponsor';
-            
-            // Create thread object for MessageDetailScreen
-            const thread = {
-              id: String(itemId),
-              user_id: Number(itemId), // Must be number for API
-              user_type: recipientType, // Recipient type (delegate or sponsor)
-              name: item.name,
-              user_name: item.name,
-              avatar: item.image,
-              user_image: item.image,
-              company: item.company,
-              email: item.email,
-            };
-            
-            router.push({
-              pathname: '/message-detail',
-              params: {
-                thread: JSON.stringify(thread),
-                returnTo: 'sponsors', // Track where we came from
-                returnItem: JSON.stringify(item), // Pass item data to navigate back if needed
-              }
-            });
-          }}
-        >
-          <ChatIcon color={colors.primary} />
-        </TouchableOpacity>
-      </TouchableOpacity>
-    );
+      return {
+        ...item,
+        hasRequest: hasPendingRequest,
+        requestOutcome,
+        priorityText,
+      };
+    });
+  }, [
+    filteredSponsors,
+    attendeeOutcomeMap,
+    isDelegate,
+    locallyRequestedIds,
+    localPriorityMap,
+    attendeePriorityMap,
+    requestedAttendeeIds,
+  ]);
+
+  const openModal = useCallback(
+    (attendee) => {
+      const attendeeId = attendee?.id ? Number(attendee.id) : null;
+      const existingPriority = attendeeId ? attendeePriorityMap.get(attendeeId) : null;
+      setSelectedPriority(existingPriority || '1st');
+      setSelectedAttendee(attendee);
+      setIsSendingRequest(false);
+      setIsRequestSuccess(false);
+      setSelectedTimeSlot(null);
+      setModalStep('priority');
+      setIsModalVisible(true);
+    },
+    [attendeePriorityMap]
+  );
+
+  const closeModal = useCallback(() => {
+    setIsModalVisible(false);
+    setIsSendingRequest(false);
+    setIsRequestSuccess(false);
+    setSelectedTimeSlot(null);
+    setModalStep('priority');
+  }, []);
+
+  useEffect(() => {
+    if (isModalVisible) {
+      Animated.spring(modalAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 8,
+      }).start();
+    } else if (selectedAttendee) {
+      Animated.timing(modalAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setSelectedAttendee(null);
+      });
+    }
+  }, [isModalVisible, modalAnim, selectedAttendee]);
+
+  const openTimeModal = useCallback(() => {
+    if (!selectedAttendee) return;
+
+    const raw = Number(eventId);
+    const effectiveEventId = Number.isFinite(raw) && raw > 0 ? raw : 27;
+    const date = meetingDate;
+    const dateFrom = selectedEventDateFrom ? String(selectedEventDateFrom).slice(0, 10) : null;
+    const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : null;
+
+    const timeParams = { event_id: effectiveEventId, date };
+    if (dateFrom && dateTo) {
+      timeParams.date_from = dateFrom;
+      timeParams.date_to = dateTo;
+      if (isDelegate && selectedAttendee?.id) timeParams.target_sponsor_id = Number(selectedAttendee.id);
+      if (!isDelegate && selectedAttendee?.id) timeParams.target_delegate_id = Number(selectedAttendee.id);
+    }
+
+    setMeetingTimesParams(timeParams);
+    setSelectedTimeSlot(null);
+    setModalStep('time');
+  }, [selectedAttendee, eventId, meetingDate, selectedEventDateFrom, selectedEventDateTo, isDelegate]);
+
+  const closeTimeModal = useCallback(() => {
+    setModalStep('priority');
+  }, []);
+
+  const getDefaultSlot = useCallback(() => {
+    const d = meetingTimesParams?.date || meetingDate || todayDate;
+    return {
+      date: d,
+      from: '09:00',
+      to: '09:30',
+      fromFull: '09:00:00',
+      toFull: '09:30:00',
+    };
+  }, [meetingTimesParams?.date, meetingDate, todayDate]);
+
+  const handleSendMeetingRequest = async (slot) => {
+    if (!selectedAttendee) return;
+
+    try {
+      if (!selectedAttendee.id) {
+        Alert.alert('Error', `Invalid ${isDelegate ? 'sponsor' : 'delegate'} ID`);
+        return;
+      }
+
+      setIsSendingRequest(true);
+      setIsRequestSuccess(false);
+
+      const priorityMap = { '1st': 1, '2nd': 2, '3rd': 3 };
+      const priorityValue = priorityMap[selectedPriority] || 1;
+
+      const effectiveSlot = slot || getDefaultSlot();
+      const meetingDateVal = effectiveSlot?.date || meetingTimesParams?.date || meetingDate || todayDate;
+      const meetingTimeFrom = effectiveSlot?.fromFull || (effectiveSlot?.from ? `${effectiveSlot.from}:00` : null);
+      const meetingTimeTo = effectiveSlot?.toFull || (effectiveSlot?.to ? `${effectiveSlot.to}:00` : null);
+
+      if (!meetingTimeFrom || !meetingTimeTo) {
+        Alert.alert('Error', 'Please select a valid time slot');
+        setIsSendingRequest(false);
+        return;
+      }
+
+      const requestData = isDelegate
+        ? {
+            sponsor_id: Number(selectedAttendee.id),
+            event_id: Number(eventId || 27),
+            priority: priorityValue,
+            meeting_date: meetingDateVal,
+            meeting_time_from: meetingTimeFrom,
+            meeting_time_to: meetingTimeTo,
+            message: '',
+          }
+        : {
+            delegate_id: Number(selectedAttendee.id),
+            event_id: Number(eventId || 27),
+            priority: priorityValue,
+            meeting_date: meetingDateVal,
+            meeting_time_from: meetingTimeFrom,
+            meeting_time_to: meetingTimeTo,
+            message: '',
+          };
+
+      await createMeetingRequest(requestData).unwrap();
+
+      const numericId = Number(selectedAttendee.id);
+      setLocallyRequestedIds((prev) => (prev.includes(numericId) ? prev : [...prev, numericId]));
+      setLocalPriorityMap((prev) => ({ ...prev, [numericId]: selectedPriority }));
+
+      setIsSendingRequest(false);
+      setIsRequestSuccess(true);
+      setModalStep('priority');
+      refetchMeetingOutcomes();
+    } catch (e) {
+      console.error('Error sending meeting request:', e);
+      setIsSendingRequest(false);
+      setIsRequestSuccess(false);
+      Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
+    }
   };
+
+  const onOpenDetails = useCallback(
+    (item) => {
+      router.push({
+        pathname: '/sponsor-details',
+        params: {
+          sponsor: JSON.stringify(item),
+          returnTo: 'sponsors',
+          eventDateFrom: selectedEventDateFrom || '',
+        },
+      });
+    },
+    [selectedEventDateFrom]
+  );
+
+  const renderSponsor = useCallback(
+    ({ item }) => (
+      <SponsorListRow
+        item={item}
+        SIZES={SIZES}
+        styles={styles}
+        onOpenDetails={onOpenDetails}
+        onOpenRequest={openModal}
+      />
+    ),
+    [SIZES, styles, onOpenDetails, openModal]
+  );
 
   // The content and contentWrap styles are restructured to ensure FlatList fills and scrolls
   return (
@@ -445,8 +924,8 @@ export const SponsorsScreen = () => {
           />
           <Text style={styles.countText}>
             {isDelegate
-              ? `${filteredSponsors.length} Delegates found`
-              : `${filteredSponsors.length} Sponsors found`}
+              ? `${listWithMeetingState.length} Delegates found`
+              : `${listWithMeetingState.length} Sponsors found`}
           </Text>
         </View>
         {isLoading ? (
@@ -459,27 +938,244 @@ export const SponsorsScreen = () => {
           </View>
         ) : (
           <FlatList
-            data={filteredSponsors}
-            keyExtractor={(item) => item.id}
+            data={listWithMeetingState}
+            keyExtractor={(item) =>
+              `${String(item.id)}-${item.requestOutcome ?? 'n'}-${item.hasRequest ? 'p' : 'o'}`
+            }
             renderItem={renderSponsor}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
             showsVerticalScrollIndicator={true}
             contentContainerStyle={[
               styles.listContent,
-              filteredSponsors.length === 0 && { flex: 1 },
-              { paddingHorizontal: SIZES.paddingHorizontal }
+              listWithMeetingState.length === 0 && { flex: 1 },
+              { paddingHorizontal: SIZES.paddingHorizontal },
             ]}
             bounces={true}
             style={{ flex: 1, backgroundColor: '#F9FAFB' }}
             keyboardShouldPersistTaps="handled"
+            extraData={attendeeOutcomeMap.size}
           />
         )}
       </KeyboardAvoidingView>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isModalVisible || !!selectedAttendee}
+        onRequestClose={closeModal}
+      >
+        <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
+          <Animated.View
+            style={[
+              styles.modalCard2,
+              {
+                transform: [
+                  {
+                    translateY: modalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.modalHeader2}>
+              {modalStep === 'time' ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.modalHeaderSide}
+                    onPress={closeTimeModal}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  >
+                    <Text style={styles.closeText}>←</Text>
+                  </TouchableOpacity>
+                  <Text style={[styles.modalTitle2, styles.modalTitleCenter]}>Select Time Slot</Text>
+                  <TouchableOpacity style={styles.modalHeaderSide} onPress={closeModal}>
+                    <Text style={styles.closeText}>✕</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.modalTitle2}>Send Meeting Request</Text>
+                  <TouchableOpacity onPress={closeModal}>
+                    <Text style={styles.closeText}>✕</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+
+            {modalStep === 'time' ? (
+              <>
+                {meetingTimesLoading ? (
+                  <View style={styles.loadingContainerModal}>
+                    <ActivityIndicator size="large" color={colors.primary} />
+                    <Text style={styles.loadingTextModal}>Loading time slots...</Text>
+                  </View>
+                ) : meetingSlotGroups.length === 0 ? (
+                  <View style={styles.loadingContainerModal}>
+                    <Text style={styles.loadingTextModal}>No time slots available.</Text>
+                    <Text style={[styles.loadingTextModal, { marginTop: 8, fontSize: 12 }]}>
+                      You can still send a request with a default time.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.modalButton, styles.primaryButton, { marginTop: 16, opacity: isSendingRequest ? 0.6 : 1 }]}
+                      onPress={() => handleSendMeetingRequest(getDefaultSlot())}
+                      disabled={isSendingRequest}
+                      activeOpacity={0.85}
+                    >
+                      {isSendingRequest ? (
+                        <ActivityIndicator size="small" color={colors.white} />
+                      ) : (
+                        <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send with Default Time</Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.modalButton, styles.cancelButton, { marginTop: 8 }]}
+                      onPress={closeTimeModal}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <>
+                    <ScrollView style={{ maxHeight: 260 }} contentContainerStyle={{ paddingVertical: 4 }} showsVerticalScrollIndicator>
+                      {meetingSlotGroups.map((group) => (
+                        <View key={group.date} style={styles.slotGroup}>
+                          <Text style={styles.slotGroupTitle}>{group.dateLabel}</Text>
+                          {group.items.map((it) => {
+                            const key = `${it.date}-${it.fromFull || it.from}-${it.to}`;
+                            const isActive =
+                              selectedTimeSlot &&
+                              selectedTimeSlot.date === it.date &&
+                              selectedTimeSlot.fromFull === it.fromFull &&
+                              selectedTimeSlot.to === it.to;
+                            return (
+                              <TouchableOpacity
+                                key={key}
+                                style={[styles.priorityChip, isActive && styles.priorityChipActive, { marginVertical: 4 }]}
+                                onPress={() => setSelectedTimeSlot(isActive ? null : it)}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>
+                                  {it.to ? `${it.from} to ${it.to}` : it.from}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      ))}
+                    </ScrollView>
+                    <View style={styles.separator3} />
+                    <View style={styles.modalButtonRow}>
+                      <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
+                        <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.modalButton,
+                          styles.primaryButton,
+                          (!selectedTimeSlot || isSendingRequest) && { opacity: 0.6 },
+                        ]}
+                        onPress={() => {
+                          if (!selectedTimeSlot) return;
+                          handleSendMeetingRequest(selectedTimeSlot);
+                        }}
+                        disabled={!selectedTimeSlot || isSendingRequest}
+                      >
+                        {isSendingRequest ? (
+                          <ActivityIndicator size="small" color={colors.white} />
+                        ) : (
+                          <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Send Request</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </>
+            ) : selectedAttendee && isRequestSuccess ? (
+              <View style={styles.successContainer}>
+                <View style={styles.successIconContainer}>
+                  <MaterialCommunityIcons name="check-circle" size={64} color={colors.primary} />
+                </View>
+                <Text style={styles.successTitle}>Request Sent Successfully!</Text>
+                <Text style={styles.successMessage}>
+                  Your meeting request has been sent to {selectedAttendee?.name || 'this attendee'}.
+                </Text>
+                <View style={styles.successButtonContainer}>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.primaryButton, styles.successButton]}
+                    onPress={closeModal}
+                  >
+                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : selectedAttendee && isSendingRequest ? (
+              <View style={styles.loadingContainerModal}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingTextModal}>Sending request...</Text>
+              </View>
+            ) : selectedAttendee ? (
+              <>
+                <View style={styles.modalContactRow}>
+                  <View style={styles.modalAvatar}>
+                    {selectedAttendee.image ? (
+                      <Image source={{ uri: selectedAttendee.image }} style={styles.avatarImage} />
+                    ) : (
+                      <View
+                        style={[
+                          styles.avatarImage,
+                          { backgroundColor: colors.gray200, alignItems: 'center', justifyContent: 'center' },
+                        ]}
+                      >
+                        <UserIcon size={24} color={colors.textMuted} />
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.modalContactInfo}>
+                    <Text style={styles.modalContactName}>{selectedAttendee.name}</Text>
+                    <Text style={styles.modalContactCompany}>{selectedAttendee.company || '—'}</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.priorityLabel}>Select Priority</Text>
+                <View style={styles.priorityRow}>
+                  {['1st', '2nd'].map((level) => {
+                    const isActive = selectedPriority === level;
+                    return (
+                      <TouchableOpacity
+                        key={level}
+                        style={[styles.priorityChip, isActive && styles.priorityChipActive]}
+                        onPress={() => setSelectedPriority(level)}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[styles.priorityChipText, isActive && styles.priorityChipTextActive]}>{level}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <View style={styles.separator3} />
+                <View style={styles.modalButtonRow}>
+                  <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeModal}>
+                    <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.modalButton, styles.primaryButton]} onPress={openTimeModal} activeOpacity={0.85}>
+                    <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Select Time</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : null}
+          </Animated.View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 };
 
-const createStyles = (SIZES) => StyleSheet.create({
+const createStyles = (SIZES, isTablet) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
@@ -554,9 +1250,250 @@ const createStyles = (SIZES) => StyleSheet.create({
     fontSize: SIZES.body,
     fontWeight: '600',
   },
-  chatButton: {
+  rowAccepted: {
+    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.5)',
+  },
+  rowDeclined: {
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  rowRequested: {
+    backgroundColor: 'rgba(16, 185, 129, 0.06)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.6)',
+  },
+  requestButton: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    maxWidth: 128,
+  },
+  requestButtonDisabled: {
+    backgroundColor: colors.gray200 || '#E5E7EB',
+    opacity: 0.7,
+  },
+  requestButtonAccepted: {
+    backgroundColor: '#22C55E',
+    opacity: 1,
+  },
+  requestButtonDeclined: {
+    backgroundColor: '#EF4444',
+    opacity: 1,
+  },
+  requestButtonText: {
+    color: colors.white,
+    fontWeight: '600',
+    fontSize: SIZES.body - 1,
+    textAlign: 'center',
+  },
+  requestButtonTextDisabled: {
+    color: colors.textMuted || '#6B7280',
+  },
+  requestButtonTextAccepted: {
+    color: colors.white,
+  },
+  requestButtonTextDeclined: {
+    color: colors.white,
+  },
+  modalBackdrop2: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  modalCard2: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 34,
+    width: '100%',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+      },
+      android: {
+        elevation: 5,
+      },
+    }),
+  },
+  modalHeader2: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalHeaderSide: {
+    minWidth: 32,
+  },
+  modalTitleCenter: {
+    flex: 1,
+    textAlign: 'center',
+  },
+  modalTitle2: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  closeText: {
+    fontSize: 20,
+    color: colors.textMuted,
+  },
+  modalContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: colors.gray50,
+    marginBottom: 16,
+  },
+  modalAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: 'hidden',
+    marginRight: 12,
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  modalContactInfo: {
+    flex: 1,
+  },
+  modalContactName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  modalContactCompany: {
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  priorityLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  priorityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  priorityChip: {
+    flex: 1,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    marginHorizontal: 4,
+    alignItems: 'center',
+  },
+  priorityChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  priorityChipText: {
+    color: colors.text,
+    fontWeight: '600',
+  },
+  priorityChipTextActive: {
+    color: colors.white,
+  },
+  separator3: {
+    backgroundColor: colors.gray100,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 20,
+    opacity: 0.5,
+  },
+  modalButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    borderRadius: radius.md,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  cancelButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  primaryButton: {
+    backgroundColor: colors.primary,
+  },
+  modalButtonText: {
+    fontWeight: '600',
+  },
+  cancelButtonText: {
+    color: colors.text,
+  },
+  primaryButtonText: {
+    color: colors.white,
+  },
+  slotGroup: {
+    marginBottom: 8,
+  },
+  slotGroupTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    marginTop: 6,
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
+  successContainer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  successIconContainer: {
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  successMessage: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 16,
+    lineHeight: 20,
+  },
+  successButtonContainer: {
+    width: '100%',
+    marginTop: 8,
+  },
+  successButton: {
+    flex: 0,
+  },
+  loadingContainerModal: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 40,
+  },
+  loadingTextModal: {
+    marginTop: 16,
+    fontSize: 14,
+    color: colors.textMuted,
+    fontWeight: '600',
   },
 });
 

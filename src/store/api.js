@@ -170,6 +170,36 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   
   let result = await baseQuery(args, api, extraOptions);
 
+  // Some backends return HTTP 4xx/5xx on the first meeting-request call but JSON still says success.
+  // fetchBaseQuery treats any non-2xx as error → unwrap() throws even when the request actually worked.
+  // Normalize to success when the body clearly indicates the meeting was created.
+  if (result.error && typeof args.url === 'string') {
+    const url = args.url;
+    const isSendMeetingRequest =
+      url.includes('send-meeting-request') ||
+      url === API_ENDPOINTS.DELEGATE_SEND_MEETING_REQUEST ||
+      url === API_ENDPOINTS.SPONSOR_SEND_MEETING_REQUEST;
+    if (isSendMeetingRequest) {
+      const d = result.error.data;
+      const bodyIndicatesSuccess =
+        d &&
+        typeof d === 'object' &&
+        (d.success === true ||
+          d.success === 1 ||
+          String(d.success).toLowerCase() === 'true' ||
+          d.data?.success === true ||
+          d.data?.success === 1);
+      if (bodyIndicatesSuccess) {
+        console.warn(
+          '⚠️ Meeting request: HTTP status was',
+          result.error.status,
+          'but response body indicates success. Treating as success.'
+        );
+        return { data: d };
+      }
+    }
+  }
+
   // Handle errors with retry logic for network errors
   if (result.error) {
     const errorStatus = result.error.status;

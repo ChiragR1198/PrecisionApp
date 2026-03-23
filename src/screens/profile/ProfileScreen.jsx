@@ -431,10 +431,11 @@ export const ProfileScreen = () => {
         body: getResponsiveValue({ android: 14, ios: 15, tablet: 15, default: 14 }),
         inputHeight: getResponsiveValue({ android: 44, ios: 44, tablet: 46, default: 44 }),
         iconSize: getResponsiveValue({ android: 18, ios: 18, tablet: 20, default: 18 }),
-        profilePictureSize: getResponsiveValue({ android: 100, ios: 100, tablet: 120, default: 100 }),
+        profilePictureSize: getResponsiveValue({ android: 118, ios: 118, tablet: 138, default: 118 }),
         cameraIconSize: getResponsiveValue({ android: 16, ios: 16, tablet: 18, default: 16 }),
-        cameraButtonSize: getResponsiveValue({ android: 32, ios: 32, tablet: 36, default: 32 }),
-        bannerMinHeight: getResponsiveValue({ android: 180, ios: 180, tablet: 200, default: 180 }),
+        cameraButtonSize: getResponsiveValue({ android: 34, ios: 34, tablet: 38, default: 34 }),
+        profileBannerActionIconSize: getResponsiveValue({ android: 14, ios: 14, tablet: 15, default: 14 }),
+        bannerMinHeight: getResponsiveValue({ android: 188, ios: 188, tablet: 208, default: 188 }),
         notificationIconSize: getResponsiveValue({ android: 18, ios: 18, tablet: 20, default: 18 }),
       },
       isTablet: isTabletDevice,
@@ -1252,26 +1253,22 @@ export const ProfileScreen = () => {
                 <CameraIcon size={SIZES.cameraIconSize} color={colors.primary}/>
               </TouchableOpacity>
             </View>
-            <TouchableOpacity onPress={handleChangePhoto} activeOpacity={0.8}>
-              <Text style={styles.changePhotoText}>Change Photo</Text>
-            </TouchableOpacity>
 
-            {/* Book a meeting (left) + QR Code (right) - side by side */}
-            <View style={styles.bookMeetingQrRow}>
+            <View style={styles.changePhotoQrRow}>
               <TouchableOpacity
-                style={styles.bookMeetingButton}
-                onPress={() => router.push('/(drawer)/attendees')}
-                activeOpacity={0.85}
+                style={styles.changePhotoButton}
+                onPress={handleChangePhoto}
+                activeOpacity={0.8}
               >
-                <Icon name="users" size={18} color={colors.white} />
-                <Text style={styles.bookMeetingText}>Book a meeting</Text>
+                <CameraIcon size={SIZES.profileBannerActionIconSize} color={colors.white} />
+                <Text style={styles.changePhotoText}>Change Photo</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.qrCodeButton}
                 onPress={handleOpenQRModal}
                 activeOpacity={0.8}
               >
-                <ScannerIcon size={SIZES.cameraIconSize} />
+                <ScannerIcon size={SIZES.profileBannerActionIconSize} />
                 <Text style={styles.qrCodeText}>QR Code</Text>
               </TouchableOpacity>
             </View>
@@ -1976,7 +1973,7 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   profilePictureContainer: {
     position: 'relative',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   profilePicture: {
     backgroundColor: colors.white,
@@ -2014,47 +2011,44 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     shadowRadius: SIZES.cameraButtonSize,
     elevation: 4,
   },
-  changePhotoText: {
-    color: colors.white,
-    fontSize: SIZES.body,
-    fontWeight: '500',
-  },
-  bookMeetingQrRow: {
+  changePhotoQrRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginTop: 12,
+    gap: 8,
+    marginTop: 8,
     width: '100%',
     paddingHorizontal: 20,
   },
-  bookMeetingButton: {
+  changePhotoButton: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    gap: 4,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
     borderRadius: radius.pill,
-    backgroundColor: '#DC2626',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.85)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  bookMeetingText: {
-    fontSize: SIZES.body,
-    fontWeight: '700',
+  changePhotoText: {
     color: colors.white,
+    fontSize: Math.max(12, SIZES.body - 2),
+    fontWeight: '500',
   },
   qrCodeButton: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    gap: 4,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
     borderRadius: radius.pill,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.9)',
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.85)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
   qrCodeContainer: {
     flexDirection: 'row',
@@ -2064,9 +2058,8 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   qrCodeText: {
     color: colors.white,
-    fontSize: SIZES.body,
+    fontSize: Math.max(12, SIZES.body - 2),
     fontWeight: '500',
-    marginLeft: 6,
   },
   qrModalBackdrop: {
     flex: 1,
