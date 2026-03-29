@@ -1,7 +1,6 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -68,6 +67,7 @@ export const MessagesScreen = () => {
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const isSponsor = loginType === 'sponsor';
+  const currentUserId = user?.id ? String(user.id) : String(user?.user_id || user?.delegate_id || user?.sponsor_id || '');
   
   // Fetch messages based on user type - WebSocket is used for real-time updates, so no polling needed
   const { 
@@ -104,7 +104,6 @@ export const MessagesScreen = () => {
   const refetchMessages = isDelegate ? refetchDelegateMessages : refetchSponsorMessages;
   const isFocused = useIsFocused();
   const previousMessagesRef = useRef([]);
-  const [readChats, setReadChats] = useState({}); // Track which chats have been opened
 
   // Request notification permissions on mount
   useEffect(() => {
@@ -156,30 +155,6 @@ export const MessagesScreen = () => {
     
     return cleanup;
   }, []);
-
-  // Load read chats from AsyncStorage - reload every time screen comes into focus
-  useEffect(() => {
-    const loadReadChats = async () => {
-      try {
-        const stored = await AsyncStorage.getItem('read_chats');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          setReadChats(parsed);
-          console.log('📖 Loaded read chats from storage:', parsed);
-          console.log('📖 Read chats keys:', Object.keys(parsed));
-        } else {
-          console.log('📖 No read chats found in storage');
-          setReadChats({});
-        }
-      } catch (error) {
-        console.error('❌ Error loading read chats:', error);
-        setReadChats({});
-      }
-    };
-    
-    // Load on mount and every time screen comes into focus
-    loadReadChats();
-  }, [isFocused]);
 
   // Setup WebSocket for real-time message updates
   const hasInitialRefetch = useRef(false);
@@ -258,6 +233,48 @@ export const MessagesScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  const pickOtherParticipant = useCallback(
+    (item) => {
+      const safe = (v) => (v === undefined || v === null ? '' : String(v).trim());
+      const lower = (v) => safe(v).toLowerCase();
+
+      const meId = safe(currentUserId);
+      const meType = lower(loginType);
+
+      const fromId = safe(item?.from_id || item?.fromId || item?.sender_id || item?.senderId);
+      const toId = safe(item?.to_id || item?.toId || item?.receiver_id || item?.receiverId);
+      const fromType = lower(item?.from_type || item?.fromType || item?.sender_type || item?.senderType);
+      const toType = lower(item?.to_type || item?.toType || item?.receiver_type || item?.receiverType);
+
+      const matchesMe = (id, type) => !!meId && !!id && id === meId && (!type || !meType || type === meType);
+
+      // Prefer explicit from/to fields when available.
+      if (fromId && toId) {
+        if (matchesMe(fromId, fromType)) {
+          return { user_id: toId, user_type: toType || item?.user_type || '' };
+        }
+        if (matchesMe(toId, toType)) {
+          return { user_id: fromId, user_type: fromType || item?.user_type || '' };
+        }
+        // If neither side matches (API may omit type), fallback to "other = user_id".
+      }
+
+      const apiUserId = safe(item?.user_id || item?.id || item?.delegate_id || item?.sponsor_id);
+      const apiUserType = lower(item?.user_type || (item?.delegate_id ? 'delegate' : item?.sponsor_id ? 'sponsor' : ''));
+
+      // If API mistakenly returns current user as user_id, try using the opposite id.
+      if (apiUserId && meId && apiUserId === meId) {
+        const candidateOtherId = fromId && fromId !== meId ? fromId : toId && toId !== meId ? toId : '';
+        const candidateOtherType =
+          (candidateOtherId === fromId ? fromType : candidateOtherId === toId ? toType : '') || apiUserType;
+        if (candidateOtherId) return { user_id: candidateOtherId, user_type: candidateOtherType };
+      }
+
+      return { user_id: apiUserId, user_type: apiUserType };
+    },
+    [currentUserId, loginType]
+  );
+
   // Map API messages to chat thread format
   const chatThreads = useMemo(() => {
     // Only use API data - no static fallback
@@ -288,45 +305,32 @@ export const MessagesScreen = () => {
     console.log('📭 MessagesScreen: Processed list length:', list.length);
     
     return list.map((item, index) => {
-      const userId = String(item.user_id || item.id || item.delegate_id || item.sponsor_id || `unknown-${index}`);
-      const name = item.user_name || item.name || item.full_name || item.delegate_name || item.sponsor_name || 'Unknown';
-      const avatar = item.user_image || item.image || item.avatar || null;
-      const apiUnreadCount = item.unread_count || item.unreadCount || 0;
-      
-      // Determine user_type - important for sending messages
-      const userType = item.user_type || (item.delegate_id ? 'delegate' : item.sponsor_id ? 'sponsor' : 'delegate');
-      
-      // Check if this chat has been opened (read) by user
-      // Only show unread count if chat has NOT been opened yet
-      // Ensure userId is string to match MessageDetailScreen format
-      const chatKey = `${String(userId)}_${userType}`;
-      const isChatRead = readChats[chatKey] === true;
-      
-      // If chat was previously read, show 0 unread count
-      // Only show API unread count if chat has never been opened
-      const unreadCount = isChatRead ? 0 : apiUnreadCount;
+      const other = pickOtherParticipant(item);
+      const userId = String(other.user_id || `unknown-${index}`);
+      const userType = (other.user_type || '').toLowerCase() || (item?.delegate_id ? 'delegate' : item?.sponsor_id ? 'sponsor' : 'delegate');
+
+      // Prefer explicit "other user" naming fields if present.
+      const name =
+        item.user_name ||
+        item.name ||
+        item.full_name ||
+        item.delegate_name ||
+        item.sponsor_name ||
+        item.to_name ||
+        item.from_name ||
+        'Unknown';
+      const avatar = item.user_image || item.image || item.avatar || item.to_image || item.from_image || null;
+      // Same source as drawer total: server unread_count (user_chat_messages.is_read for incoming)
+      const unreadCount = Number(item.unread_count ?? item.unreadCount) || 0;
       
       const lastMessage = item.last_message || item.message || item.lastMessage || '';
       const lastMessageDate = item.last_message_date || item.last_message_date || item.date || item.created_at || '';
       const time = formatMessageTime(lastMessageDate);
       
-      // Debug logging for all chats with unread messages or if read
-      if (apiUnreadCount > 0 || isChatRead) {
-        console.log(`📖 Chat: ${name} (${chatKey}):`, {
-          userId: String(userId),
-          userType,
-          chatKey,
-          isChatRead,
-          apiUnreadCount,
-          displayUnreadCount: unreadCount,
-          readChatsKeys: Object.keys(readChats),
-        });
-      }
-      
       return {
         id: userId,
-        user_id: item.user_id || item.id || item.delegate_id || item.sponsor_id, // Keep original user_id for API calls
-        user_type: userType, // Keep user_type for determining to_type
+        user_id: userId, // Other user's id for API calls
+        user_type: userType, // Other user's type for determining to_type
         name,
         message: lastMessage,
         time,
@@ -336,7 +340,7 @@ export const MessagesScreen = () => {
         messages: [], // Will be loaded in detail screen
       };
     });
-  }, [messagesData, readChats]);
+  }, [messagesData, pickOtherParticipant]);
 
   const filteredChats = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();

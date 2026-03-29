@@ -1,13 +1,13 @@
 import { useNavigation } from '@react-navigation/native';
 import React, { useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    FlatList,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    useWindowDimensions,
-    View
+  ActivityIndicator,
+  FlatList,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -96,31 +96,58 @@ export const ItineraryScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  // Normalize API response shapes (some endpoints return `data: [...]`,
+  // others return `data: { data: [...] }`)
+  const itineraryItems = useMemo(() => {
+    const d = itineraryData;
+    if (!d) return [];
+    if (Array.isArray(d?.data)) return d.data;
+    if (Array.isArray(d?.data?.data)) return d.data.data;
+    if (Array.isArray(d?.items)) return d.items;
+    if (Array.isArray(d?.results)) return d.results;
+    return [];
+  }, [itineraryData]);
+
   // Map API data to UI format and group by date
   const itinerary = useMemo(() => {
-    if (!itineraryData?.data || !Array.isArray(itineraryData.data)) return [];
+    if (!itineraryItems.length) return [];
 
     // Group items by date
     const groupedByDate = {};
-    itineraryData.data.forEach((item) => {
-      const date = item.date || '';
-      if (!date) return;
+    itineraryItems.forEach((item) => {
+      const date = item.date || item.meeting_date || item.schedule_date || '';
+      const groupKey = date || '__no_date__';
+      if (!groupedByDate[groupKey]) groupedByDate[groupKey] = [];
 
-      if (!groupedByDate[date]) {
-        groupedByDate[date] = [];
-      }
-
-      // Get delegate/sponsor info (handle both delegate and sponsor fields)
-      const fullName = 
-        item.delegate_full_name || 
+      // Show the "other party" name depending on login type:
+      // - Delegate itinerary should show Sponsor name
+      // - Sponsor itinerary should show Delegate name
+      const sponsorName =
         item.sponsor_full_name ||
-        `${(item.delegate_fname || item.sponsor_fname || '')} ${(item.delegate_lname || item.sponsor_lname || '')}`.trim() ||
+        item.sponsor_name ||
+        item.sponsor ||
+        `${(item.sponsor_fname || '')} ${(item.sponsor_lname || '')}`.trim();
+      const delegateName =
+        item.delegate_full_name ||
+        item.delegate_name ||
+        item.delegate ||
+        `${(item.delegate_fname || '')} ${(item.delegate_lname || '')}`.trim();
+
+      const fullName =
+        (isDelegate ? sponsorName : delegateName) ||
+        // Fallback to whichever exists (API responses vary by endpoint)
+        sponsorName ||
+        delegateName ||
+        item.full_name ||
         item.name ||
         'Unknown';
-      
-      const company = item.delegate_company || item.sponsor_company || item.company || '';
-      const jobTitle = item.delegate_job_title || item.sponsor_job_title || item.job_title || '';
-      const time = formatTime(item.time);
+
+      const company =
+        (isDelegate ? (item.sponsor_company || item.company) : (item.delegate_company || item.company)) || '';
+      const jobTitle =
+        (isDelegate ? (item.sponsor_job_title || item.job_title) : (item.delegate_job_title || item.job_title)) || '';
+      const rawTime = (item.time || item.meeting_time || item.time_from || '').toString();
+      const time = formatTime(rawTime);
       const priority = item.priority || '1';
       const tableNo = item.table_no || '';
 
@@ -131,12 +158,13 @@ export const ItineraryScreen = () => {
       if (tableNo) subtitle += (subtitle ? ' • ' : '') + `Table ${tableNo}`;
       if (!subtitle) subtitle = 'Meeting';
 
-      groupedByDate[date].push({
+      groupedByDate[groupKey].push({
         id: String(item.id),
         title: fullName,
         subtitle,
         icon: getEventIcon(priority),
         time,
+        rawTime,
         date,
         priority,
       });
@@ -151,22 +179,23 @@ export const ItineraryScreen = () => {
     return Object.keys(groupedByDate)
       .sort()
       .map((date, index) => {
-        const dateObj = new Date(date);
-        const formattedDate = formatDate(date);
+        const isNoDate = date === '__no_date__';
+        const dateObj = isNoDate ? null : new Date(date);
+        const formattedDate = isNoDate ? 'Itinerary' : formatDate(date);
         return {
           id: `day-${date}`,
           day: formattedDate,
-          date: date,
+          date: isNoDate ? '' : date,
           dateObj,
           events: groupedByDate[date].sort((a, b) => {
-            // Sort events by time
-            const timeA = a.time || '';
-            const timeB = b.time || '';
+            // Sort events by raw time (HH:MM:SS) when available
+            const timeA = (a?.rawTime || a?.time || '').toString();
+            const timeB = (b?.rawTime || b?.time || '').toString();
             return timeA.localeCompare(timeB);
           }),
         };
       });
-  }, [itineraryData]);
+  }, [itineraryItems]);
 
   const filteredItinerary = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();

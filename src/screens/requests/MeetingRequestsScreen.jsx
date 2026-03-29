@@ -1,5 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -54,6 +55,38 @@ function extractMeetingRequestsList(response) {
   return [];
 }
 
+function formatMeetingTimeShort(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${min} ${ampm}`;
+}
+
+function formatMeetingDateDisplay(raw) {
+  if (!raw) return '';
+  const s = String(raw).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, mo, d] = s.split('-');
+    return `${d}/${mo}/${y}`;
+  }
+  return String(raw);
+}
+
+function buildMeetingWhenLabelFromRaw(raw) {
+  if (!raw || typeof raw !== 'object') return '';
+  const d = raw.date ?? raw.meeting_date;
+  const t = raw.time ?? raw.meeting_time_from ?? raw.meeting_time_to ?? raw.meeting_time;
+  if (!d && !t) return '';
+  return [d ? formatMeetingDateDisplay(d) : null, t ? formatMeetingTimeShort(t) : null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 // const FILTERS = ['All', 'Sponsors', 'Delegates']; // Filters disabled as per request
 
 // Static dummy contacts list (now unused; kept for reference only)
@@ -72,7 +105,7 @@ export const MeetingRequestsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const { user } = useAppSelector((state) => state.auth);
-  const { selectedEventId } = useAppSelector((state) => state.event);
+  const { selectedEventId, selectedEventDateFrom } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
 
@@ -188,6 +221,7 @@ export const MeetingRequestsScreen = () => {
                 : 'Sponsor',
           avatar: item.sponsor_image ? { uri: item.sponsor_image } : UserAvatar,
           currentAction: currentAction,
+          meetingWhenLabel: buildMeetingWhenLabelFromRaw(item),
           raw: item,
         };
       } else {
@@ -208,11 +242,110 @@ export const MeetingRequestsScreen = () => {
               ? { uri: item.delegate_image || item.delegate_avatar || item.image }
               : UserAvatar,
           currentAction: currentAction,
+          meetingWhenLabel: buildMeetingWhenLabelFromRaw(item),
           raw: item,
         };
       }
     });
   }, [requestsData, isDelegate, actionUpdates]);
+
+  /** Sponsor login: tap row → delegate details */
+  const openDelegateDetailsFromRequest = useCallback(
+    (contact) => {
+      const raw = contact?.raw || {};
+      const delegateId = raw.delegate_id ?? raw.delegateId;
+      if (delegateId == null || delegateId === '') {
+        Alert.alert('Error', 'Could not open delegate details (missing delegate id).');
+        return;
+      }
+      const imageUri =
+        raw.delegate_image ||
+        raw.delegate_avatar ||
+        raw.image ||
+        (typeof contact.avatar === 'object' && contact.avatar?.uri
+          ? contact.avatar.uri
+          : null);
+      const actionNum =
+        contact.currentAction !== undefined && contact.currentAction !== null
+          ? Number(contact.currentAction)
+          : null;
+
+      const payload = {
+        id: delegateId != null ? String(delegateId) : '',
+        name: contact.name || raw.delegate_full_name || 'Unknown',
+        role: raw.delegate_job_title || raw.job_title || '',
+        company: contact.company || raw.delegate_company || '',
+        email: raw.delegate_email || raw.email || '',
+        phone: raw.delegate_mobile || raw.mobile || '',
+        linkedin: raw.delegate_linkedin_url || raw.linkedin_url || raw.linkedin || '',
+        address: raw.delegate_address || raw.address || '',
+        bio: raw.bio || '',
+        image: imageUri || raw.delegate_image || null,
+        meetingDate: raw.date || null,
+        meetingTime: raw.time || null,
+        hasRequest: actionNum !== 1 && actionNum !== 2,
+        meetingRequestActionFlag: Number.isFinite(actionNum) ? actionNum : null,
+      };
+      router.push({
+        pathname: '/delegate-details',
+        params: {
+          delegate: JSON.stringify(payload),
+          returnTo: 'meeting-requests',
+          eventDateFrom: selectedEventDateFrom ? String(selectedEventDateFrom) : '',
+        },
+      });
+    },
+    [selectedEventDateFrom]
+  );
+
+  /** Delegate login: tap row → sponsor details (same route as Event Sponsors list) */
+  const openSponsorDetailsFromRequest = useCallback(
+    (contact) => {
+      const raw = contact?.raw || {};
+      const sponsorId = raw.sponsor_id ?? raw.sponsor ?? raw.sponsorId;
+      if (sponsorId == null || sponsorId === '') {
+        Alert.alert('Error', 'Could not open sponsor details (missing sponsor id).');
+        return;
+      }
+      const imageUri =
+        raw.sponsor_image ||
+        (typeof contact.avatar === 'object' && contact.avatar?.uri
+          ? contact.avatar.uri
+          : null);
+      const actionNum =
+        contact.currentAction !== undefined && contact.currentAction !== null
+          ? Number(contact.currentAction)
+          : null;
+
+      const payload = {
+        id: String(sponsorId),
+        name: contact.name || raw.sponsor_name || 'Unknown',
+        role: raw.sponsor_job_title || '',
+        company: contact.company || raw.sponsor_company || '',
+        email: raw.sponsor_email || '',
+        phone: raw.sponsor_mobile || '',
+        linkedin: raw.sponsor_linkedin_url || raw.linkedin_url || '',
+        address: raw.sponsor_address || '',
+        bio: raw.biography || raw.company_information || raw.bio || '',
+        image: imageUri,
+        meetingDate: raw.date || null,
+        meetingTime: raw.time || null,
+        hasRequest: actionNum !== 1 && actionNum !== 2,
+        meetingRequestActionFlag: Number.isFinite(actionNum) ? actionNum : null,
+      };
+
+      router.push({
+        pathname: '/delegate-details',
+        params: {
+          delegate: JSON.stringify(payload),
+          profileType: 'sponsor',
+          returnTo: 'meeting-requests',
+          eventDateFrom: selectedEventDateFrom ? String(selectedEventDateFrom) : '',
+        },
+      });
+    },
+    [selectedEventDateFrom]
+  );
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -364,11 +497,18 @@ export const MeetingRequestsScreen = () => {
     }
   }, [isActionModalVisible, actionModalAnim]);
 
-  const renderContact = ({ item }) => (
-    <View style={styles.contactRow}>
+  const renderContact = ({ item }) => {
+    const isAccepted = item.currentAction === 1;
+    const isDeclined = item.currentAction === 2;
+    const acceptLabel = isAccepted ? 'Accepted' : 'Accept';
+    const declineLabel = isDeclined ? 'Declined' : 'Decline';
+
+    const avatarBlock = (
       <View style={[styles.avatarWrapper, { width: SIZES.avatarSize, height: SIZES.avatarSize, borderRadius: SIZES.avatarSize / 2 }]}>
         <Image source={item.avatar} style={styles.avatarImage} />
       </View>
+    );
+    const infoBlock = (
       <View style={styles.contactInfo}>
         <Text style={styles.contactName}>{item.name}</Text>
         {item.company ? <Text style={styles.contactCompany}>{item.company}</Text> : null}
@@ -378,68 +518,51 @@ export const MeetingRequestsScreen = () => {
           </Text>
         </View>
       </View>
-      {/*
-      <TouchableOpacity
-        style={styles.requestButton}
-        activeOpacity={0.85}
-        onPress={() => openModal(item)}
-      >
-        <Text style={styles.requestButtonText}>Request</Text>
-      </TouchableOpacity>
-      */}
+    );
 
-      {/* New Accept / Decline buttons */}
-      {/** Default: dono outline. Press hone par jis pe action hua ho,
-       *  us button ka background fill ho jayega.
-       */}
-      {(() => {
-        const isAccepted = item.currentAction === 1;
-        const isDeclined = item.currentAction === 2;
+    return (
+      <View style={styles.contactRow}>
+        <TouchableOpacity
+          style={styles.contactRowLeft}
+          activeOpacity={0.85}
+          onPress={() =>
+            isDelegate ? openSponsorDetailsFromRequest(item) : openDelegateDetailsFromRequest(item)
+          }
+        >
+          {avatarBlock}
+          {infoBlock}
+        </TouchableOpacity>
 
-        const acceptLabel = isAccepted ? 'Accepted' : 'Accept';
-        const declineLabel = isDeclined ? 'Declined' : 'Decline';
-
-        return (
+        <View style={styles.actionColumn}>
           <View style={styles.actionButtons}>
             <TouchableOpacity
-              style={[
-                styles.actionButton,
-                isDeclined && styles.declineButtonActive,
-              ]}
+              style={[styles.actionButton, isDeclined && styles.declineButtonActive]}
               activeOpacity={0.85}
               onPress={() => handleAction(item, 2)}
             >
-              <Text
-                style={[
-                  styles.actionButtonText,
-                  isDeclined && styles.declineButtonTextActive,
-                ]}
-              >
+              <Text style={[styles.actionButtonText, isDeclined && styles.declineButtonTextActive]}>
                 {declineLabel}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[
-                styles.actionButton,
-                isAccepted && styles.acceptButtonActive,
-              ]}
+              style={[styles.actionButton, isAccepted && styles.acceptButtonActive]}
               activeOpacity={0.85}
               onPress={() => handleAction(item, 1)}
             >
-              <Text
-                style={[
-                  styles.actionButtonText,
-                  isAccepted && styles.acceptButtonTextActive,
-                ]}
-              >
+              <Text style={[styles.actionButtonText, isAccepted && styles.acceptButtonTextActive]}>
                 {acceptLabel}
               </Text>
             </TouchableOpacity>
           </View>
-        );
-      })()}
-    </View>
-  );
+          {isAccepted && item.meetingWhenLabel ? (
+            <Text style={styles.meetingScheduleBelowActions} numberOfLines={2}>
+              {item.meetingWhenLabel}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -507,11 +630,6 @@ export const MeetingRequestsScreen = () => {
             ListEmptyComponent={
               <View style={styles.emptyWrap}>
                 <Text style={styles.emptyText}>No meeting requests found.</Text>
-                <Text style={styles.emptyHint}>
-                  {isDelegate
-                    ? 'Jo request aapne sponsor ko bheji hai, woh sponsor ke login par “Meeting Requests” mein dikhegi. Yahan woh entries aayengi jo server is delegate inbox endpoint par bhejta hai.'
-                    : 'Jo delegates ne aapko meeting request bheji hai, woh yahan dikhengi. Neeche kheench kar refresh bhi kar sakte ho.'}
-                </Text>
               </View>
             }
             showsVerticalScrollIndicator={false}
@@ -761,11 +879,31 @@ const createStyles = (SIZES) => StyleSheet.create({
   },
   contactRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     backgroundColor: colors.white,
     borderRadius: radius.md,
     padding: 14,
     paddingHorizontal: SIZES.paddingHorizontal,
+  },
+  contactRowLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    marginRight: 8,
+  },
+  actionColumn: {
+    alignItems: 'flex-end',
+    gap: 6,
+    flexShrink: 0,
+  },
+  meetingScheduleBelowActions: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: colors.textMuted,
+    textAlign: 'right',
+    lineHeight: 13,
+    maxWidth: 190,
   },
   separator: {
     backgroundColor: colors.gray100,

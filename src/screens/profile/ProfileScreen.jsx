@@ -28,7 +28,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
+import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSaveSponsorContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { logout as logoutAction } from '../../store/slices/authSlice';
 
@@ -257,6 +257,7 @@ export const ProfileScreen = () => {
   const updateProfile = isDelegate ? updateDelegateProfile : updateSponsorProfile;
   const isUpdatingProfile = isDelegate ? isUpdatingDelegateProfile : isUpdatingSponsorProfile;
   const [saveDelegateContact, { isLoading: isSavingContact }] = useSaveDelegateContactMutation();
+  const [saveSponsorContact] = useSaveSponsorContactMutation();
   
   // Extract profile data from API response
   const profile = useMemo(() => {
@@ -671,12 +672,6 @@ export const ProfileScreen = () => {
 
   const handleAddScannedContact = async () => {
     if (!scanResult) return;
-    
-    // Only allow delegate users to save contacts
-    if (!isDelegate) {
-      Alert.alert('Error', 'Only delegate users can save contacts.');
-      return;
-    }
 
     try {
       console.log('Saving contact to API:', scanResult);
@@ -699,9 +694,38 @@ export const ProfileScreen = () => {
       console.log('Contact data being sent:', contactData);
 
       // Call the API to save contact
-      const response = await saveDelegateContact(contactData).unwrap();
+      const response = isDelegate
+        ? await saveDelegateContact(contactData).unwrap()
+        : await saveSponsorContact(contactData).unwrap();
       
       console.log('Contact saved successfully:', response);
+
+      // Optimistic local cache so the contact appears even if backend returns blank/non-JSON.
+      try {
+        const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
+        const currentUserId = String(user?.id || user?.user_id || user?.delegate_id || user?.sponsor_id || '');
+        if (loginType && currentUserId) {
+          const cacheKey = `scanned_contacts_cache_${loginType}_${currentUserId}`;
+          const stored = await AsyncStorage.getItem(cacheKey);
+          const existing = stored ? JSON.parse(stored) : [];
+          const nowIso = new Date().toISOString();
+          const entry = {
+            id: `local-${Date.now()}`,
+            name: contactData.name,
+            email: contactData.email,
+            phone: contactData.phone,
+            company: contactData.company,
+            role: contactData.role,
+            initials: contactData.initials,
+            scanned_at: nowIso,
+            _local: true,
+          };
+          const deduped = Array.isArray(existing) ? existing.filter((c) => String(c?.email || '').toLowerCase() !== String(entry.email || '').toLowerCase()) : [];
+          await AsyncStorage.setItem(cacheKey, JSON.stringify([entry, ...deduped]));
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to cache scanned contact locally:', e?.message || e);
+      }
       
       setIsScanning(false);
       setIsQRModalVisible(false);
@@ -719,7 +743,7 @@ export const ProfileScreen = () => {
             'The save contact endpoint is not available on the server.\n\n' +
             'This endpoint may not be deployed to the staging server yet.\n\n' +
             'Please contact your backend team to deploy the endpoint:\n' +
-            '/delegate/save-contact',
+            (isDelegate ? '/delegate/save-contact' : '/sponsor/save-contact'),
             [{ text: 'OK' }]
           );
         } else {

@@ -25,8 +25,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
+  useGetAllDelegatesQuery,
+  useGetDelegateAttendeesQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
+  useGetSponsorAllAttendeesQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
@@ -95,7 +98,29 @@ function normalizeOutcomeAccepted(raw) {
   return null;
 }
 
-function pickOutcomeFlag(map, attendee, isDelegate) {
+function formatMeetingTimeShort(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${min} ${ampm}`;
+}
+
+function formatMeetingDateDisplay(raw) {
+  if (!raw) return '';
+  const s = String(raw).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, mo, d] = s.split('-');
+    return `${d}/${mo}/${y}`;
+  }
+  return String(raw);
+}
+
+function pickOutcomeInfo(map, attendee, isDelegate) {
   if (!map || !(map instanceof Map) || map.size === 0) return null;
   const raw = attendee && typeof attendee === 'object' ? attendee : {};
   const candidateKeys = isDelegate
@@ -105,10 +130,15 @@ function pickOutcomeFlag(map, attendee, isDelegate) {
     if (c == null || c === '') continue;
     const n = Number(c);
     if (!Number.isFinite(n)) continue;
-    const flag = map.get(n) ?? map.get(String(n));
-    if (flag === 1 || flag === 2) return flag;
+    const info = map.get(n) ?? map.get(String(n));
+    if (info && typeof info === 'object' && (info.flag === 1 || info.flag === 2)) return info;
   }
   return null;
+}
+
+function pickOutcomeFlag(map, attendee, isDelegate) {
+  const info = pickOutcomeInfo(map, attendee, isDelegate);
+  return info?.flag ?? null;
 }
 
 export const DelegateDetailsScreen = () => {
@@ -170,7 +200,7 @@ export const DelegateDetailsScreen = () => {
     }, [refetchMeetingOutcomes])
   );
 
-  const attendeeOutcomeMap = useMemo(() => {
+  const attendeeOutcomeInfoMap = useMemo(() => {
     const list = extractOutcomesList(meetingOutcomesData);
     const map = new Map();
     list.forEach((row) => {
@@ -183,10 +213,13 @@ export const DelegateDetailsScreen = () => {
         acceptRaw != null && acceptRaw !== ''
           ? normalizeOutcomeAccepted(acceptRaw)
           : normalizeOutcomeAccepted(row?.status);
-      if (flag != null) {
-        map.set(id, flag);
-        map.set(String(id), flag);
-      }
+      if (flag == null) return;
+      const date = row?.date ?? row?.meeting_date ?? null;
+      const time =
+        row?.time ?? row?.meeting_time_from ?? row?.meeting_time_to ?? row?.meeting_time ?? null;
+      const entry = { flag, date, time };
+      map.set(id, entry);
+      map.set(String(id), entry);
     });
     return map;
   }, [meetingOutcomesData, isDelegate]);
@@ -335,6 +368,20 @@ export const DelegateDetailsScreen = () => {
   }, [params?.profileType]);
   const isSponsorProfile = profileType === 'sponsor';
 
+  // Directory sources for enriching profile fields when navigated from chat (params may only contain id/name/image)
+  const { data: allDelegatesData } = useGetAllDelegatesQuery(undefined, {
+    skip: !user || !isDelegate, // delegates list endpoint is only for delegate login
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: delegateAttendeesData } = useGetDelegateAttendeesQuery(undefined, {
+    skip: !user || !isDelegate, // sponsors list for delegate login
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(undefined, {
+    skip: !user || isDelegate, // attendees list for sponsor login
+    refetchOnMountOrArgChange: true,
+  });
+
   // Get delegate data from params (also used for sponsor profiles coming from Attendees list)
   const delegate = useMemo(() => {
     if (!params?.delegate) {
@@ -357,15 +404,102 @@ export const DelegateDetailsScreen = () => {
     return parsedDelegate;
   }, [params]);
 
+  const numericProfileId = useMemo(
+    () => Number(delegate?.id ?? delegate?.user_id ?? delegate?.sponsor_id ?? delegate?.delegate_id) || null,
+    [delegate]
+  );
+
+  const resolvedFromDirectory = useMemo(() => {
+    if (!Number.isFinite(numericProfileId)) return null;
+
+    // For sponsor-profile: delegate login has sponsor directory via delegate attendees.
+    if (isSponsorProfile) {
+      if (!isDelegate) return null; // sponsor login shouldn't land here for sponsor profiles
+      const source = delegateAttendeesData;
+      const list = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+      const match = list.find((row) => Number(row?.id ?? row?.user_id ?? row?.sponsor_id) === numericProfileId);
+      if (!match) return null;
+      return {
+        id: String(numericProfileId),
+        name:
+          match?.name ||
+          match?.user_name ||
+          match?.full_name ||
+          [match?.fname, match?.lname].filter(Boolean).join(' ') ||
+          delegate?.name ||
+          '',
+        company: match?.company || delegate?.company || '',
+        role: match?.job_title || match?.title || delegate?.role || '',
+        email: match?.email || delegate?.email || '',
+        // DelegateDetailsScreen hides phone numbers by design; keep but won't display
+        phone: match?.mobile || match?.phone || delegate?.phone || '',
+        linkedin: match?.linkedin_url || match?.linkedin || delegate?.linkedin || '',
+        address: match?.address || match?.location || delegate?.address || '',
+        bio: match?.biography || match?.company_information || delegate?.bio || '',
+        image: match?.image || match?.user_image || match?.avatar || delegate?.image || null,
+        raw: match,
+      };
+    }
+
+    // Delegate-profile enrichment:
+    // - Sponsor login: sponsor/all-attendees contains delegates.
+    // - Delegate login: all-delegates contains delegates.
+    const source = isDelegate ? allDelegatesData : sponsorAllAttendeesData;
+    const list = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+    const match = list.find((row) => Number(row?.id ?? row?.user_id ?? row?.delegate_id) === numericProfileId);
+    if (!match) return null;
+
+    return {
+      id: String(numericProfileId),
+      name:
+        match?.full_name ||
+        match?.name ||
+        match?.user_name ||
+        [match?.fname, match?.lname].filter(Boolean).join(' ') ||
+        delegate?.name ||
+        '',
+      company: match?.company || delegate?.company || '',
+      role: match?.job_title || match?.title || delegate?.role || '',
+      email: match?.email || delegate?.email || '',
+      phone: match?.mobile || match?.phone || delegate?.phone || '',
+      linkedin: match?.linkedin_url || match?.linkedin || delegate?.linkedin || '',
+      address: match?.address || match?.location || delegate?.address || '',
+      bio: match?.biography || match?.company_information || delegate?.bio || '',
+      image: match?.image || match?.user_image || match?.avatar || delegate?.image || null,
+      raw: match,
+    };
+  }, [
+    numericProfileId,
+    isSponsorProfile,
+    isDelegate,
+    delegateAttendeesData,
+    sponsorAllAttendeesData,
+    allDelegatesData,
+    delegate?.name,
+    delegate?.company,
+    delegate?.role,
+    delegate?.email,
+    delegate?.phone,
+    delegate?.linkedin,
+    delegate?.address,
+    delegate?.bio,
+    delegate?.image,
+  ]);
+
+  const mergedDelegate = useMemo(() => {
+    if (!resolvedFromDirectory) return delegate;
+    return { ...delegate, ...resolvedFromDirectory, raw: resolvedFromDirectory.raw ?? delegate?.raw };
+  }, [delegate, resolvedFromDirectory]);
+
   const cleanedBio = useMemo(() => {
-    if (!delegate?.bio) return '';
-    return delegate.bio
+    if (!mergedDelegate?.bio) return '';
+    return mergedDelegate.bio
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/p>/gi, '\n\n')
       .replace(/<[^>]*>/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-  }, [delegate]);
+  }, [mergedDelegate]);
 
   const bioPreview = useMemo(() => {
     if (!cleanedBio) return '';
@@ -378,16 +512,44 @@ export const DelegateDetailsScreen = () => {
     [cleanedBio]
   );
 
-  const numericDelegateId = useMemo(
-    () => Number(delegate?.id ?? delegate?.user_id ?? delegate?.sponsor_id ?? delegate?.delegate_id) || null,
-    [delegate]
-  );
+  const numericDelegateId = numericProfileId;
+
+  const outcomeInfoForDelegate = useMemo(() => {
+    return (
+      pickOutcomeInfo(attendeeOutcomeInfoMap, mergedDelegate, isDelegate) ??
+      (Number.isFinite(numericDelegateId)
+        ? attendeeOutcomeInfoMap.get(numericDelegateId) ??
+          attendeeOutcomeInfoMap.get(String(numericDelegateId))
+        : null)
+    );
+  }, [attendeeOutcomeInfoMap, mergedDelegate, isDelegate, numericDelegateId]);
+
+  const paramMeetingActionFlag = useMemo(() => {
+    const v = mergedDelegate?.meetingRequestActionFlag;
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }, [mergedDelegate?.meetingRequestActionFlag]);
 
   const requestOutcome = useMemo(() => {
-    const flag = pickOutcomeFlag(attendeeOutcomeMap, delegate, isDelegate)
-      ?? (Number.isFinite(numericDelegateId) ? attendeeOutcomeMap.get(numericDelegateId) ?? attendeeOutcomeMap.get(String(numericDelegateId)) : null);
+    if (paramMeetingActionFlag === 1) return 'accepted';
+    if (paramMeetingActionFlag === 2) return 'declined';
+    const flag = outcomeInfoForDelegate?.flag ?? null;
     return flag === 1 ? 'accepted' : flag === 2 ? 'declined' : null;
-  }, [attendeeOutcomeMap, delegate, isDelegate, numericDelegateId]);
+  }, [paramMeetingActionFlag, outcomeInfoForDelegate]);
+
+  const acceptedMeetingWhenLabel = useMemo(() => {
+    if (requestOutcome !== 'accepted') return '';
+    const d =
+      outcomeInfoForDelegate?.date ?? delegate?.meetingDate ?? delegate?.meeting_date;
+    const t =
+      outcomeInfoForDelegate?.time ?? delegate?.meetingTime ?? delegate?.meeting_time;
+    if (!d && !t) return '';
+    const parts = [];
+    if (d) parts.push(formatMeetingDateDisplay(d));
+    if (t) parts.push(formatMeetingTimeShort(t));
+    return parts.join(' · ');
+  }, [requestOutcome, outcomeInfoForDelegate, delegate]);
 
   const hasPendingRequest = useMemo(
     () =>
@@ -644,20 +806,20 @@ export const DelegateDetailsScreen = () => {
   };
 
   const handleStartChat = () => {
-    if (!delegate || !delegate.id) {
+    if (!mergedDelegate || !mergedDelegate.id) {
       Alert.alert('Error', 'Invalid delegate information');
       return;
     }
 
     // Construct thread object for MessageDetailScreen
     const thread = {
-      id: delegate.id,
-      user_id: delegate.id,
-      name: delegate.name || delegate.full_name || 'Unknown',
-      user_name: delegate.name || delegate.full_name || 'Unknown',
-      avatar: delegate.image || null,
-      user_image: delegate.image || null,
-      user_type: isDelegate ? 'sponsor' : 'delegate', // If current user is delegate, chatting with sponsor, and vice versa
+      id: mergedDelegate.id,
+      user_id: mergedDelegate.id,
+      name: mergedDelegate.name || mergedDelegate.full_name || 'Unknown',
+      user_name: mergedDelegate.name || mergedDelegate.full_name || 'Unknown',
+      avatar: mergedDelegate.image || null,
+      user_image: mergedDelegate.image || null,
+      user_type: isSponsorProfile ? 'sponsor' : 'delegate', // recipient row type (sponsor vs delegate profile)
       // Optional: include last message if available
       last_message: null,
       last_message_date: null,
@@ -668,13 +830,13 @@ export const DelegateDetailsScreen = () => {
       params: {
         thread: JSON.stringify(thread),
         returnTo: 'delegate-details', // Track where we came from
-        returnDelegate: JSON.stringify(delegate), // Pass delegate data to navigate back
+        returnDelegate: JSON.stringify(mergedDelegate), // Pass delegate data to navigate back
       },
     });
   };
 
   const handleCopyEmail = () => {
-    Linking.openURL(`mailto:${delegate.email}`).catch(() => {
+    Linking.openURL(`mailto:${mergedDelegate.email}`).catch(() => {
       Alert.alert('Error', 'Could not open email client');
     });
   };
@@ -685,9 +847,10 @@ export const DelegateDetailsScreen = () => {
   };
 
   const handleOpenLinkedIn = () => {
-    const linkedinUrl = delegate.linkedin.startsWith('http') 
-      ? delegate.linkedin 
-      : `https://${delegate.linkedin}`;
+    if (!mergedDelegate.linkedin) return;
+    const linkedinUrl = mergedDelegate.linkedin.startsWith('http') 
+      ? mergedDelegate.linkedin 
+      : `https://${mergedDelegate.linkedin}`;
     Linking.openURL(linkedinUrl).catch(() => {
       Alert.alert('Error', 'Could not open LinkedIn profile');
     });
@@ -735,9 +898,9 @@ export const DelegateDetailsScreen = () => {
           {/* Profile Section */}
           <View style={styles.profileSection}>
             <View style={[styles.profilePicture, { width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }]}>
-              {delegate.image ? (
+              {mergedDelegate.image ? (
                 <Image
-                  source={{ uri: delegate.image }}
+                  source={{ uri: mergedDelegate.image }}
                   style={{ width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }}
                   resizeMode="cover"
                 />
@@ -745,9 +908,9 @@ export const DelegateDetailsScreen = () => {
                 <UserIcon size={SIZES.profileSize * 0.5} />
               )}
             </View>
-            <Text style={styles.delegateName}>{delegate.name}</Text>
-            <Text style={styles.delegateRole}>{delegate.role}</Text>
-            <Text style={styles.delegateCompany}>{delegate.company}</Text>
+            <Text style={styles.delegateName}>{mergedDelegate.name}</Text>
+            <Text style={styles.delegateRole}>{mergedDelegate.role}</Text>
+            <Text style={styles.delegateCompany}>{mergedDelegate.company}</Text>
 
             {/* Action row: Book a meeting (left) + Start chat icon (right) - synced with AttendeesScreen */}
             <View style={styles.actionRow}>
@@ -765,11 +928,13 @@ export const DelegateDetailsScreen = () => {
                 <View style={styles.bookMeetingLeftIcon}>
                   <Icon name="users" size={18} color={colors.white} />
                 </View>
-                <Text style={[
-                  styles.bookMeetingText,
-                  (requestOutcome === 'accepted' || requestOutcome === 'declined') && styles.bookMeetingTextState,
-                  hasPendingRequest && styles.bookMeetingTextDisabled,
-                ]}>
+                <Text
+                  style={[
+                    styles.bookMeetingText,
+                    (requestOutcome === 'accepted' || requestOutcome === 'declined') && styles.bookMeetingTextState,
+                    hasPendingRequest && styles.bookMeetingTextDisabled,
+                  ]}
+                >
                   {meetingRequestLabel}
                 </Text>
               </TouchableOpacity>
@@ -787,7 +952,7 @@ export const DelegateDetailsScreen = () => {
             </View>
           </View>
 
-          {delegate.name === 'No Data' ? (
+          {mergedDelegate.name === 'No Data' ? (
             <View style={styles.noDataContainer}>
               <Text style={styles.noDataText}>No delegate information available</Text>
             </View>
@@ -797,19 +962,19 @@ export const DelegateDetailsScreen = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Contact Information</Text>
             <View style={styles.contactCard}>
-              {delegate.email && (
+              {mergedDelegate.email && (
                 <ContactItem
                   icon={MailIcon}
-                  value={delegate.email}
+                  value={mergedDelegate.email}
                   actionIcon={CopyIcon}
                   onAction={handleCopyEmail}
                 />
               )}
               {/* Delegate phone numbers must not be visible in the app */}
-              {delegate.linkedin && (
+              {mergedDelegate.linkedin && (
                 <ContactItem
                   icon={LinkedinIcon}
-                  value={delegate.linkedin}
+                  value={mergedDelegate.linkedin}
                   actionIcon={ExternalLinkIcon}
                   onAction={handleOpenLinkedIn}
                 />
@@ -846,15 +1011,22 @@ export const DelegateDetailsScreen = () => {
             </View>
           ) : null}
 
-          {/* Address Section */}
-          {delegate.address && (
+          {/* Address + scheduled meeting (delegate↔sponsor, after meeting is accepted) */}
+          {(mergedDelegate.address || (requestOutcome === 'accepted' && acceptedMeetingWhenLabel)) ? (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Address</Text>
+              <Text style={styles.sectionTitle}>
+                {mergedDelegate.address ? 'Address' : 'Meeting'}
+              </Text>
               <View style={styles.addressCard}>
-                <DetailRow label="Location" value={delegate.address} />
+                {mergedDelegate.address ? (
+                  <DetailRow label="Location" value={mergedDelegate.address} />
+                ) : null}
+                {requestOutcome === 'accepted' && acceptedMeetingWhenLabel ? (
+                  <DetailRow label="Meeting" value={acceptedMeetingWhenLabel} />
+                ) : null}
               </View>
             </View>
-          )}
+          ) : null}
 
               {/* Details Section */}
               {/* <View style={styles.section}>
@@ -1177,9 +1349,11 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     alignItems: 'center',
   },
   bookMeetingText: {
+    flex: 1,
     fontSize: SIZES.body,
     fontWeight: '700',
     color: colors.white,
+    textAlign: 'center',
   },
   bookMeetingTextDisabled: {
     color: colors.textMuted,

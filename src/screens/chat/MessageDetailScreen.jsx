@@ -1,31 +1,30 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    BackHandler,
-    FlatList,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useWindowDimensions,
-    View,
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
-    api,
-    useGetDelegateChatMessagesQuery,
-    useGetSponsorChatMessagesQuery,
-    useSendDelegateMessageMutation,
-    useSendSponsorMessageMutation,
+  api,
+  useGetDelegateChatMessagesQuery,
+  useGetSponsorChatMessagesQuery,
+  useSendDelegateMessageMutation,
+  useSendSponsorMessageMutation,
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { websocketManager } from '../../utils/websocket';
@@ -89,6 +88,52 @@ export const MessageDetailScreen = () => {
     return null;
   }, [params]);
 
+  const getThreadTarget = useCallback(() => {
+    if (!thread) return { targetId: null, targetType: null, profileName: 'Unknown', profileImage: null };
+
+    const safe = (v) => (v === undefined || v === null ? '' : String(v).trim());
+    const lower = (v) => safe(v).toLowerCase();
+
+    const meId = safe(currentUserId);
+    const meType = lower(loginType);
+
+    const threadUserId = safe(thread.user_id || thread.userId || thread.id);
+    const threadUserType = lower(thread.user_type || thread.userType);
+
+    const fromId = safe(thread.from_id || thread.fromId);
+    const toId = safe(thread.to_id || thread.toId);
+    const fromType = lower(thread.from_type || thread.fromType);
+    const toType = lower(thread.to_type || thread.toType);
+
+    let targetId = threadUserId;
+    let targetType = threadUserType;
+
+    // If thread mistakenly points to the current user, try to derive the other side.
+    if (meId && targetId && targetId === meId) {
+      if (fromId && toId) {
+        if (fromId === meId) {
+          targetId = toId;
+          targetType = toType || targetType;
+        } else if (toId === meId) {
+          targetId = fromId;
+          targetType = fromType || targetType;
+        }
+      }
+    }
+
+    // If still missing type but we know our type and target isn't us, assume opposite only when safe.
+    if (!targetType && targetId && meId && targetId !== meId) {
+      // In this app chats can be sponsor<->sponsor too, so don't force opposite.
+      targetType = threadUserType || null;
+    }
+
+    // Fallback name/image
+    const profileName = thread.name || thread.user_name || thread.userName || 'Unknown';
+    const profileImage = thread.avatar || thread.user_image || thread.userImage || null;
+
+    return { targetId: targetId || null, targetType: targetType || null, profileName, profileImage };
+  }, [thread, currentUserId, loginType]);
+
   // Determine to_type based on thread user_type
   const toType = useMemo(() => {
     if (!thread) return null;
@@ -141,64 +186,29 @@ export const MessageDetailScreen = () => {
   const isFocused = useIsFocused();
   const dispatch = useAppDispatch();
 
-  // Mark chat as read when screen comes into focus
-  // This ensures unread count is only cleared when user actually opens the chat
-  const hasMarkedAsRead = useRef(false);
-  const currentChatKey = useRef(null);
-  
+  // Opening the chat loads messages; API marks incoming as read. Refetch list so badges match DB.
+  const hasOpenedChat = useRef(false);
+  const currentOpenKey = useRef(null);
+
   useEffect(() => {
     if (isFocused && toId && thread) {
-      // Use same format as MessagesScreen: userId_userType
-      const userId = String(toId);
-      const userType = thread.user_type || 'delegate';
-      const chatKey = `${userId}_${userType}`;
-      
-      // Mark as read only once per chat open (when chat changes or first time)
-      if (!hasMarkedAsRead.current || currentChatKey.current !== chatKey) {
-        console.log('💬 Chat detail screen opened - marking chat as read');
-        hasMarkedAsRead.current = true;
-        currentChatKey.current = chatKey;
-        
-        // Mark this chat as read in AsyncStorage
-        const markChatAsRead = async () => {
-          try {
-            console.log('💬 Marking chat as read:', {
-              toId,
-              userId,
-              userType,
-              threadUserType: thread.user_type,
-              chatKey,
-            });
-            
-            const stored = await AsyncStorage.getItem('read_chats');
-            const readChats = stored ? JSON.parse(stored) : {};
-            readChats[chatKey] = true;
-            await AsyncStorage.setItem('read_chats', JSON.stringify(readChats));
-            console.log('✅ Chat marked as read:', chatKey);
-            console.log('✅ All read chats:', readChats);
-          } catch (error) {
-            console.error('❌ Error marking chat as read:', error);
-          }
-        };
-        
-        markChatAsRead();
-        
-        // Initial refetch only once when chat is opened
+      const openKey = `${String(toId)}_${String(thread.user_type || '').toLowerCase() || 'delegate'}`;
+      if (!hasOpenedChat.current || currentOpenKey.current !== openKey) {
+        hasOpenedChat.current = true;
+        currentOpenKey.current = openKey;
         if (refetchMessages) {
           refetchMessages();
         }
-        
-        // Invalidate messages list tag to trigger refetch in MessagesScreen (only once)
-        setTimeout(() => {
-          console.log('💬 Invalidating messages list to update unread count');
+        const t = setTimeout(() => {
           dispatch(api.util.invalidateTags(['Messages']));
         }, 500);
+        return () => clearTimeout(t);
       }
     } else {
-      // Reset flag when screen loses focus
-      hasMarkedAsRead.current = false;
-      currentChatKey.current = null;
+      hasOpenedChat.current = false;
+      currentOpenKey.current = null;
     }
+    return undefined;
   }, [isFocused, toId, thread, refetchMessages, dispatch]);
 
   // Setup WebSocket for real-time message updates in chat detail
@@ -482,20 +492,18 @@ export const MessageDetailScreen = () => {
       return;
     }
 
-    // Get to_type from thread.user_type (should be set from MessagesScreen API response)
-    // This is the type of the recipient (the other person in the conversation)
-    const finalToType = thread.user_type;
-    
-    if (!finalToType) {
+    // Recipient type: lowercase delegate | sponsor (must match backend)
+    const rawType =
+      thread.user_type ||
+      thread.userType ||
+      (thread.delegate_id != null && thread.sponsor_id == null ? 'delegate' : null) ||
+      (thread.sponsor_id != null && thread.delegate_id == null ? 'sponsor' : null);
+    const finalToType =
+      rawType != null && rawType !== '' ? String(rawType).trim().toLowerCase() : '';
+
+    if (!finalToType || (finalToType !== 'delegate' && finalToType !== 'sponsor')) {
       Alert.alert('Error', 'Unable to determine recipient type. Please go back and try again.');
-      console.error('Missing user_type in thread:', thread);
-      return;
-    }
-    
-    // Validate to_type is either 'delegate' or 'sponsor'
-    if (finalToType !== 'delegate' && finalToType !== 'sponsor') {
-      Alert.alert('Error', `Invalid recipient type: ${finalToType}`);
-      console.error('Invalid to_type:', finalToType);
+      console.error('Missing or invalid user_type in thread:', thread);
       return;
     }
 
@@ -697,19 +705,14 @@ export const MessageDetailScreen = () => {
   }, [navigation, params?.returnTo, params?.returnSponsor, params?.returnDelegate]);
 
   const handleOpenProfile = useCallback(() => {
-    if (!thread) return;
-
-    const targetId = String(thread.user_id || thread.id || '').trim();
+    const { targetId, targetType, profileName, profileImage } = getThreadTarget();
     if (!targetId) {
       Alert.alert('Error', 'Invalid profile information');
       return;
     }
-
-    const profileName = thread.name || thread.user_name || 'Unknown';
-    const profileImage = thread.avatar || thread.user_image || null;
-    const userType = String(thread.user_type || '').toLowerCase();
     const currentReturnTo = Array.isArray(params?.returnTo) ? params.returnTo[0] : params?.returnTo;
 
+    const userType = String(targetType || '').toLowerCase();
     if (userType === 'sponsor') {
       router.push({
         pathname: '/sponsor-details',
@@ -721,7 +724,6 @@ export const MessageDetailScreen = () => {
             id: targetId,
             name: profileName,
             image: profileImage,
-            tier: 'Sponsor',
           }),
         },
       });

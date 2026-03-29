@@ -1,5 +1,6 @@
 import Icon from '@expo/vector-icons/Feather';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useMemo, useState } from 'react';
@@ -18,7 +19,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
-import { useDeleteDelegateContactMutation, useDeleteSponsorContactMutation, useGetDelegateContactsQuery } from '../../store/api';
+import {
+  useDeleteDelegateContactMutation,
+  useDeleteSponsorContactMutation,
+  useGetDelegateContactsQuery,
+  useGetSponsorContactsQuery,
+} from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
 const DeleteIcon = ({ size = 18, color = '#EF4444' }) => <FontAwesome name="trash" size={size} color={color} />;
@@ -36,23 +42,75 @@ export const ContactsScreen = () => {
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+  const isSponsor = loginType === 'sponsor';
+  const currentUserId = String(user?.id || user?.user_id || user?.delegate_id || user?.sponsor_id || '');
   
-  // Only fetch contacts if user is authenticated and is a delegate
-  const shouldSkip = !isAuthenticated || !user || !isDelegate;
+  // Fetch contacts for both delegate and sponsor
+  const shouldSkip = !isAuthenticated || !user || (!isDelegate && !isSponsor);
   
-  const { data: contactsData, isLoading, error, refetch } = useGetDelegateContactsQuery(undefined, {
-    skip: shouldSkip,
+  const {
+    data: delegateContactsData,
+    isLoading: isLoadingDelegateContacts,
+    error: delegateContactsError,
+    refetch: refetchDelegateContacts,
+  } = useGetDelegateContactsQuery(undefined, {
+    skip: shouldSkip || !isDelegate,
     refetchOnMountOrArgChange: true,
   });
+
+  const {
+    data: sponsorContactsData,
+    isLoading: isLoadingSponsorContacts,
+    error: sponsorContactsError,
+    refetch: refetchSponsorContacts,
+  } = useGetSponsorContactsQuery(undefined, {
+    skip: shouldSkip || !isSponsor,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const contactsData = isDelegate ? delegateContactsData : sponsorContactsData;
+  const isLoading = isDelegate ? isLoadingDelegateContacts : isLoadingSponsorContacts;
+  const error = isDelegate ? delegateContactsError : sponsorContactsError;
+  const refetch = isDelegate ? refetchDelegateContacts : refetchSponsorContacts;
 
   const [deleteDelegateContact, { isLoading: isDeletingDelegate }] = useDeleteDelegateContactMutation();
   const [deleteSponsorContact, { isLoading: isDeletingSponsor }] = useDeleteSponsorContactMutation();
   const isDeleting = isDeletingDelegate || isDeletingSponsor;
   
+  const [localContacts, setLocalContacts] = useState([]);
+
+  React.useEffect(() => {
+    const loadLocal = async () => {
+      try {
+        if (!loginType || !currentUserId) {
+          setLocalContacts([]);
+          return;
+        }
+        const cacheKey = `scanned_contacts_cache_${loginType}_${currentUserId}`;
+        const stored = await AsyncStorage.getItem(cacheKey);
+        const parsed = stored ? JSON.parse(stored) : [];
+        setLocalContacts(Array.isArray(parsed) ? parsed : []);
+      } catch {
+        setLocalContacts([]);
+      }
+    };
+    loadLocal();
+  }, [loginType, currentUserId, isAuthenticated]);
+
   const contacts = useMemo(() => {
-    const data = contactsData?.data || contactsData || [];
-    return Array.isArray(data) ? data : [];
-  }, [contactsData]);
+    const apiData = contactsData?.data || contactsData || [];
+    const apiList = Array.isArray(apiData) ? apiData : [];
+    const localList = Array.isArray(localContacts) ? localContacts : [];
+
+    const byEmail = new Map();
+    [...localList, ...apiList].forEach((c) => {
+      const key = String(c?.email || '').toLowerCase().trim();
+      if (!key) return;
+      // Prefer API version over local when both exist
+      if (!byEmail.has(key) || !c?._local) byEmail.set(key, c);
+    });
+    return Array.from(byEmail.values());
+  }, [contactsData, localContacts]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isTabletDevice = SCREEN_WIDTH >= 768;
@@ -183,7 +241,7 @@ export const ContactsScreen = () => {
       />
 
       <View style={styles.body}>
-        {!isDelegate ? (
+        {!isDelegate && !isSponsor ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>Contacts Not Available</Text>
             {/* <Text style={styles.emptySubtitle}>Only delegate users can view and manage contacts.</Text> */}

@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Provider } from 'react-redux';
 import { useAuth } from '../src/hooks/useAuth';
+import { usePresenceHeartbeat } from '../src/hooks/usePresenceHeartbeat';
 import { store } from '../src/store';
 
 // Globally control font scaling to prevent oversized UI when system font/display size is large
@@ -35,6 +36,7 @@ if (Text && TextInput) {
 
 function RootLayoutNav() {
   const { isAuthenticated, isLoading } = useAuth();
+  usePresenceHeartbeat();
   const segments = useSegments();
   const router = useRouter();
   const navigationState = useRootNavigationState();

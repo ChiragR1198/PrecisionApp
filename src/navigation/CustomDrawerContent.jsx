@@ -1,16 +1,44 @@
 import Icon from '@expo/vector-icons/Feather';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { DrawerContentScrollView } from '@react-navigation/drawer';
+import { DrawerContentScrollView, useDrawerStatus } from '@react-navigation/drawer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../constants/theme';
-import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSponsorLogoutMutation } from '../store/api';
+import {
+  useDelegateLogoutMutation,
+  useGetDelegateMessagesQuery,
+  useGetDelegateProfileQuery,
+  useGetSponsorMessagesQuery,
+  useGetSponsorProfileQuery,
+  useSponsorLogoutMutation,
+} from '../store/api';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { clearAuth } from '../store/slices/authSlice';
+
+/** Same response shapes as MessagesScreen — sum server `unread_count` (user_chat_messages.is_read = 0, incoming). */
+function getThreadsListFromMessagesResponse(messagesData) {
+  if (!messagesData) return [];
+  if (Array.isArray(messagesData?.data)) return messagesData.data;
+  if (Array.isArray(messagesData)) return messagesData;
+  if (messagesData?.data && typeof messagesData.data === 'object') {
+    const dataObj = messagesData.data;
+    if (Array.isArray(dataObj.messages)) return dataObj.messages;
+    if (Array.isArray(dataObj.data)) return dataObj.data;
+  }
+  return [];
+}
+
+function sumServerUnreadCount(messagesData) {
+  const list = getThreadsListFromMessagesResponse(messagesData);
+  return list.reduce(
+    (sum, item) => sum + (Number(item.unread_count ?? item.unreadCount) || 0),
+    0
+  );
+}
 
 // Engagement-first order: Dashboard, Agenda, Attendees, Meeting Requests, Messages, then rest
 const NAV_ITEMS = [
@@ -44,6 +72,8 @@ export const CustomDrawerContent = (props) => {
   const { state, navigation } = props;
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
+  const drawerStatus = useDrawerStatus();
+  const drawerOpenRef = useRef(drawerStatus);
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const { selectedEventId, selectedEventIndex } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -51,6 +81,45 @@ export const CustomDrawerContent = (props) => {
   const [delegateLogout] = useDelegateLogoutMutation();
   const [sponsorLogout] = useSponsorLogoutMutation();
   const logoutMutation = isDelegate ? delegateLogout : sponsorLogout;
+
+  const shouldSkipDelegateMsgs = !isAuthenticated || !user || !isDelegate;
+  const shouldSkipSponsorMsgs = !isAuthenticated || !user || isDelegate;
+
+  const { data: delegateMessagesPayload, refetch: refetchDelegateMessages } = useGetDelegateMessagesQuery(
+    undefined,
+    {
+      skip: shouldSkipDelegateMsgs,
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+      pollingInterval: 0,
+    }
+  );
+
+  const { data: sponsorMessagesPayload, refetch: refetchSponsorMessages } = useGetSponsorMessagesQuery(
+    undefined,
+    {
+      skip: shouldSkipSponsorMsgs,
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+      pollingInterval: 0,
+    }
+  );
+
+  const messagesPayload = isDelegate ? delegateMessagesPayload : sponsorMessagesPayload;
+  const refetchMessages = isDelegate ? refetchDelegateMessages : refetchSponsorMessages;
+
+  const totalUnreadMessages = useMemo(
+    () => sumServerUnreadCount(messagesPayload),
+    [messagesPayload]
+  );
+
+  useEffect(() => {
+    const wasOpen = drawerOpenRef.current === 'open';
+    drawerOpenRef.current = drawerStatus;
+    if (drawerStatus === 'open' && !wasOpen && isAuthenticated) {
+      refetchMessages();
+    }
+  }, [drawerStatus, isAuthenticated, refetchMessages]);
 
   // Fetch profile data - only if user is authenticated and logged in
   // Force fresh data fetch - no cache
@@ -220,16 +289,25 @@ export const CustomDrawerContent = (props) => {
                   isLogout ? '#EF4444' : isActive ? colors.white : colors.primary
                 )}
               </View>
-              <Text
-                style={[
-                  styles.label,
-                  { fontSize: sizes.text },
-                  isActive && styles.labelActive,
-                  isLogout && styles.logoutLabel,
-                ]}
-              >
-                {item.label}
-              </Text>
+              <View style={styles.labelRow}>
+                <Text
+                  style={[
+                    styles.label,
+                    { fontSize: sizes.text },
+                    isActive && styles.labelActive,
+                    isLogout && styles.logoutLabel,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+                {item.route === 'messages' && totalUnreadMessages > 0 && (
+                  <View style={styles.messageCountBadge}>
+                    <Text style={styles.messageCountBadgeText}>
+                      {totalUnreadMessages > 99 ? '99+' : String(totalUnreadMessages)}
+                    </Text>
+                  </View>
+                )}
+              </View>
             </TouchableOpacity>
           );
         })}
@@ -303,10 +381,32 @@ const styles = StyleSheet.create({
   iconWrapActive: {
     backgroundColor: colors.primary,
   },
+  labelRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minWidth: 0,
+  },
   label: {
     fontWeight: '600',
     color: colors.primary,
-    flex: 1,
+    flexShrink: 1,
+  },
+  messageCountBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  messageCountBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   labelActive: {
     color: colors.primaryDark,

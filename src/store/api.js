@@ -224,6 +224,30 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       console.warn('⚠️ Send message: response was not valid JSON. Message may have been sent.');
       return result;
     }
+
+    // PARSING_ERROR on contacts: backend sometimes returns empty/whitespace or non-JSON.
+    // Treat as an empty contacts list so the Contacts screen can still render.
+    const isContactsEndpoint =
+      typeof args.url === 'string' &&
+      (args.url === API_ENDPOINTS.DELEGATE_CONTACTS ||
+        args.url === API_ENDPOINTS.DELEGATE_SAVE_CONTACT ||
+        args.url === API_ENDPOINTS.SPONSOR_CONTACTS ||
+        args.url === API_ENDPOINTS.SPONSOR_SAVE_CONTACT ||
+        args.url.includes('/delegate/contacts') ||
+        args.url.includes('/delegate/save-contact') ||
+        args.url.includes('/sponsor/contacts') ||
+        args.url.includes('/sponsor/save-contact'));
+    if (isContactsEndpoint && errorStatus === 'PARSING_ERROR') {
+      const raw = result?.error?.data;
+      const text = typeof raw === 'string' ? raw : '';
+      if (!text || text.trim().length === 0) {
+        console.warn('⚠️ Contacts: response was empty/non-JSON. Treating as empty list.');
+        return { data: { success: true, data: [] } };
+      }
+      // If it's non-empty but not JSON, still avoid hard-failing the screen.
+      console.warn('⚠️ Contacts: response was not valid JSON. Treating as empty list.');
+      return { data: { success: true, data: [] } };
+    }
     // 409 DUPLICATE_MEETING is a business rule, not a bug - show backend message in UI, don't log as error
     if (isMeetingRequest && errorStatus === 409) {
       console.warn('Meeting request: ', result.error.data?.message || 'Duplicate or conflict.');
@@ -856,6 +880,17 @@ export const api = createApi({
         url: API_ENDPOINTS.DELEGATE_CHAT_SEND_MESSAGE,
         method: 'POST',
         body: { to_id, to_type, message },
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok, message: 'Empty response' };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok
+              ? { success: true, message: 'Message may have been saved', data: {} }
+              : { success: false, message: text };
+          }
+        },
       }),
       invalidatesTags: ['Messages'],
     }),
@@ -890,6 +925,27 @@ export const api = createApi({
     saveDelegateContact: builder.mutation({
       query: (contactData) => ({
         url: API_ENDPOINTS.DELEGATE_SAVE_CONTACT,
+        method: 'POST',
+        body: contactData,
+      }),
+      invalidatesTags: ['Contacts'],
+    }),
+
+    // 19a. Get Contacts (Sponsor)
+    getSponsorContacts: builder.query({
+      query: () => ({
+        url: API_ENDPOINTS.SPONSOR_CONTACTS,
+        params: { _t: Date.now() },
+      }),
+      providesTags: ['Contacts'],
+      keepUnusedDataFor: 0,
+      refetchOnMountOrArgChange: true,
+    }),
+
+    // 19b. Save Contact (Sponsor)
+    saveSponsorContact: builder.mutation({
+      query: (contactData) => ({
+        url: API_ENDPOINTS.SPONSOR_SAVE_CONTACT,
         method: 'POST',
         body: contactData,
       }),
@@ -1140,6 +1196,17 @@ export const api = createApi({
         url: API_ENDPOINTS.SPONSOR_CHAT_SEND_MESSAGE,
         method: 'POST',
         body: { to_id, to_type, message },
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok, message: 'Empty response' };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok
+              ? { success: true, message: 'Message may have been saved', data: {} }
+              : { success: false, message: text };
+          }
+        },
       }),
       invalidatesTags: ['Messages'],
     }),
@@ -1203,6 +1270,30 @@ export const api = createApi({
         body: { full_name, email, message },
       }),
     }),
+
+    /** Heartbeat: marks current token user as active for this event (call periodically). */
+    presencePing: builder.mutation({
+      query: (body = {}) => ({
+        url: API_ENDPOINTS.PRESENCE_PING,
+        method: 'POST',
+        body,
+      }),
+    }),
+
+    /** Who is online (recent ping) for this event — not DB status field. */
+    getPresenceOnline: builder.query({
+      query: ({ event_id, window = 120 }) => {
+        const eid = Number(event_id);
+        if (!Number.isFinite(eid) || eid <= 0) {
+          return null;
+        }
+        return {
+          url: API_ENDPOINTS.PRESENCE_ONLINE,
+          params: { event_id: eid, window, _t: Date.now() },
+        };
+      },
+      keepUnusedDataFor: 0,
+    }),
   }),
 });
 
@@ -1223,6 +1314,8 @@ export const {
   useSponsorChangePasswordMutation,
   useRegisterPushTokenMutation,
   useSubmitContactFormMutation,
+  usePresencePingMutation,
+  useGetPresenceOnlineQuery,
 
   // Delegate Endpoints
   useGetDelegateEventsQuery,
@@ -1259,6 +1352,8 @@ export const {
   useGetSponsorItineraryQuery,
   useGetSponsorProfileQuery,
   useUpdateSponsorProfileMutation,
+  useGetSponsorContactsQuery,
+  useSaveSponsorContactMutation,
   useSendSponsorMessageMutation,
   useGetSponsorMessagesQuery,
   useGetSponsorChatMessagesQuery,

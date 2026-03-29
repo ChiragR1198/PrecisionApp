@@ -80,17 +80,47 @@ const getDynamicFontSize = (title, baseSize, minSize = 12) => {
   return baseSize;
 };
 
-// Helper function to strip HTML tags and clean text
+// Helpers to clean HTML / entities from API description (same idea as Agenda screens)
 const stripHtml = (html) => {
   if (!html) return '';
-  return html
+  return String(html)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
     .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .trim();
+};
+
+const decodeEntities = (s) => {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/&#8226;/g, '•')
+    .replace(/&#x2022;/gi, '•')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&bull;/gi, '•')
+    .replace(/&middot;/gi, '·')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&ndash;/gi, '–')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&rsquo;/gi, '’')
+    .replace(/&lsquo;/gi, '‘')
+    .replace(/&ldquo;/gi, '“')
+    .replace(/&rdquo;/gi, '”')
+    .replace(/&#x2F;/gi, '/');
+};
+
+const normalizeWhitespace = (s) => {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 };
 
@@ -226,7 +256,7 @@ export const EventOverviewScreen = () => {
   // Get about paragraphs from event description
   const ABOUT_PARAGRAPHS = useMemo(() => {
     if (!selectedEvent?.description) return [];
-    const cleanText = stripHtml(selectedEvent.description);
+    const cleanText = normalizeWhitespace(decodeEntities(stripHtml(selectedEvent.description)));
     return splitIntoParagraphs(cleanText);
   }, [selectedEvent]);
 

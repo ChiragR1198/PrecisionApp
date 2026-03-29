@@ -30,6 +30,7 @@ import {
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingRequestsQuery,
   useGetDelegateMeetingTimesQuery,
+  useGetPresenceOnlineQuery,
   useGetSponsorAllAttendeesQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingRequestsQuery,
@@ -60,7 +61,29 @@ function extractOutcomesList(response) {
   return [];
 }
 
-function pickOutcomeFlag(map, attendee, isDelegate) {
+function formatMeetingTimeShort(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${min} ${ampm}`;
+}
+
+function formatMeetingDateDisplay(raw) {
+  if (!raw) return '';
+  const s = String(raw).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, mo, d] = s.split('-');
+    return `${d}/${mo}/${y}`;
+  }
+  return String(raw);
+}
+
+function pickOutcomeInfo(map, attendee, isDelegate) {
   if (!map || !(map instanceof Map) || map.size === 0) return null;
   const raw = attendee && typeof attendee === 'object' ? attendee : {};
   const candidateKeys = isDelegate
@@ -70,10 +93,15 @@ function pickOutcomeFlag(map, attendee, isDelegate) {
     if (c == null || c === '') continue;
     const n = Number(c);
     if (!Number.isFinite(n)) continue;
-    const flag = map.get(n) ?? map.get(String(n));
-    if (flag === 1 || flag === 2) return flag;
+    const info = map.get(n) ?? map.get(String(n));
+    if (info && typeof info === 'object' && (info.flag === 1 || info.flag === 2)) return info;
   }
   return null;
+}
+
+function pickOutcomeFlag(map, attendee, isDelegate) {
+  const info = pickOutcomeInfo(map, attendee, isDelegate);
+  return info?.flag ?? null;
 }
 
 function normalizeOutcomeAccepted(raw) {
@@ -97,12 +125,8 @@ const AttendeeRow = React.memo(function AttendeeRow({
   onOpenDetails,
   onOpenRequest,
 }) {
-  const availabilityLabel =
-    item.availability === 'available'
-      ? 'Available'
-      : item.availability === 'unavailable'
-      ? 'Unavailable'
-      : '';
+  const showOnline = Boolean(item.isOnline);
+  const availabilityLabel = showOnline ? 'Online' : '';
 
   const requestLabel =
     item.requestOutcome === 'accepted'
@@ -183,36 +207,33 @@ const AttendeeRow = React.memo(function AttendeeRow({
             {item.company}
           </Text>
           {availabilityLabel ? (
-            <View
-              style={[
-                styles.availabilityPill,
-                item.availability === 'available' && styles.availabilityPillAvailable,
-                item.availability === 'unavailable' && styles.availabilityPillUnavailable,
-              ]}
-            >
-              <View
-                style={[
-                  styles.availabilityDot,
-                  item.availability === 'available' && styles.availabilityDotAvailable,
-                  item.availability === 'unavailable' && styles.availabilityDotUnavailable,
-                ]}
-              />
+            <View style={[styles.availabilityPill, styles.availabilityPillAvailable]}>
+              <View style={[styles.availabilityDot, styles.availabilityDotAvailable]} />
               <Text style={styles.availabilityText}>{availabilityLabel}</Text>
             </View>
           ) : null}
         </View>
       </View>
-      <TouchableOpacity
-        style={requestBtnStyle}
-        activeOpacity={0.85}
-        onPress={(e) => {
-          e.stopPropagation();
-          if (!requestDisabled) onOpenRequest(item);
-        }}
-        disabled={requestDisabled}
-      >
-        <Text style={requestTextStyle}>{requestLabel}</Text>
-      </TouchableOpacity>
+      <View style={styles.requestColumn}>
+        <TouchableOpacity
+          style={requestBtnStyle}
+          activeOpacity={0.85}
+          onPress={(e) => {
+            e.stopPropagation();
+            if (!requestDisabled) onOpenRequest(item);
+          }}
+          disabled={requestDisabled}
+        >
+          <Text style={requestTextStyle} numberOfLines={1} ellipsizeMode="tail">
+            {requestLabel}
+          </Text>
+        </TouchableOpacity>
+        {item.requestOutcome === 'accepted' && item.meetingWhenLabel ? (
+          <Text style={styles.meetingScheduleBelowButton} numberOfLines={2}>
+            {item.meetingWhenLabel}
+          </Text>
+        ) : null}
+      </View>
     </TouchableOpacity>
   );
 });
@@ -225,6 +246,11 @@ export const AttendeesScreen = () => {
   const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+
+  const currentUserNumericId = useMemo(() => {
+    const n = Number(user?.id ?? user?.user_id ?? user?.delegate_id ?? user?.sponsor_id);
+    return Number.isFinite(n) ? n : null;
+  }, [user]);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [searchQueryDebounced, setSearchQueryDebounced] = useState('');
@@ -232,7 +258,16 @@ export const AttendeesScreen = () => {
   const [draftSelectedServices, setDraftSelectedServices] = useState([]);
   const [locallyRequestedIds, setLocallyRequestedIds] = useState([]);
   const [localPriorityMap, setLocalPriorityMap] = useState({});
-  const [availabilityFilter, setAvailabilityFilter] = useState('all'); // 'all' | 'available' | 'unavailable'
+  const [availabilityFilter, setAvailabilityFilter] = useState('all'); // 'all' | 'online'
+
+  useEffect(() => {
+    setAvailabilityFilter((prev) => {
+      if (prev === 'available') return 'online';
+      if (prev === 'unavailable') return 'all';
+      return prev;
+    });
+  }, []);
+
   // Must be declared before meeting-times queries
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
   
@@ -295,6 +330,28 @@ export const AttendeesScreen = () => {
     ? rawEventId
     : (Number(rawEventId) || 27);
 
+  const { data: presenceOnlineData } = useGetPresenceOnlineQuery(
+    { event_id: eventId, window: 120 },
+    {
+      skip: !isAuthenticated || !user || !Number.isFinite(Number(eventId)) || Number(eventId) <= 0,
+      pollingInterval: 30000,
+    }
+  );
+
+  const presenceDelegateSet = useMemo(() => {
+    const po = presenceOnlineData?.data ?? {};
+    const ids = po.delegate_ids;
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.map((x) => Number(x)).filter(Number.isFinite));
+  }, [presenceOnlineData]);
+
+  const presenceSponsorSet = useMemo(() => {
+    const po = presenceOnlineData?.data ?? {};
+    const ids = po.sponsor_ids;
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.map((x) => Number(x)).filter(Number.isFinite));
+  }, [presenceOnlineData]);
+
   const {
     data: delegateOutcomesData,
     refetch: refetchDelegateOutcomes,
@@ -321,7 +378,7 @@ export const AttendeesScreen = () => {
   const refetchMeetingOutcomes = isDelegate ? refetchDelegateOutcomes : refetchSponsorOutcomes;
   const isFetchingOutcomes = isDelegate ? isFetchingDelegateOutcomes : isFetchingSponsorOutcomes;
 
-  const attendeeOutcomeMap = useMemo(() => {
+  const attendeeOutcomeInfoMap = useMemo(() => {
     const list = extractOutcomesList(meetingOutcomesData);
     const map = new Map();
     list.forEach((row) => {
@@ -334,10 +391,13 @@ export const AttendeesScreen = () => {
         acceptRaw != null && acceptRaw !== ''
           ? normalizeOutcomeAccepted(acceptRaw)
           : normalizeOutcomeAccepted(row?.status);
-      if (flag != null) {
-        map.set(id, flag);
-        map.set(String(id), flag);
-      }
+      if (flag == null) return;
+      const date = row?.date ?? row?.meeting_date ?? null;
+      const time =
+        row?.time ?? row?.meeting_time_from ?? row?.meeting_time_to ?? row?.meeting_time ?? null;
+      const entry = { flag, date, time };
+      map.set(id, entry);
+      map.set(String(id), entry);
     });
     return map;
   }, [meetingOutcomesData, isDelegate]);
@@ -653,15 +713,36 @@ export const AttendeesScreen = () => {
       const mappedPriorityText = attendeePriorityMap.get(numericId) || null;
       const priorityText = localPriorityMap[numericId] || mappedPriorityText || null;
 
-      const outcomeFlag =
-        pickOutcomeFlag(attendeeOutcomeMap, attendee, isDelegate) ??
-        (Number.isFinite(numericId) ? attendeeOutcomeMap.get(numericId) ?? attendeeOutcomeMap.get(String(numericId)) : null);
+      const outcomeInfo =
+        pickOutcomeInfo(attendeeOutcomeInfoMap, attendee, isDelegate) ??
+        (Number.isFinite(numericId)
+          ? attendeeOutcomeInfoMap.get(numericId) ?? attendeeOutcomeInfoMap.get(String(numericId))
+          : null);
+      const outcomeFlag = outcomeInfo?.flag ?? null;
       const requestOutcome =
         outcomeFlag === 1 ? 'accepted' : outcomeFlag === 2 ? 'declined' : null;
+      const meetingWhenLabel =
+        requestOutcome === 'accepted' && (outcomeInfo?.date || outcomeInfo?.time)
+          ? [
+              outcomeInfo?.date ? formatMeetingDateDisplay(outcomeInfo.date) : null,
+              outcomeInfo?.time ? formatMeetingTimeShort(outcomeInfo.time) : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
+          : '';
 
       const hasPendingRequest =
         !requestOutcome &&
         (hasLocalRequest || requestedAttendeeIds.has(numericId));
+
+      const isCurrentUser =
+        currentUserNumericId != null &&
+        Number.isFinite(numericId) &&
+        currentUserNumericId === numericId;
+      const inPresence =
+        (isDelegate && presenceSponsorSet.has(numericId)) ||
+        (!isDelegate && presenceDelegateSet.has(numericId));
+      const isOnline = Boolean(isCurrentUser || inPresence);
 
       return {
         id,
@@ -682,6 +763,8 @@ export const AttendeesScreen = () => {
         linkedin: attendee?.linkedin_url || attendee?.linkedin || '',
         status: attendee?.status,
         availability,
+        isCurrentUser,
+        isOnline,
         // Precomputed keys for fast search/sort
         _nameKey: nameKey,
         _roleKey: roleKey,
@@ -690,6 +773,7 @@ export const AttendeesScreen = () => {
         // Pending = sent but no accept/decline yet. Accepted/Declined come from outcomes API.
         hasRequest: hasPendingRequest,
         requestOutcome,
+        meetingWhenLabel,
         priorityText,
         // Keep raw available (used only when navigating/details)
         raw: attendee,
@@ -701,8 +785,11 @@ export const AttendeesScreen = () => {
     locallyRequestedIds,
     attendeePriorityMap,
     localPriorityMap,
-    attendeeOutcomeMap,
+    attendeeOutcomeInfoMap,
     isDelegate,
+    currentUserNumericId,
+    presenceDelegateSet,
+    presenceSponsorSet,
   ]);
 
   // Important perf detail:
@@ -751,9 +838,9 @@ export const AttendeesScreen = () => {
 
     const matchesAvailability = (a) => {
       if (availabilityFilter === 'all') return true;
-      const avail = String(a?.availability || '').toLowerCase();
-      if (availabilityFilter === 'available') return avail === 'available';
-      if (availabilityFilter === 'unavailable') return avail && avail !== 'available';
+      if (availabilityFilter === 'online') {
+        return Boolean(a?.isOnline);
+      }
       return true;
     };
 
@@ -1107,14 +1194,13 @@ export const AttendeesScreen = () => {
             </TouchableOpacity>
           </View>
 
-          {/* Advanced Filters: Availability */}
+          {/* Advanced Filters: All | Online (logged-in user always shows as Online with green dot) */}
           <View style={styles.advancedFiltersRow}>
-            <Text style={styles.advancedFiltersLabel}>Availability</Text>
+            <Text style={styles.advancedFiltersLabel}>Status</Text>
             <View style={styles.advancedFiltersChips}>
-              {['all', 'available', 'unavailable'].map((key) => {
+              {['all', 'online'].map((key) => {
                 const isActive = availabilityFilter === key;
-                const label =
-                  key === 'all' ? 'All' : key === 'available' ? 'Available' : 'Unavailable';
+                const label = key === 'all' ? 'All' : 'Online';
                 return (
                   <TouchableOpacity
                     key={key}
@@ -1155,7 +1241,7 @@ export const AttendeesScreen = () => {
               updateCellsBatchingPeriod={50}
               windowSize={7}
               getItemLayout={getItemLayout}
-              extraData={[sortBy, attendeeOutcomeMap.size]}
+              extraData={[sortBy, attendeeOutcomeInfoMap.size]}
               refreshControl={
                 <RefreshControl
                   refreshing={!isLoading && (isFetchingAttendees || isFetchingOutcomes)}
@@ -1655,10 +1741,15 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     gap: 8,
   },
   requestButton: {
+    alignSelf: 'flex-end',
+    justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: colors.primary,
     borderRadius: radius.pill,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    minWidth: 152,
+    maxWidth: '100%',
   },
   requestButtonDisabled: {
     backgroundColor: colors.gray200 || '#E5E7EB',
@@ -1685,6 +1776,20 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   requestButtonTextDeclined: {
     color: colors.white,
+  },
+  requestColumn: {
+    flexShrink: 0,
+    alignItems: 'flex-end',
+    marginLeft: 6,
+    maxWidth: '52%',
+    gap: 4,
+  },
+  meetingScheduleBelowButton: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: colors.textMuted,
+    textAlign: 'right',
+    lineHeight: 13,
   },
   availabilityPill: {
     flexDirection: 'row',

@@ -6,8 +6,8 @@
  */
 
 // Token jis backend par save hota hai, wahi DB mein dikhega (e.g. local DB = local URL use karo)
-export const API_BASE_URL = 'https://stage1.events.precision-globe.com/mobile/';
-// export const API_BASE_URL = 'https://events.precision-globe.com/mobile/';
+// export const API_BASE_URL = 'https://stage1.events.precision-globe.com/mobile/';
+export const API_BASE_URL = 'https://events.precision-globe.com/mobile/';
 // Local testing (MAMP): tokens localhost DB (mobile_device_tokens) mein save honge
 // export const API_BASE_URL = 'http://localhost:8888/precision-backend/mobile/';
 
@@ -78,6 +78,8 @@ export const API_ENDPOINTS = {
   SPONSOR_MEETING_TIMES: '/sponsor/meeting-times',
   
   // Sponsor Contacts
+  SPONSOR_CONTACTS: '/sponsor/contacts',
+  SPONSOR_SAVE_CONTACT: '/sponsor/save-contact',
   SPONSOR_DELETE_CONTACT: '/sponsor/delete-contact',
 
   // ============ AGENDA ============
@@ -89,6 +91,10 @@ export const API_ENDPOINTS = {
 
   // ============ CONTACT US ============
   CONTACT_SUBMIT: 'contact/submit',
+
+  // Presence (active session — same token as rest of app)
+  PRESENCE_PING: '/presence/ping',
+  PRESENCE_ONLINE: '/presence/online',
 };
 
 export default {

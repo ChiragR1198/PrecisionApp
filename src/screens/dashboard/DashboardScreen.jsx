@@ -33,47 +33,12 @@ const ListIcon = Icons.List;
 const UsersIcon = Icons.Users;
 const SponsorsIcon = Icons.Briefcase;
 
-// Helper function to format date
-const formatDate = (dateFrom, dateTo) => {
-  if (!dateFrom) return '';
-
-  const months = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-  ];
-
-  const formatFullDate = (date) =>
-    `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
-
-  const formatMonthDay = (date) =>
-    `${months[date.getMonth()]} ${date.getDate()}`;
-
-  const fromDate = new Date(dateFrom);
-  const toDate = dateTo ? new Date(dateTo) : null;
-
-  if (toDate && dateFrom !== dateTo) {
-    const sameYear = fromDate.getFullYear() === toDate.getFullYear();
-
-    // Example: April 30 – May 1, 2026 (en dash, year once)
-    if (sameYear) {
-      return `${formatMonthDay(fromDate)} – ${formatMonthDay(toDate)}, ${fromDate.getFullYear()}`;
-    }
-
-    // Different years: April 30, 2026 – May 1, 2027
-    return `${formatFullDate(fromDate)} – ${formatFullDate(toDate)}`;
-  }
-
-  return formatFullDate(fromDate);
+/** Display string from API only — formatted on backend (`date_display`). */
+const getEventDateDisplayFromApi = (event) => {
+  const v = event?.date_display;
+  if (v == null) return '';
+  const s = String(v).trim();
+  return s;
 };
 
 // Helper function to calculate dynamic font size based on title length
@@ -275,14 +240,14 @@ export const DashboardScreen = () => {
     const transformed = uniqueEvents.map(event => ({
       id: event.id,
       title: event.title || 'Untitled Event',
-      date: formatDate(event.date_from, event.date_to),
+      date: getEventDateDisplayFromApi(event),
       location: event.location || event.venue || '',
       date_from: event.date_from,
       date_to: event.date_to,
     }));
 
     return transformed;
-  }, [eventsData, user, isDelegate]);
+  }, [eventsData, isDelegate]);
 
   const selectedEvent = EVENTS[selectedEventIndex] || null;
 

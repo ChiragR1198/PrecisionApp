@@ -27,8 +27,10 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
+  useGetDelegateAttendeesQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
+  useGetSponsorAllAttendeesQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
@@ -220,43 +222,135 @@ export const SponsorDetailsScreen = () => {
   const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
   const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
 
-  // Get sponsor data from params or use default
-  const sponsor = useMemo(() => {
-    const defaultSponsor = {
-      id: '1',
-      name: 'TechCorp Solutions',
-      tier: 'Gold Sponsor',
-      logoBg: '#EEF2FF',
-      logoText: 'TC',
-      partnerType: 'Technology Partner',
-      email: 'contact@techcorp.com',
-      phone: '+1 (555) 123-4567',
-      website: 'www.techcorp.com',
-      location: 'San Francisco, CA',
-      about: 'TechCorp Solutions is a leading technology company specializing in innovative software solutions for enterprise clients. We\'ve been partnering with events like this for over 5 years, helping connect businesses with cutting-edge technology and digital transformation strategies.',
+  const defaultSponsor = useMemo(
+    () => ({
+      id: '',
+      name: '',
+      tier: '',
+      logoBg: null,
+      logoText: '',
+      partnerType: '',
+      email: '',
+      phone: '',
+      website: '',
+      location: '',
+      about: '',
+      company: '',
+      job_title: '',
+      raw: {},
+    }),
+    []
+  );
+
+  // Use attendees directory to resolve full contact information when navigated from chat
+  const { data: delegateAttendeesData } = useGetDelegateAttendeesQuery(undefined, {
+    skip: !user || !isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(undefined, {
+    skip: !user || isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const sponsorFromParams = useMemo(() => {
+    if (!params?.sponsor) return null;
+    try {
+      const parsed = JSON.parse(params.sponsor);
+      return { ...defaultSponsor, ...parsed };
+    } catch {
+      return null;
+    }
+  }, [params?.sponsor, defaultSponsor]);
+
+  const numericTargetId = useMemo(() => {
+    const base = sponsorFromParams || defaultSponsor;
+    return Number(base?.id ?? base?.raw?.id) || null;
+  }, [sponsorFromParams, defaultSponsor]);
+
+  const resolvedSponsorFromDirectory = useMemo(() => {
+    if (!Number.isFinite(numericTargetId)) return null;
+
+    const source = isDelegate ? delegateAttendeesData : sponsorAllAttendeesData;
+    const list = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+
+    const findId = (row) => {
+      const candidates = [
+        row?.id,
+        row?.user_id,
+        row?.sponsor_id,
+        row?.delegate_id,
+        row?.member_id,
+      ];
+      for (const c of candidates) {
+        const n = Number(c);
+        if (Number.isFinite(n) && n === numericTargetId) return n;
+      }
+      return null;
     };
 
-    // If params exist, merge with default
-    const parsed = params?.sponsor ? { ...defaultSponsor, ...JSON.parse(params.sponsor) } : defaultSponsor;
-    const raw = parsed?.raw || {};
+    const match = list.find((row) => findId(row) === numericTargetId);
+    if (!match) return null;
+
+    const name =
+      match?.name ||
+      match?.user_name ||
+      match?.full_name ||
+      [match?.fname, match?.lname].filter(Boolean).join(' ') ||
+      sponsorFromParams?.name ||
+      '';
+
+    const normalized = {
+      id: String(numericTargetId),
+      name,
+      image: match?.image || match?.user_image || match?.avatar || sponsorFromParams?.image || null,
+      company: match?.company || sponsorFromParams?.company || '',
+      job_title: match?.job_title || match?.title || sponsorFromParams?.job_title || '',
+      email: match?.email || sponsorFromParams?.email || '',
+      phone: match?.mobile || match?.phone || sponsorFromParams?.phone || '',
+      website: match?.website || match?.web || sponsorFromParams?.website || '',
+      location: match?.address || match?.location || sponsorFromParams?.location || '',
+      raw: match,
+    };
+
+    return normalized;
+  }, [
+    delegateAttendeesData,
+    sponsorAllAttendeesData,
+    isDelegate,
+    numericTargetId,
+    sponsorFromParams?.name,
+    sponsorFromParams?.image,
+    sponsorFromParams?.company,
+    sponsorFromParams?.job_title,
+    sponsorFromParams?.email,
+    sponsorFromParams?.phone,
+    sponsorFromParams?.website,
+    sponsorFromParams?.location,
+  ]);
+
+  // Get sponsor data from params and enrich from directory
+  const sponsor = useMemo(() => {
+    const parsed = sponsorFromParams || defaultSponsor;
+    const enriched = resolvedSponsorFromDirectory ? { ...parsed, ...resolvedSponsorFromDirectory } : parsed;
+    const raw = enriched?.raw || {};
 
     // Prefer backend biography/company_information for sponsor profiles
-    if (!parsed.about || parsed.about.trim().length === 0) {
+    if (!enriched.about || enriched.about.trim().length === 0) {
       const backendAbout = raw.biography || raw.company_information || '';
       if (backendAbout) {
-        parsed.about = backendAbout;
+        enriched.about = backendAbout;
       }
     }
     
     // If logoBg is not set (for delegates), generate it from ID
-    if (!parsed.logoBg && parsed.id) {
-      parsed.logoBg = getColorFromString(String(parsed.id), LOGO_COLORS);
+    if (!enriched.logoBg && enriched.id) {
+      enriched.logoBg = getColorFromString(String(enriched.id), LOGO_COLORS);
     }
 
     // Clean about text if it contains HTML (in case raw data is passed)
-    if (parsed.about && typeof parsed.about === 'string') {
-      if (parsed.about.includes('<')) {
-        parsed.about = parsed.about
+    if (enriched.about && typeof enriched.about === 'string') {
+      if (enriched.about.includes('<')) {
+        enriched.about = enriched.about
           .replace(/<br\s*\/?>/gi, '\n')
           .replace(/<\/p>/gi, '\n\n')
           .replace(/<[^>]*>/g, '')
@@ -273,16 +367,16 @@ export const SponsorDetailsScreen = () => {
 
       // If cleaned text is empty or just DOCTYPE, set to empty
       if (
-        !parsed.about ||
-        parsed.about.length < 10 ||
-        parsed.about.toLowerCase().includes('doctype')
+        !enriched.about ||
+        enriched.about.length < 10 ||
+        enriched.about.toLowerCase().includes('doctype')
       ) {
-        parsed.about = '';
+        enriched.about = '';
       }
     }
 
-    return parsed;
-  }, [params]);
+    return enriched;
+  }, [defaultSponsor, sponsorFromParams, resolvedSponsorFromDirectory]);
 
   const ABOUT_TEXT = useMemo(() => (sponsor?.about || '').trim(), [sponsor]);
   const PREVIEW_ABOUT_TEXT = useMemo(() => {
@@ -303,10 +397,7 @@ export const SponsorDetailsScreen = () => {
     return Boolean(raw?.linkedin_url || raw?.fname || raw?.lname);
   }, [sponsor]);
 
-  const numericTargetId = useMemo(
-    () => Number(sponsor?.id ?? sponsor?.raw?.id) || null,
-    [sponsor]
-  );
+  // numericTargetId is computed above from params; keep existing usages by referencing sponsor.id below
 
   const attendeeOutcomeMap = useMemo(() => {
     const list = extractOutcomesList(meetingOutcomesData);
@@ -589,7 +680,7 @@ export const SponsorDetailsScreen = () => {
     const threadData = {
       id: String(sponsorId),
       user_id: Number(sponsorId),
-      user_type: isDelegate ? 'sponsor' : 'delegate',
+      user_type: isDelegateProfile ? 'delegate' : 'sponsor',
       name: sponsor.name,
       user_name: sponsor.name,
       avatar: sponsor.image,
