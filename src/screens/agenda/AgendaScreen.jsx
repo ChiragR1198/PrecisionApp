@@ -3,12 +3,12 @@ import { useNavigation } from '@react-navigation/native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useDispatch } from 'react-redux';
@@ -65,17 +65,44 @@ const groupAgendaByTime = (agendaItems) => {
 };
 
 // Helpers to clean HTML descriptions returned by API
-const stripHtml = (s) => (typeof s === 'string' ? s.replace(/<[^>]*>/g, '') : '');
-const decodeEntities = (s) => (typeof s === 'string'
-  ? s
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&#x2F;/g, '/')
-  : '');
-const normalizeWhitespace = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
+const stripHtml = (s) => {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<[^>]*>/g, ' ');
+};
+const decodeEntities = (s) => {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&bull;/gi, '•')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&ndash;/gi, '–')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&rsquo;/gi, '’')
+    .replace(/&lsquo;/gi, '‘')
+    .replace(/&ldquo;/gi, '“')
+    .replace(/&rdquo;/gi, '”')
+    .replace(/&#x2F;/g, '/');
+};
+const normalizeWhitespace = (s) => {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
 
 export const AgendaScreen = () => {
   const navigation = useNavigation();
