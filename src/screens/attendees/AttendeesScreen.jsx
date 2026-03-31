@@ -505,8 +505,18 @@ export const AttendeesScreen = () => {
     };
 
     const toHHMM = (hhmmss) => {
-      const s = String(hhmmss || '');
-      return s.length >= 5 ? s.slice(0, 5) : s;
+      const s = String(hhmmss || '').trim();
+      // Accept "HH:MM", "HH:MM:SS"
+      const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (!m) return s;
+      let h = Number(m[1]);
+      const mm = m[2];
+      if (!Number.isFinite(h)) return s;
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12;
+      if (h === 0) h = 12;
+      const hh = String(h).padStart(2, '0');
+      return `${hh}:${mm} ${ampm}`;
     };
 
     const dataObj = normalized?.data;

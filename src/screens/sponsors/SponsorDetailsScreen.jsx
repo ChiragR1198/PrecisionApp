@@ -11,11 +11,14 @@ import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  ActivityIndicator,
   Animated,
   BackHandler,
   Image,
   Linking,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -34,7 +37,9 @@ import {
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
+  useSendDelegateMeetingRequestToDelegateMutation,
   useSendSponsorMeetingRequestMutation,
+  useSendSponsorMeetingRequestToSponsorMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
@@ -173,8 +178,11 @@ export const SponsorDetailsScreen = () => {
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
   const [isAboutExpanded, setIsAboutExpanded] = useState(false);
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
+  const [createDelegateMeetingRequestToDelegate] = useSendDelegateMeetingRequestToDelegateMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
-  const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
+  const [createSponsorMeetingRequestToSponsor] = useSendSponsorMeetingRequestToSponsorMutation();
+  // Actual mutation selection depends on whether we are viewing a sponsor or delegate profile.
+  // We do that inside `handleSendMeetingRequest()` (after `isDelegateProfile` is computed).
 
   const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
   const eventId =
@@ -430,13 +438,21 @@ export const SponsorDetailsScreen = () => {
     return flag === 1 ? 'accepted' : flag === 2 ? 'declined' : null;
   }, [attendeeOutcomeMap, sponsor, isDelegate, numericTargetId]);
 
-  const hasPendingRequest = useMemo(
-    () => !requestOutcome && (hasRequested || Boolean(sponsor?.hasRequest)),
-    [requestOutcome, hasRequested, sponsor?.hasRequest]
-  );
+  const hasPendingRequest = useMemo(() => {
+    // `hasRequest` is a legacy flag coming from sponsor/delegate lists.
+    // It is reliable for delegate->sponsor and sponsor->delegate flows, but not for delegate->delegate
+    // when this screen is reused to show a delegate profile.
+    const legacyHasRequest = isDelegate && isDelegateProfile ? false : Boolean(sponsor?.hasRequest);
+    return !requestOutcome && (hasRequested || legacyHasRequest);
+  }, [requestOutcome, hasRequested, sponsor?.hasRequest, isDelegate, isDelegateProfile]);
 
   const canBookMeeting = useMemo(
-    () => (isDelegate && !isDelegateProfile) || (!isDelegate && isDelegateProfile),
+    // SponsorDetailsScreen is reused for both sponsor profiles and delegate profiles.
+    // When current user is a delegate, we allow booking for both:
+    // - delegate -> sponsor
+    // - delegate -> delegate
+    // When current user is a sponsor, we allow booking only for delegate profiles.
+    () => true,
     [isDelegate, isDelegateProfile]
   );
 
@@ -454,6 +470,8 @@ export const SponsorDetailsScreen = () => {
     !canBookMeeting || requestOutcome === 'accepted' || hasPendingRequest;
 
   useEffect(() => {
+    // Avoid disabling the button incorrectly for delegate->delegate profiles.
+    if (isDelegate && isDelegateProfile) return;
     if (sponsor && typeof sponsor.hasRequest !== 'undefined') {
       setHasRequested(Boolean(sponsor.hasRequest));
       if (sponsor.priorityText && typeof sponsor.priorityText === 'string') {
@@ -466,7 +484,7 @@ export const SponsorDetailsScreen = () => {
         setRequestedPriorityText(mapped);
       }
     }
-  }, [sponsor]);
+  }, [sponsor, isDelegate, isDelegateProfile]);
 
   const todayDate = useMemo(() => new Date().toISOString().split('T')[0], []);
 
@@ -498,8 +516,18 @@ export const SponsorDetailsScreen = () => {
     };
 
     const toHHMM = (hhmmss) => {
-      const s = String(hhmmss || '');
-      return s.length >= 5 ? s.slice(0, 5) : s;
+      const s = String(hhmmss || '').trim();
+      // Accept "HH:MM", "HH:MM:SS"
+      const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (!m) return s;
+      let h = Number(m[1]);
+      const mm = m[2];
+      if (!Number.isFinite(h)) return s;
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12;
+      if (h === 0) h = 12;
+      const hh = String(h).padStart(2, '0');
+      return `${hh}:${mm} ${ampm}`;
     };
 
     if (meetingTimesData?.data && typeof meetingTimesData.data === 'object' && !Array.isArray(meetingTimesData.data)) {
@@ -726,11 +754,21 @@ export const SponsorDetailsScreen = () => {
     const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : null;
 
     const timeParams = { event_id: effectiveEventId, date };
+    // Time-slot filtering needs to know who the booking target is:
+    // - delegate viewing sponsor profile => exclude booked slots for that sponsor
+    // - delegate viewing delegate profile => exclude booked slots for that delegate
+    // - sponsor viewing delegate profile => exclude booked slots for that delegate
+    if (isDelegate) {
+      if (isDelegateProfile) timeParams.target_delegate_id = Number(sponsor.id);
+      else timeParams.target_sponsor_id = Number(sponsor.id);
+    } else {
+      if (isDelegateProfile) timeParams.target_delegate_id = Number(sponsor.id);
+      else timeParams.target_sponsor_id = Number(sponsor.id);
+    }
+
     if (dateFrom && dateTo) {
       timeParams.date_from = dateFrom;
       timeParams.date_to = dateTo;
-      if (isDelegate) timeParams.target_sponsor_id = Number(sponsor.id);
-      else timeParams.target_delegate_id = Number(sponsor.id);
     }
 
     setMeetingTimesParams(timeParams);
@@ -776,27 +814,62 @@ export const SponsorDetailsScreen = () => {
         return;
       }
 
-      const payload = isDelegate
-        ? {
-            sponsor_id: Number(sponsor.id),
-            event_id: Number(eventId || 27),
-            priority: priorityValue,
-            meeting_date: meetingDateVal,
-            meeting_time_from: meetingTimeFrom,
-            meeting_time_to: meetingTimeTo,
-            message: '',
-          }
-        : {
-            delegate_id: Number(sponsor.id),
-            event_id: Number(eventId || 27),
-            priority: priorityValue,
-            meeting_date: meetingDateVal,
-            meeting_time_from: meetingTimeFrom,
-            meeting_time_to: meetingTimeTo,
-            message: '',
-          };
+      let payload;
+      if (isDelegate) {
+        // Delegate is the logged-in user, and `sponsor` variable represents the profile we are viewing.
+        // - Viewing sponsor profile (delegate -> sponsor): backend expects `sponsor_id`
+        // - Viewing delegate profile (delegate -> delegate): backend expects `delegate_id`
+        payload = isDelegateProfile
+          ? {
+              delegate_id: Number(sponsor.id),
+              event_id: Number(eventId || 27),
+              priority: priorityValue,
+              meeting_date: meetingDateVal,
+              meeting_time_from: meetingTimeFrom,
+              meeting_time_to: meetingTimeTo,
+              message: '',
+            }
+          : {
+              sponsor_id: Number(sponsor.id),
+              event_id: Number(eventId || 27),
+              priority: priorityValue,
+              meeting_date: meetingDateVal,
+              meeting_time_from: meetingTimeFrom,
+              meeting_time_to: meetingTimeTo,
+              message: '',
+            };
+      } else {
+        // Sponsor login:
+        // - viewing delegate profile -> sponsor -> delegate (existing)
+        // - viewing sponsor profile -> sponsor -> sponsor (new)
+        payload = isDelegateProfile
+          ? {
+              delegate_id: Number(sponsor.id),
+              event_id: Number(eventId || 27),
+              priority: priorityValue,
+              meeting_date: meetingDateVal,
+              meeting_time_from: meetingTimeFrom,
+              meeting_time_to: meetingTimeTo,
+              message: '',
+            }
+          : {
+              sponsor_id: Number(sponsor.id),
+              event_id: Number(eventId || 27),
+              priority: priorityValue,
+              meeting_date: meetingDateVal,
+              meeting_time_from: meetingTimeFrom,
+              meeting_time_to: meetingTimeTo,
+              message: '',
+            };
+      }
 
-      await createMeetingRequest(payload).unwrap();
+      const requestMutationFn = !isDelegate
+        ? (isDelegateProfile ? createSponsorMeetingRequest : createSponsorMeetingRequestToSponsor)
+        : isDelegateProfile
+          ? createDelegateMeetingRequestToDelegate
+          : createDelegateMeetingRequest;
+
+      await requestMutationFn(payload).unwrap();
 
       setModalStep('priority');
       setHasRequested(true);
@@ -909,44 +982,33 @@ export const SponsorDetailsScreen = () => {
 
             {!!sponsor?.name && (
               <View style={styles.actionRow}>
-                {/*
-                <TouchableOpacity
-                  style={[
-                    styles.bookMeetingButton,
-                    requestOutcome === 'accepted' && styles.bookMeetingButtonAccepted,
-                    requestOutcome === 'declined' && styles.bookMeetingButtonDeclined,
-                    hasPendingRequest && styles.bookMeetingButtonDisabled,
-                  ]}
-                  onPress={openMeetingModal}
-                  activeOpacity={0.85}
-                  disabled={meetingRequestDisabled}
-                >
-                  <View style={styles.bookMeetingLeftIcon}>
-                    <Icon name="users" size={18} color={colors.white} />
-                  </View>
-                  <Text
+                {canBookMeeting && (
+                  <TouchableOpacity
                     style={[
-                      styles.bookMeetingText,
-                      (requestOutcome === 'accepted' || requestOutcome === 'declined') &&
-                        styles.bookMeetingTextState,
-                      hasPendingRequest && styles.bookMeetingTextDisabled,
+                      styles.bookMeetingButton,
+                      requestOutcome === 'accepted' && styles.bookMeetingButtonAccepted,
+                      requestOutcome === 'declined' && styles.bookMeetingButtonDeclined,
+                      hasPendingRequest && styles.bookMeetingButtonDisabled,
                     ]}
+                    onPress={openMeetingModal}
+                    activeOpacity={0.85}
+                    disabled={meetingRequestDisabled}
                   >
-                    {meetingRequestLabel}
-                  </Text>
-                </TouchableOpacity>
-                */}
-
-                {/* <TouchableOpacity style={styles.chatIconButton} onPress={handleStartChat} activeOpacity={0.85}>
-                  <LinearGradient
-                    colors={colors.gradient}
-                    style={styles.chatIconGradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                  >
-                    <MessageCircleIcon />
-                  </LinearGradient>
-                </TouchableOpacity> */}
+                    <View style={styles.bookMeetingLeftIcon}>
+                      <Icon name="users" size={18} color={colors.white} />
+                    </View>
+                    <Text
+                      style={[
+                        styles.bookMeetingText,
+                        (requestOutcome === 'accepted' || requestOutcome === 'declined') &&
+                          styles.bookMeetingTextState,
+                        hasPendingRequest && styles.bookMeetingTextDisabled,
+                      ]}
+                    >
+                      {meetingRequestLabel}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
           </LinearGradient>
@@ -1052,7 +1114,6 @@ export const SponsorDetailsScreen = () => {
         </View>
       )}
 
-      {/*
       <Modal transparent animationType="fade" visible={isModalVisible} onRequestClose={closeModal}>
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
@@ -1262,7 +1323,6 @@ export const SponsorDetailsScreen = () => {
           </Animated.View>
         </SafeAreaView>
       </Modal>
-      */}
     </SafeAreaView>
   );
 };

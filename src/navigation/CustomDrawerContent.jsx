@@ -4,8 +4,8 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { DrawerContentScrollView, useDrawerStatus } from '@react-navigation/drawer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef } from 'react';
-import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../constants/theme';
 import {
@@ -81,6 +81,25 @@ export const CustomDrawerContent = (props) => {
   const [delegateLogout] = useDelegateLogoutMutation();
   const [sponsorLogout] = useSponsorLogoutMutation();
   const logoutMutation = isDelegate ? delegateLogout : sponsorLogout;
+
+  const [isLogoutConfirmModalVisible, setIsLogoutConfirmModalVisible] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const confirmLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await logoutMutation().unwrap();
+    } catch (error) {
+      console.error('Logout error:', error);
+      // Even if API call fails, clear auth and navigate to login
+    } finally {
+      setIsLoggingOut(false);
+      setIsLogoutConfirmModalVisible(false);
+      dispatch(clearAuth());
+      router.replace('/login');
+    }
+  };
 
   const shouldSkipDelegateMsgs = !isAuthenticated || !user || !isDelegate;
   const shouldSkipSponsorMsgs = !isAuthenticated || !user || isDelegate;
@@ -223,33 +242,7 @@ export const CustomDrawerContent = (props) => {
           const isLogout = item.action === 'logout';
           const handlePress = async () => {
             if (isLogout) {
-              Alert.alert(
-                'Logout',
-                'Are you sure you want to logout?',
-                [
-                  {
-                    text: 'Cancel',
-                    style: 'cancel',
-                  },
-                  {
-                    text: 'Logout',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        await logoutMutation().unwrap();
-                        dispatch(clearAuth());
-                        router.replace('/login');
-                      } catch (error) {
-                        console.error('Logout error:', error);
-                        // Even if API call fails, clear auth and navigate to login
-                        dispatch(clearAuth());
-                        router.replace('/login');
-                      }
-                    },
-                  },
-                ],
-                { cancelable: true }
-              );
+              setIsLogoutConfirmModalVisible(true);
               return;
             }
             if (item.route) {
@@ -312,6 +305,55 @@ export const CustomDrawerContent = (props) => {
           );
         })}
       </DrawerContentScrollView>
+
+      {/* Logout Confirm Modal (same UX as Profile update success modal) */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isLogoutConfirmModalVisible}
+        onRequestClose={() => setIsLogoutConfirmModalVisible(false)}
+      >
+        <View style={styles.logoutModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsLogoutConfirmModalVisible(false)} />
+          <View style={styles.logoutModalCard}>
+            <View style={styles.logoutModalIconWrap}>
+              <Icon name="log-out" size={56} color={colors.primary} />
+            </View>
+            <Text style={styles.logoutModalTitle}>Logout</Text>
+            <Text style={styles.logoutModalMessage}>Are you sure you want to logout?</Text>
+            <View style={styles.logoutModalButtonRow}>
+              <TouchableOpacity
+                style={styles.logoutModalButtonSecondary}
+                onPress={() => setIsLogoutConfirmModalVisible(false)}
+                activeOpacity={0.85}
+                disabled={isLoggingOut}
+              >
+                <Text style={styles.logoutModalButtonSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.logoutModalButtonPrimary, { opacity: isLoggingOut ? 0.7 : 1 }]}
+                onPress={confirmLogout}
+                activeOpacity={0.85}
+                disabled={isLoggingOut}
+              >
+                <LinearGradient
+                  colors={colors.gradient}
+                  style={styles.logoutModalButtonGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  {isLoggingOut ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.logoutModalButtonPrimaryText}>Logout</Text>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -320,6 +362,73 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.white,
+  },
+  logoutModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  logoutModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: colors.white,
+    borderRadius: 18,
+    padding: 18,
+  },
+  logoutModalIconWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  logoutModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  logoutModalMessage: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 14,
+  },
+  logoutModalButtonRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  logoutModalButtonSecondary: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.gray200,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.white,
+  },
+  logoutModalButtonSecondaryText: {
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  logoutModalButtonPrimary: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  logoutModalButtonGradient: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoutModalButtonPrimaryText: {
+    color: colors.white,
+    fontWeight: '700',
+    fontSize: 14,
   },
   header: {
     justifyContent: 'center',

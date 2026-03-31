@@ -57,20 +57,27 @@ export const ItineraryScreen = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All Days');
   const { user } = useAppSelector((state) => state.auth);
+  const { selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const isSponsor = loginType === 'sponsor';
 
   // Fetch itinerary based on user type
-  const { data: delegateItineraryData, isLoading: delegateLoading, error: delegateError } = useGetDelegateItineraryQuery(undefined, {
+  const { data: delegateItineraryData, isLoading: delegateLoading, error: delegateError } = useGetDelegateItineraryQuery(
+    selectedEventId ? { event_id: Number(selectedEventId) } : undefined,
+    {
     skip: !isDelegate,
     refetchOnMountOrArgChange: true,
-  });
+    }
+  );
 
-  const { data: sponsorItineraryData, isLoading: sponsorLoading, error: sponsorError } = useGetSponsorItineraryQuery(undefined, {
+  const { data: sponsorItineraryData, isLoading: sponsorLoading, error: sponsorError } = useGetSponsorItineraryQuery(
+    selectedEventId ? { event_id: Number(selectedEventId) } : undefined,
+    {
     skip: !isSponsor,
     refetchOnMountOrArgChange: true,
-  });
+    }
+  );
 
   const isLoading = isDelegate ? delegateLoading : sponsorLoading;
   const error = isDelegate ? delegateError : sponsorError;
