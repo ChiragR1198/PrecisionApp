@@ -5,8 +5,6 @@ import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
 // Base query with token injection
 const baseQuery = fetchBaseQuery({
   baseUrl: API_BASE_URL,
-  // Increase timeout for slow networks
-  timeout: 30000, // 30 seconds
   prepareHeaders: async (headers) => {
     try {
       const token = await AsyncStorage.getItem('auth_token');
@@ -714,6 +712,25 @@ export const api = createApi({
       invalidatesTags: ['MeetingRequests'],
     }),
 
+    // 4b. Send Meeting Request (Delegate -> Delegate)
+    sendDelegateMeetingRequestToDelegate: builder.mutation({
+      query: ({ delegate_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message = '' }) => ({
+        url: API_ENDPOINTS.DELEGATE_SEND_MEETING_REQUEST_TO_DELEGATE,
+        method: 'POST',
+        body: { delegate_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message },
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: true };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['MeetingRequests'],
+    }),
+
     // 4a. Delegate Meeting Times (supports event_id+date OR date_from+date_to+target_sponsor_id)
     getDelegateMeetingTimes: builder.query({
       query: (args = {}) => {
@@ -721,10 +738,14 @@ export const api = createApi({
         const event_id = (Number.isFinite(raw) && raw > 0) ? raw : 27;
         const params = { event_id, _t: Date.now() };
         if (args?.date != null) params.date = args.date;
+
+        // Forward target id for slot filtering (works with both single-date and date-range APIs)
+        if (args?.target_sponsor_id != null) params.target_sponsor_id = args.target_sponsor_id;
+        if (args?.target_delegate_id != null) params.target_delegate_id = args.target_delegate_id;
+
         if (args?.date_from != null && args?.date_to != null) {
           params.date_from = args.date_from;
           params.date_to = args.date_to;
-          if (args?.target_sponsor_id != null) params.target_sponsor_id = args.target_sponsor_id;
         }
         return { url: API_ENDPOINTS.DELEGATE_MEETING_TIMES, params };
       },
@@ -819,6 +840,40 @@ export const api = createApi({
       providesTags: (result, error, agendaId) => [{ type: 'Agenda', id: agendaId }],
     }),
 
+    // 8b. Agenda: session check-in ("I'm in this session")
+    checkInAgendaSession: builder.mutation({
+      query: ({ agenda_id }) => ({
+        url: API_ENDPOINTS.AGENDA_CHECK_IN,
+        method: 'POST',
+        body: { agenda_id },
+        // Backend may return empty/non-JSON body for 2xx responses.
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['Agenda'],
+    }),
+
+    // 8c. Agenda: check-in status for current user
+    getAgendaCheckInStatus: builder.query({
+      query: (agendaId) => {
+        if (!agendaId) return null;
+        return {
+          url: API_ENDPOINTS.AGENDA_CHECK_IN_STATUS,
+          params: { agenda_id: Number(agendaId), _t: Date.now() },
+        };
+      },
+      providesTags: (result, error, agendaId) => [{ type: 'Agenda', id: `checkin-${agendaId}` }],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
     // 9. Delegate Attendees
     getDelegateAttendees: builder.query({
       query: () => ({
@@ -831,7 +886,16 @@ export const api = createApi({
 
     // 10. View Itinerary (Delegate)
     getDelegateItinerary: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_VIEW_ITINERARY,
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        if (arg?.date) params.date = arg.date;
+        return { url: API_ENDPOINTS.DELEGATE_VIEW_ITINERARY, params };
+      },
       providesTags: ['Agenda'],
     }),
 
@@ -1129,6 +1193,25 @@ export const api = createApi({
       invalidatesTags: ['MeetingRequests', 'MeetingRequestOutcomes'],
     }),
 
+    // 7b. Send Meeting Request (Sponsor -> Sponsor)
+    sendSponsorMeetingRequestToSponsor: builder.mutation({
+      query: ({ sponsor_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message = '' }) => ({
+        url: API_ENDPOINTS.SPONSOR_SEND_MEETING_REQUEST_TO_SPONSOR,
+        method: 'POST',
+        body: { sponsor_id, event_id, priority, meeting_date, meeting_time_from, meeting_time_to, message },
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: true };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['MeetingRequests', 'MeetingRequestOutcomes'],
+    }),
+
     // 7a. Sponsor Meeting Times
     getSponsorMeetingTimes: builder.query({
       query: (args = {}) => {
@@ -1136,10 +1219,11 @@ export const api = createApi({
         const event_id = (Number.isFinite(raw) && raw > 0) ? raw : 27;
         const params = { event_id, _t: Date.now() };
         if (args?.date != null) params.date = args.date;
+        if (args?.target_delegate_id != null) params.target_delegate_id = args.target_delegate_id;
+        if (args?.target_sponsor_id != null) params.target_sponsor_id = args.target_sponsor_id;
         if (args?.date_from != null && args?.date_to != null) {
           params.date_from = args.date_from;
           params.date_to = args.date_to;
-          if (args?.target_delegate_id != null) params.target_delegate_id = args.target_delegate_id;
         }
         return { url: API_ENDPOINTS.SPONSOR_MEETING_TIMES, params };
       },
@@ -1147,7 +1231,16 @@ export const api = createApi({
 
     // 8. View Itinerary (Sponsor)
     getSponsorItinerary: builder.query({
-      query: () => API_ENDPOINTS.SPONSOR_VIEW_ITINERARY,
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        if (arg?.date) params.date = arg.date;
+        return { url: API_ENDPOINTS.SPONSOR_VIEW_ITINERARY, params };
+      },
       providesTags: ['Agenda'],
     }),
 
@@ -1321,12 +1414,15 @@ export const {
   useGetDelegateEventsQuery,
   useGetAllDelegatesQuery,
   useSendDelegateMeetingRequestMutation,
+  useSendDelegateMeetingRequestToDelegateMutation,
   useGetDelegateMeetingRequestsQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useDelegateMeetingRequestActionMutation,
   useGetDelegateMeetingTimesQuery,
   useGetAgendaQuery,
   useGetAgendaItemQuery,
+  useCheckInAgendaSessionMutation,
+  useGetAgendaCheckInStatusQuery,
   useGetDelegateAttendeesQuery,
   useGetDelegateItineraryQuery,
   useGetDelegateProfileQuery,
@@ -1348,6 +1444,7 @@ export const {
   useGetSponsorServicesQuery,
   useGetSponsorAllAttendeesQuery,
   useSendSponsorMeetingRequestMutation,
+  useSendSponsorMeetingRequestToSponsorMutation,
   useGetSponsorMeetingTimesQuery,
   useGetSponsorItineraryQuery,
   useGetSponsorProfileQuery,

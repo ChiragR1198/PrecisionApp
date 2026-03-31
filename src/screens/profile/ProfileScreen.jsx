@@ -408,6 +408,8 @@ export const ProfileScreen = () => {
   const [isContactSavedModalVisible, setIsContactSavedModalVisible] = useState(false);
   const [savedContactName, setSavedContactName] = useState('');
   const [isProfileUpdateSuccessModalVisible, setIsProfileUpdateSuccessModalVisible] = useState(false);
+  const [isLogoutConfirmModalVisible, setIsLogoutConfirmModalVisible] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -1161,34 +1163,24 @@ export const ProfileScreen = () => {
     };
   }, []);
 
-  const handleLogout = async () => {
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to logout?',
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Logout',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await logoutMutation().unwrap();
-              dispatch(logoutAction());
-              router.replace('/login');
-            } catch (error) {
-              console.error('Logout error:', error);
-              // Even if API call fails, clear auth and navigate to login
-              dispatch(logoutAction());
-              router.replace('/login');
-            }
-          },
-        },
-      ],
-      { cancelable: true }
-    );
+  const handleLogout = () => {
+    setIsLogoutConfirmModalVisible(true);
+  };
+
+  const confirmLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await logoutMutation().unwrap();
+    } catch (error) {
+      console.error('Logout error:', error);
+      // Even if API call fails, clear auth and navigate to login
+    } finally {
+      setIsLoggingOut(false);
+      setIsLogoutConfirmModalVisible(false);
+      dispatch(logoutAction());
+      router.replace('/login');
+    }
   };
 
   // Show loading state
@@ -1962,6 +1954,56 @@ export const ProfileScreen = () => {
                 <Text style={styles.contactSavedButtonPrimaryText}>OK</Text>
               </LinearGradient>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Logout Confirm Modal */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isLogoutConfirmModalVisible}
+        onRequestClose={() => setIsLogoutConfirmModalVisible(false)}
+      >
+        <View style={styles.contactSavedModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsLogoutConfirmModalVisible(false)} />
+          <View style={styles.contactSavedModalCard}>
+            <View style={styles.contactSavedIconContainer}>
+              <Icon name="log-out" size={56} color={colors.primary} />
+            </View>
+            <Text style={styles.contactSavedTitle}>Logout</Text>
+            <Text style={styles.contactSavedMessage}>
+              Are you sure you want to logout?
+            </Text>
+            <View style={styles.contactSavedButtonRow}>
+              <TouchableOpacity
+                style={styles.contactSavedButtonSecondary}
+                onPress={() => setIsLogoutConfirmModalVisible(false)}
+                activeOpacity={0.8}
+                disabled={isLoggingOut}
+              >
+                <Text style={styles.contactSavedButtonSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.contactSavedButtonPrimary, { opacity: isLoggingOut ? 0.7 : 1 }]}
+                onPress={confirmLogout}
+                activeOpacity={0.8}
+                disabled={isLoggingOut}
+              >
+                <LinearGradient
+                  colors={colors.gradient}
+                  style={styles.contactSavedButtonGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  {isLoggingOut ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.contactSavedButtonPrimaryText}>Logout</Text>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>

@@ -32,18 +32,6 @@ const formatTime = (timeStr) => {
   return `${displayHour}:${minutes} ${ampm}`;
 };
 
-// Helper function to format date
-const formatDate = (dateStr) => {
-  if (!dateStr) return { dayLabel: '', day: '', date: '' };
-  const date = new Date(dateStr);
-  const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-  return {
-    dayLabel: days[date.getDay()],
-    day: date.getDate().toString(),
-    date: dateStr,
-  };
-};
-
 // Helper function to group agenda by time of day
 const groupAgendaByTime = (agendaItems) => {
   const morning = [];
@@ -167,13 +155,28 @@ export const AgendaScreen = () => {
 
   // Get unique dates from agenda
   const dates = useMemo(() => {
-    const uniqueDates = [...new Set(agenda.map(item => item.date))].sort();
+    const dateToMeta = new Map();
+    for (const item of agenda) {
+      const dateKey = item?.date;
+      if (!dateKey || dateToMeta.has(dateKey)) continue;
+
+      // IMPORTANT: no frontend date formatting/parsing here.
+      // We only surface whatever the backend sends (if present).
+      dateToMeta.set(dateKey, {
+        label: item?.day_label ?? item?.dayLabel ?? item?.date_label ?? item?.dateLabel ?? '',
+        day: item?.day ?? item?.day_num ?? item?.dayNum ?? item?.date_day ?? item?.dateDay ?? '',
+      });
+    }
+
+    const uniqueDates = Array.from(dateToMeta.keys()).sort();
     return uniqueDates.map((dateStr, index) => {
-      const formatted = formatDate(dateStr);
+      const meta = dateToMeta.get(dateStr) || {};
       return {
         id: index,
-        label: formatted.dayLabel,
-        day: formatted.day,
+        // No fallback formatting/parsing on frontend.
+        // UI will show only what backend provides (label/day).
+        label: meta.label || '',
+        day: meta.day || '',
         date: dateStr,
       };
     });

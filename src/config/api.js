@@ -44,6 +44,7 @@ export const API_ENDPOINTS = {
   // Delegate Meeting Requests
   DELEGATE_REVIEW_MEETING_REQUESTS: '/delegate/review-meeting-request',
   DELEGATE_SEND_MEETING_REQUEST: '/delegate/send-meeting-request',
+  DELEGATE_SEND_MEETING_REQUEST_TO_DELEGATE: '/delegate/send-meeting-request-to-delegate',
   DELEGATE_MEETING_REQUEST_ACTION: '/delegate/meeting-request-action',
   /** Delegate's sent requests: sponsor accepted/declined (shows Accepted/Declined on Event Sponsors) */
   DELEGATE_MEETING_REQUEST_ACCEPTED_BY_SPONSOR: '/delegate/meeting-request-accepted-by-sponsor',
@@ -63,6 +64,8 @@ export const API_ENDPOINTS = {
   SPONSOR_EVENT_SPONSOR: (id) => `/sponsor/event-sponsor/${id}`,
   SPONSOR_MEETING_REQUEST_FROM_DELEGATE: '/sponsor/meeting-request-from-delegate',
   SPONSOR_SEND_MEETING_REQUEST: '/sponsor/send-meeting-request',
+  // Sponsor -> Sponsor meeting request
+  SPONSOR_SEND_MEETING_REQUEST_TO_SPONSOR: '/sponsor/send-meeting-request-to-sponsor',
   SPONSOR_MEETING_REQUEST_ACTION: '/sponsor/meeting-request-action',
   /** Sponsor's sent requests: delegate accepted/declined (shows Accepted/Declined on Event Delegates) */
   SPONSOR_MEETING_REQUEST_ACCEPTED_BY_DELEGATE: '/sponsor/meeting-request-accepted-by-delegate',
@@ -85,6 +88,8 @@ export const API_ENDPOINTS = {
   // ============ AGENDA ============
   AGENDA_BY_ID: (id) => `/agenda/${id}`,
   AGENDA_ITEM_BY_ID: (id) => `/agenda/item/${id}`,
+  AGENDA_CHECK_IN: '/agenda/check-in',
+  AGENDA_CHECK_IN_STATUS: '/agenda/check-in-status',
 
   // ============ PUSH NOTIFICATIONS ============
   PUSH_REGISTER_TOKEN: 'push/register-token',

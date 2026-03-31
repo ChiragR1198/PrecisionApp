@@ -8,6 +8,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   BackHandler,
+  Modal,
+  Pressable,
   Platform,
   ScrollView,
   StyleSheet,
@@ -20,7 +22,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
-import { useGetAgendaItemQuery } from '../../store/api';
+import {
+  useCheckInAgendaSessionMutation,
+  useGetAgendaCheckInStatusQuery,
+  useGetAgendaItemQuery,
+} from '../../store/api';
 
 const ClockIcon = ({ color = colors.white, size = 20 }) => (
   <MaterialCommunityIcons name="clock" size={size} color={color} />
@@ -47,12 +53,31 @@ const formatTime = (timeStr) => {
   return `${displayHour}:${minutes} ${ampm}`;
 };
 
-// Helper function to format date
+// Helper function to format date (timezone-safe for "YYYY-MM-DD")
 const formatDateDisplay = (dateStr) => {
   if (!dateStr) return { date: '', dayName: '' };
-  const date = new Date(dateStr);
+
+  const s = String(dateStr).slice(0, 10);
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+  // If backend already sent display-safe values, prefer them (handled elsewhere).
+  // For raw "YYYY-MM-DD", compute using UTC to avoid locale shifting.
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]) - 1;
+    const d = Number(m[3]);
+    const utc = new Date(Date.UTC(y, mo, d));
+    return {
+      date: `${months[utc.getUTCMonth()]} ${utc.getUTCDate()}, ${utc.getUTCFullYear()}`,
+      dayName: days[utc.getUTCDay()],
+    };
+  }
+
+  // Fallback for other formats
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return { date: '', dayName: '' };
   return {
     date: `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`,
     dayName: days[date.getDay()],
@@ -105,6 +130,25 @@ export const AgendaDetailScreen = () => {
     params?.agendaId,
     { skip: !params?.agendaId }
   );
+
+  const [checkInAgendaSession, { isLoading: isCheckingIn }] = useCheckInAgendaSessionMutation();
+  const [isCheckedIn, setIsCheckedIn] = useState(false);
+  const [isCheckInInfoModalVisible, setIsCheckInInfoModalVisible] = useState(false);
+
+  const { data: checkInStatus } = useGetAgendaCheckInStatusQuery(params?.agendaId, {
+    skip: !params?.agendaId,
+  });
+
+  useEffect(() => {
+    // Reset when navigating between different agenda items,
+    // so only the current session's button becomes disabled.
+    setIsCheckedIn(false);
+  }, [params?.agendaId]);
+
+  useEffect(() => {
+    const checked = checkInStatus?.data?.checked_in;
+    if (checked) setIsCheckedIn(true);
+  }, [checkInStatus?.data?.checked_in]);
 
   // Handle back navigation (both header back button and hardware back button)
   const handleBack = useCallback(() => {
@@ -182,11 +226,13 @@ export const AgendaDetailScreen = () => {
   const agendaItem = useMemo(() => {
     // If we have API data, use it (preferred)
     if (selectedAgendaItem) {
-      const dateFormatted = formatDateDisplay(selectedAgendaItem.date);
+      const dateFormatted = selectedAgendaItem?.date_display
+        ? { date: selectedAgendaItem.date_display, dayName: selectedAgendaItem?.day_name || '' }
+        : formatDateDisplay(selectedAgendaItem.date);
       return {
         id: selectedAgendaItem.id,
         title: selectedAgendaItem.title || 'Untitled Session',
-        time: formatTime(selectedAgendaItem.time),
+        time: selectedAgendaItem?.time_display || formatTime(selectedAgendaItem.time),
         description: normalizeWhitespace(decodeEntities(stripHtml(selectedAgendaItem.description || ''))),
         location: selectedAgendaItem.location || selectedAgendaItem.venue || '',
         locationDetails: '',
@@ -215,6 +261,44 @@ export const AgendaDetailScreen = () => {
       speakers: [],
     };
   }, [selectedAgendaItem, initialData]);
+
+  const canCheckIn = useMemo(() => {
+    // Timezone-safe: backend returns can_check_in based on server/event-local time.
+    return Boolean(checkInStatus?.data?.can_check_in);
+  }, [checkInStatus?.data?.can_check_in]);
+
+  const checkInBlockedMessage = useMemo(() => {
+    const availableFrom = checkInStatus?.data?.available_from_display;
+    const sessionStart = checkInStatus?.data?.session_start_display;
+    if (availableFrom) {
+      return `Check-in opens 20 minutes before the session starts. Please try again at ${availableFrom}.`;
+    }
+    if (sessionStart) {
+      return `Check-in opens 20 minutes before the session starts. Please try again closer to ${sessionStart}.`;
+    }
+    return 'Check-in opens 20 minutes before the session starts. Please try again shortly before the session begins.';
+  }, [checkInStatus?.data?.available_from_display, checkInStatus?.data?.session_start_display]);
+
+  const handleCheckIn = useCallback(async () => {
+    if (!params?.agendaId) return;
+
+    if (!canCheckIn) {
+      setIsCheckInInfoModalVisible(true);
+      return;
+    }
+
+    // Optimistic disable to prevent double-taps.
+    setIsCheckedIn(true);
+    try {
+      const res = await checkInAgendaSession({
+        agenda_id: Number(params.agendaId),
+      }).unwrap();
+      if (!res?.success) setIsCheckedIn(false);
+    } catch (e) {
+      // keep silent; existing app has global API error toast
+      setIsCheckedIn(false);
+    }
+  }, [params?.agendaId, canCheckIn, checkInBlockedMessage, checkInAgendaSession]);
 
   const descriptionText = agendaItem.description || '';
 
@@ -347,6 +431,25 @@ export const AgendaDetailScreen = () => {
               <View style={styles.timeContainer}>
                 <ClockIcon />
                 <Text style={styles.timeText}>{agendaItem.time}</Text>
+
+                <TouchableOpacity
+                  style={[
+                    styles.checkInButton,
+                    (!canCheckIn || isCheckingIn || isCheckedIn) && styles.checkInButtonDisabled,
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={handleCheckIn}
+                  // Keep tappable when blocked so we can show the popup message.
+                  disabled={isCheckingIn || isCheckedIn}
+                >
+                  {isCheckingIn ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.checkInButtonText}>
+                      {isCheckedIn ? "I'm in this session" : "I'm in this session"}
+                    </Text>
+                  )}
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -428,6 +531,39 @@ export const AgendaDetailScreen = () => {
           </View>
         </View>
       </ScrollView>
+
+      {/* Themed modal (like Profile update success) */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isCheckInInfoModalVisible}
+        onRequestClose={() => setIsCheckInInfoModalVisible(false)}
+      >
+        <View style={styles.checkInModalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setIsCheckInInfoModalVisible(false)}
+          />
+          <View style={styles.checkInModalCard}>
+            <Text style={styles.checkInModalTitle}>Check-in not available yet</Text>
+            <Text style={styles.checkInModalMessage}>{checkInBlockedMessage}</Text>
+            <TouchableOpacity
+              style={styles.checkInModalButton}
+              onPress={() => setIsCheckInInfoModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={colors.gradient}
+                style={styles.checkInModalButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.checkInModalButtonText}>OK</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -491,12 +627,85 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 4,
+    flexWrap: 'wrap',
   },
   timeText: {
     fontSize: SIZES.body,
     fontWeight: '500',
     color: colors.white,
     marginLeft: 8,
+    marginRight: 12,
+  },
+  checkInButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 9999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 32,
+    marginTop: 8,
+  },
+  checkInButtonDisabled: {
+    opacity: 0.55,
+  },
+  checkInButtonText: {
+    color: colors.white,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  // Themed modal styles (match ProfileScreen look & feel)
+  checkInModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  checkInModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: colors.white,
+    borderRadius: 18,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  checkInModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  checkInModalMessage: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  checkInModalButton: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  checkInModalButtonGradient: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkInModalButtonText: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '800',
   },
   detailsCard: {
     backgroundColor: colors.white,

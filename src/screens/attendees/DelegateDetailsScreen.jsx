@@ -33,6 +33,7 @@ import {
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
+  useSendDelegateMeetingRequestToDelegateMutation,
   useSendSponsorMeetingRequestMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
@@ -169,8 +170,8 @@ export const DelegateDetailsScreen = () => {
 
   // Use appropriate mutation based on user type
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
+  const [createDelegateMeetingRequestToDelegate] = useSendDelegateMeetingRequestToDelegateMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
-  const createMeetingRequest = isDelegate ? createDelegateMeetingRequest : createSponsorMeetingRequest;
 
   const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
   const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
@@ -280,8 +281,18 @@ export const DelegateDetailsScreen = () => {
     };
 
     const toHHMM = (hhmmss) => {
-      const s = String(hhmmss || '');
-      return s.length >= 5 ? s.slice(0, 5) : s;
+      const s = String(hhmmss || '').trim();
+      // Accept "HH:MM", "HH:MM:SS"
+      const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (!m) return s;
+      let h = Number(m[1]);
+      const mm = m[2];
+      if (!Number.isFinite(h)) return s;
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12;
+      if (h === 0) h = 12;
+      const hh = String(h).padStart(2, '0');
+      return `${hh}:${mm} ${ampm}`;
     };
 
     // API shape (from logs): { data: { "YYYY-MM-DD": [ {meeting_from,...} ] }, dates: [...] }
@@ -717,11 +728,19 @@ export const DelegateDetailsScreen = () => {
     const dateTo = selectedEventDateTo ? String(selectedEventDateTo).slice(0, 10) : null;
 
     const params = { event_id: effectiveEventId, date };
+    if (isDelegate) {
+      // Login delegate:
+      // - viewing sponsor profile -> exclude booked slots for target sponsor
+      // - viewing delegate profile -> exclude booked slots for target delegate
+      if (isSponsorProfile) params.target_sponsor_id = Number(delegate.id);
+      else params.target_delegate_id = Number(delegate.id);
+    } else {
+      params.target_delegate_id = Number(delegate.id);
+    }
+
     if (dateFrom && dateTo) {
       params.date_from = dateFrom;
       params.date_to = dateTo;
-      if (isDelegate) params.target_sponsor_id = Number(delegate.id);
-      else params.target_delegate_id = Number(delegate.id);
     }
 
     setMeetingTimesParams(params);
@@ -770,8 +789,10 @@ export const DelegateDetailsScreen = () => {
       }
 
       // API expects meeting_date, meeting_time_from, meeting_time_to
-      const payload = isDelegate
-        ? {
+      if (isDelegate) {
+        if (isSponsorProfile) {
+          // delegate -> sponsor
+          const payload = {
             sponsor_id: Number(delegate.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
@@ -779,8 +800,11 @@ export const DelegateDetailsScreen = () => {
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
             message: '',
-          }
-        : {
+          };
+          await createDelegateMeetingRequest(payload).unwrap();
+        } else {
+          // delegate -> delegate
+          const payload = {
             delegate_id: Number(delegate.id),
             event_id: Number(eventId || 27),
             priority: priorityValue,
@@ -789,8 +813,21 @@ export const DelegateDetailsScreen = () => {
             meeting_time_to: meetingTimeTo,
             message: '',
           };
-
-      await createMeetingRequest(payload).unwrap();
+          await createDelegateMeetingRequestToDelegate(payload).unwrap();
+        }
+      } else {
+        // sponsor login: sponsor -> delegate
+        const payload = {
+          delegate_id: Number(delegate.id),
+          event_id: Number(eventId || 27),
+          priority: priorityValue,
+          meeting_date: meetingDateVal,
+          meeting_time_from: meetingTimeFrom,
+          meeting_time_to: meetingTimeTo,
+          message: '',
+        };
+        await createSponsorMeetingRequest(payload).unwrap();
+      }
 
       setModalStep('priority');
       setHasRequested(true);
