@@ -1,5 +1,5 @@
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -453,7 +453,13 @@ export const SponsorsScreen = () => {
     return map;
   }, [meetingOutcomesData, isDelegate]);
 
-  const todayDate = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const todayDate = useMemo(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }, []);
 
   const meetingDate = useMemo(() => {
     const raw = selectedEventDateFrom;
@@ -461,7 +467,12 @@ export const SponsorsScreen = () => {
     const s = String(raw);
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    if (!Number.isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
     return todayDate;
   }, [selectedEventDateFrom, todayDate]);
 
@@ -731,10 +742,36 @@ export const SponsorsScreen = () => {
       const requestOutcome =
         outcomeFlag === 1 ? 'accepted' : outcomeFlag === 2 ? 'declined' : null;
       const hasLocalRequest = Number.isFinite(numericId) && locallyRequestedIds.includes(numericId);
+      const hasServerRequest = Boolean(attendee?.hasRequest);
+      const rawServerMeetingId = attendee?.meetingId ?? attendee?.meeting_id;
+      const hasServerMeetingId =
+        rawServerMeetingId !== null &&
+        rawServerMeetingId !== undefined &&
+        rawServerMeetingId !== '' &&
+        Number.isFinite(Number(rawServerMeetingId));
+      const serverMeetingStatus = attendee?.meetingStatus ?? attendee?.meeting_status;
+      const serverMeetingAccepted = attendee?.is_accepted ?? attendee?.meeting_is_accepted;
+      const hasServerPendingFromMeetingFields =
+        (hasServerMeetingId || (serverMeetingStatus != null && serverMeetingStatus !== '')) &&
+        (serverMeetingAccepted == null || serverMeetingAccepted === '' || String(serverMeetingAccepted).toUpperCase() === 'NULL');
       const mappedPriorityText = attendeePriorityMap.get(numericId) || null;
-      const priorityText = localPriorityMap[numericId] || mappedPriorityText || null;
+      const backendPriorityText =
+        typeof attendee?.priorityText === 'string' && attendee.priorityText.trim() !== ''
+          ? attendee.priorityText.trim()
+          : (Number(attendee?.priority ?? attendee?.meeting_priority) === 1
+              ? '1st'
+              : Number(attendee?.priority ?? attendee?.meeting_priority) === 2
+                ? '2nd'
+                : null);
+      const priorityText = localPriorityMap[numericId] || mappedPriorityText || backendPriorityText || null;
       const hasPendingRequest =
-        !requestOutcome && (hasLocalRequest || requestedAttendeeIds.has(numericId));
+        !requestOutcome &&
+        (
+          hasLocalRequest ||
+          requestedAttendeeIds.has(numericId) ||
+          hasServerRequest ||
+          hasServerPendingFromMeetingFields
+        );
 
       return {
         ...item,

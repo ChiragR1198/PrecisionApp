@@ -17,6 +17,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -27,9 +28,11 @@ import { colors, radius } from '../../constants/theme';
 import {
   useGetAllDelegatesQuery,
   useGetDelegateAttendeesQuery,
+  useGetDelegateMeetingLocationsQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
   useGetSponsorAllAttendeesQuery,
+  useGetSponsorMeetingLocationsQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
@@ -99,6 +102,23 @@ function normalizeOutcomeAccepted(raw) {
   return null;
 }
 
+function resolveOutcomeFlagFromRow(row) {
+  const acceptRaw = row?.is_accepted ?? row?.isAccepted;
+  const statusRaw = row?.status ?? row?.meeting_status;
+  const acceptNum = Number(acceptRaw);
+  const statusNum = Number(statusRaw);
+
+  if (acceptNum === 1 && statusNum === 2) return 1;
+  if (acceptNum === 2) return 2;
+
+  const isAcceptMissing =
+    acceptRaw == null || acceptRaw === '' || String(acceptRaw).toUpperCase() === 'NULL';
+  if (isAcceptMissing && statusNum === 2) return 1;
+  if (isAcceptMissing && statusNum === 1) return 2;
+
+  return normalizeOutcomeAccepted(acceptRaw);
+}
+
 function formatMeetingTimeShort(raw) {
   if (raw == null || raw === '') return '';
   const s = String(raw).trim();
@@ -119,6 +139,14 @@ function formatMeetingDateDisplay(raw) {
     return `${d}/${mo}/${y}`;
   }
   return String(raw);
+}
+
+function normalizeMeetingLocationLabel(rawLabel, rawOther) {
+  const label = String(rawLabel ?? '').trim();
+  const other = String(rawOther ?? '').trim();
+  if (!label && !other) return '';
+  if (label.toLowerCase() === 'other') return other || 'Other';
+  return label || other;
 }
 
 function pickOutcomeInfo(map, attendee, isDelegate) {
@@ -162,7 +190,11 @@ export const DelegateDetailsScreen = () => {
   // selected slot shape: { date: 'YYYY-MM-DD', from: 'HH:MM', to: 'HH:MM', fromFull: 'HH:MM:SS' }
   const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
+  const [selectedMeetingLocationId, setSelectedMeetingLocationId] = useState(null);
+  const [meetingLocationOther, setMeetingLocationOther] = useState('');
+  const [isMeetingLocationDropdownOpen, setIsMeetingLocationDropdownOpen] = useState(false);
   const [isBioExpanded, setIsBioExpanded] = useState(false);
+  const [isImagePreviewVisible, setIsImagePreviewVisible] = useState(false);
 
   // Determine user type
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -209,16 +241,18 @@ export const DelegateDetailsScreen = () => {
         ? Number(row?.sponsor_id ?? row?.sponsorId ?? row?.sponsorID ?? row?.sponsor_user_id)
         : Number(row?.delegate_id ?? row?.delegateId ?? row?.delegateID ?? row?.user_id);
       if (!Number.isFinite(id)) return;
-      const acceptRaw = row?.is_accepted ?? row?.isAccepted;
-      const flag =
-        acceptRaw != null && acceptRaw !== ''
-          ? normalizeOutcomeAccepted(acceptRaw)
-          : normalizeOutcomeAccepted(row?.status);
+      const flag = resolveOutcomeFlagFromRow(row);
       if (flag == null) return;
       const date = row?.date ?? row?.meeting_date ?? null;
       const time =
         row?.time ?? row?.meeting_time_from ?? row?.meeting_time_to ?? row?.meeting_time ?? null;
-      const entry = { flag, date, time };
+      const location =
+        normalizeMeetingLocationLabel(
+          row?.meeting_location_label ?? row?.location_label ?? row?.meeting_location,
+          row?.meeting_location_other ?? row?.location_other
+        ) ||
+        String(row?.meeting_location_option_id ?? '').trim();
+      const entry = { flag, date, time, location };
       map.set(id, entry);
       map.set(String(id), entry);
     });
@@ -227,7 +261,10 @@ export const DelegateDetailsScreen = () => {
 
   const todayDate = useMemo(() => {
     const now = new Date();
-    return now.toISOString().split('T')[0];
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }, []);
 
   const meetingDate = useMemo(() => {
@@ -236,7 +273,12 @@ export const DelegateDetailsScreen = () => {
     const s = String(raw);
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    if (!Number.isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
     return todayDate;
   }, [params?.eventDateFrom, selectedEventDateFrom, todayDate]);
 
@@ -261,6 +303,40 @@ export const DelegateDetailsScreen = () => {
   const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
   const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
   const refetchMeetingTimes = isDelegate ? refetchDelegateMeetingTimes : refetchSponsorMeetingTimes;
+
+  const { data: delegateMeetingLocationsData } = useGetDelegateMeetingLocationsQuery(undefined, {
+    skip: !user || !isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: sponsorMeetingLocationsData } = useGetSponsorMeetingLocationsQuery(undefined, {
+    skip: !user || isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const meetingLocationOptions = useMemo(() => {
+    const source = isDelegate ? delegateMeetingLocationsData : sponsorMeetingLocationsData;
+    const raw = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+    return raw
+      .map((item) => {
+        const id = Number(item?.id ?? item?.meeting_location_option_id ?? item?.value);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        const key = String(item?.key ?? item?.option_key ?? '').trim().toLowerCase();
+        const label = String(item?.label ?? item?.name ?? item?.title ?? '').trim();
+        return {
+          id,
+          key,
+          label: label || `Option ${id}`,
+          isOther: Boolean(item?.is_other) || key === 'other' || label.toLowerCase() === 'other',
+        };
+      })
+      .filter(Boolean);
+  }, [isDelegate, delegateMeetingLocationsData, sponsorMeetingLocationsData]);
+
+  const selectedMeetingLocationOption = useMemo(
+    () => meetingLocationOptions.find((item) => item.id === selectedMeetingLocationId) || null,
+    [meetingLocationOptions, selectedMeetingLocationId]
+  );
+  const requiresMeetingLocationOther = Boolean(selectedMeetingLocationOption?.isOther);
 
   const meetingSlotGroups = useMemo(() => {
     if (!meetingTimesData) return [];
@@ -562,11 +638,61 @@ export const DelegateDetailsScreen = () => {
     return parts.join(' · ');
   }, [requestOutcome, outcomeInfoForDelegate, delegate]);
 
+  const acceptedMeetingLocationLabel = useMemo(() => {
+    if (requestOutcome !== 'accepted') return '';
+    return (
+      normalizeMeetingLocationLabel(
+        outcomeInfoForDelegate?.meeting_location_label ??
+          outcomeInfoForDelegate?.location ??
+          mergedDelegate?.meeting_location_label ??
+          mergedDelegate?.meetingLocationLabel,
+        outcomeInfoForDelegate?.meeting_location_other ??
+          mergedDelegate?.meeting_location_other ??
+          mergedDelegate?.meetingLocationOther
+      ) ||
+      ''
+    );
+  }, [requestOutcome, outcomeInfoForDelegate, mergedDelegate]);
+
   const hasPendingRequest = useMemo(
-    () =>
-      !requestOutcome &&
-      (hasRequested || Boolean(delegate?.hasRequest)),
-    [requestOutcome, hasRequested, delegate?.hasRequest]
+    () => {
+      if (requestOutcome) return false;
+      const hasServerRequest =
+        mergedDelegate?.hasRequest === true ||
+        mergedDelegate?.hasRequest === 1 ||
+        mergedDelegate?.hasRequest === '1';
+      const rawServerMeetingId = mergedDelegate?.meetingId ?? mergedDelegate?.meeting_id;
+      const hasServerMeetingId =
+        rawServerMeetingId !== null &&
+        rawServerMeetingId !== undefined &&
+        rawServerMeetingId !== '' &&
+        Number.isFinite(Number(rawServerMeetingId));
+      const serverMeetingStatus =
+        mergedDelegate?.meetingStatus ?? mergedDelegate?.meeting_status;
+      const serverMeetingAccepted =
+        mergedDelegate?.is_accepted ?? mergedDelegate?.meeting_is_accepted;
+      const hasServerPendingFromMeetingFields =
+        (hasServerMeetingId ||
+          (serverMeetingStatus != null && serverMeetingStatus !== '')) &&
+        (
+          serverMeetingAccepted == null ||
+          serverMeetingAccepted === '' ||
+          String(serverMeetingAccepted).toUpperCase() === 'NULL' ||
+          String(serverMeetingAccepted) === '0'
+        );
+      return hasRequested || hasServerRequest || hasServerPendingFromMeetingFields;
+    },
+    [
+      requestOutcome,
+      hasRequested,
+      mergedDelegate?.hasRequest,
+      mergedDelegate?.meetingId,
+      mergedDelegate?.meeting_id,
+      mergedDelegate?.meetingStatus,
+      mergedDelegate?.meeting_status,
+      mergedDelegate?.is_accepted,
+      mergedDelegate?.meeting_is_accepted,
+    ]
   );
 
   const meetingRequestLabel = useMemo(() => {
@@ -579,26 +705,38 @@ export const DelegateDetailsScreen = () => {
 
   const meetingRequestDisabled = requestOutcome === 'accepted' || hasPendingRequest;
 
-  // If this profile already has a meeting request (from AttendeesScreen/API),
-  // initialise the requested state and priority so the UI shows it as already sent.
+  // Keep request UI scoped to current profile only (avoid carry-over between profiles).
   useEffect(() => {
-    if (delegate && typeof delegate.hasRequest !== 'undefined') {
-      setHasRequested(Boolean(delegate.hasRequest));
+    const hasRequestForCurrentProfile = Boolean(mergedDelegate?.hasRequest);
+    setHasRequested(hasRequestForCurrentProfile);
 
-      // Try to initialise priority from incoming data (e.g. '1st', '2nd')
-      if (delegate.priorityText && typeof delegate.priorityText === 'string') {
-        setPriority(delegate.priorityText);
-        setRequestedPriorityText(delegate.priorityText);
-      } else if (delegate.priority && typeof delegate.priority === 'number') {
-        const mapped =
-          delegate.priority === 1 ? '1st' :
-          delegate.priority === 2 ? '2nd' :
-          '1st';
-        setPriority(mapped);
-        setRequestedPriorityText(mapped);
-      }
+    let mappedPriority = null;
+    if (
+      typeof mergedDelegate?.priorityText === 'string' &&
+      mergedDelegate.priorityText.trim() !== ''
+    ) {
+      mappedPriority = mergedDelegate.priorityText.trim();
+    } else if (
+      Number.isFinite(Number(mergedDelegate?.priority ?? mergedDelegate?.meeting_priority))
+    ) {
+      const priorityNum = Number(mergedDelegate?.priority ?? mergedDelegate?.meeting_priority);
+      mappedPriority =
+        priorityNum === 1
+          ? '1st'
+          : priorityNum === 2
+            ? '2nd'
+            : null;
     }
-  }, [delegate]);
+
+    setRequestedPriorityText(hasRequestForCurrentProfile ? mappedPriority : null);
+    setPriority(mappedPriority || '1st');
+  }, [
+    mergedDelegate?.id,
+    mergedDelegate?.hasRequest,
+    mergedDelegate?.priorityText,
+    mergedDelegate?.priority,
+    mergedDelegate?.meeting_priority,
+  ]);
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -705,6 +843,9 @@ export const DelegateDetailsScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setSelectedMeetingLocationId(null);
+    setMeetingLocationOther('');
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   };
 
@@ -714,8 +855,19 @@ export const DelegateDetailsScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setSelectedMeetingLocationId(null);
+    setMeetingLocationOther('');
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   };
+
+  const openImagePreview = useCallback(() => {
+    if (mergedDelegate?.image) setIsImagePreviewVisible(true);
+  }, [mergedDelegate?.image]);
+
+  const closeImagePreview = useCallback(() => {
+    setIsImagePreviewVisible(false);
+  }, []);
 
   // Show time-slot step inside same modal (no second modal — fixes Android)
   const openTimeModal = () => {
@@ -745,10 +897,12 @@ export const DelegateDetailsScreen = () => {
 
     setMeetingTimesParams(params);
     setSelectedTimeSlot(null);
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('time');
   };
 
   const closeTimeModal = () => {
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   };
 
@@ -788,6 +942,18 @@ export const DelegateDetailsScreen = () => {
         return;
       }
 
+      if (!selectedMeetingLocationId) {
+        Alert.alert('Error', 'Please select a meeting location');
+        setIsSendingRequest(false);
+        return;
+      }
+      const meetingLocationOtherText = requiresMeetingLocationOther ? meetingLocationOther.trim() : '';
+      if (requiresMeetingLocationOther && !meetingLocationOtherText) {
+        Alert.alert('Error', 'Please enter location details for "Other"');
+        setIsSendingRequest(false);
+        return;
+      }
+
       // API expects meeting_date, meeting_time_from, meeting_time_to
       if (isDelegate) {
         if (isSponsorProfile) {
@@ -799,6 +965,8 @@ export const DelegateDetailsScreen = () => {
             meeting_date: meetingDateVal,
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
+            meeting_location_option_id: selectedMeetingLocationId,
+            meeting_location_other: meetingLocationOtherText,
             message: '',
           };
           await createDelegateMeetingRequest(payload).unwrap();
@@ -811,6 +979,8 @@ export const DelegateDetailsScreen = () => {
             meeting_date: meetingDateVal,
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
+            meeting_location_option_id: selectedMeetingLocationId,
+            meeting_location_other: meetingLocationOtherText,
             message: '',
           };
           await createDelegateMeetingRequestToDelegate(payload).unwrap();
@@ -824,6 +994,8 @@ export const DelegateDetailsScreen = () => {
           meeting_date: meetingDateVal,
           meeting_time_from: meetingTimeFrom,
           meeting_time_to: meetingTimeTo,
+          meeting_location_option_id: selectedMeetingLocationId,
+          meeting_location_other: meetingLocationOtherText,
           message: '',
         };
         await createSponsorMeetingRequest(payload).unwrap();
@@ -834,6 +1006,9 @@ export const DelegateDetailsScreen = () => {
       setRequestedPriorityText(priority);
       setIsRequestSuccess(true);
       setSelectedTimeSlot(null);
+      setSelectedMeetingLocationId(null);
+      setMeetingLocationOther('');
+      setIsMeetingLocationDropdownOpen(false);
     } catch (e) {
       console.error('Error sending meeting request:', e);
       Alert.alert('Error', e?.data?.message || e?.message || 'Failed to send meeting request');
@@ -936,11 +1111,13 @@ export const DelegateDetailsScreen = () => {
           <View style={styles.profileSection}>
             <View style={[styles.profilePicture, { width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }]}>
               {mergedDelegate.image ? (
-                <Image
-                  source={{ uri: mergedDelegate.image }}
-                  style={{ width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }}
-                  resizeMode="cover"
-                />
+                <TouchableOpacity activeOpacity={0.85} onPress={openImagePreview}>
+                  <Image
+                    source={{ uri: mergedDelegate.image }}
+                    style={{ width: SIZES.profileSize, height: SIZES.profileSize, borderRadius: SIZES.profileSize / 2 }}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
               ) : (
                 <UserIcon size={SIZES.profileSize * 0.5} />
               )}
@@ -1049,7 +1226,9 @@ export const DelegateDetailsScreen = () => {
           ) : null}
 
           {/* Address + scheduled meeting (delegate↔sponsor, after meeting is accepted) */}
-          {(mergedDelegate.address || (requestOutcome === 'accepted' && acceptedMeetingWhenLabel)) ? (
+          {(mergedDelegate.address ||
+            (requestOutcome === 'accepted' &&
+              (acceptedMeetingWhenLabel || acceptedMeetingLocationLabel))) ? (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>
                 {mergedDelegate.address ? 'Address' : 'Meeting'}
@@ -1057,6 +1236,9 @@ export const DelegateDetailsScreen = () => {
               <View style={styles.addressCard}>
                 {mergedDelegate.address ? (
                   <DetailRow label="Location" value={mergedDelegate.address} />
+                ) : null}
+                {requestOutcome === 'accepted' && acceptedMeetingLocationLabel ? (
+                  <DetailRow label="Meeting Location" value={acceptedMeetingLocationLabel} />
                 ) : null}
                 {requestOutcome === 'accepted' && acceptedMeetingWhenLabel ? (
                   <DetailRow label="Meeting" value={acceptedMeetingWhenLabel} />
@@ -1078,6 +1260,21 @@ export const DelegateDetailsScreen = () => {
           )}
         </View>
       </ScrollView>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isImagePreviewVisible}
+        onRequestClose={closeImagePreview}
+      >
+        <View style={styles.imagePreviewOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeImagePreview} />
+          <TouchableOpacity style={styles.imagePreviewClose} onPress={closeImagePreview} activeOpacity={0.8}>
+            <Icon name="x" size={28} color={colors.white} />
+          </TouchableOpacity>
+          <Image source={{ uri: mergedDelegate?.image }} style={styles.imagePreviewImage} resizeMode="contain" />
+        </View>
+      </Modal>
 
       {/* Single modal: priority step + time-slot step (no nested modals — fixes Android) */}
       <Modal
@@ -1139,6 +1336,53 @@ export const DelegateDetailsScreen = () => {
                     <Text style={[styles.loadingTextModal, { marginTop: 8, fontSize: 12 }]}>
                       You can still send a request with a default time.
                     </Text>
+                    <View style={styles.meetingLocationField}>
+                      <Text style={styles.meetingLocationLabel}>Meeting place</Text>
+                      <TouchableOpacity
+                        style={styles.meetingLocationDropdown}
+                        onPress={() => setIsMeetingLocationDropdownOpen((prev) => !prev)}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.meetingLocationDropdownText,
+                            !selectedMeetingLocationOption && styles.meetingLocationPlaceholder,
+                          ]}
+                        >
+                          {selectedMeetingLocationOption?.label || 'Select meeting place'}
+                        </Text>
+                        <Text style={styles.meetingLocationChevron}>
+                          {isMeetingLocationDropdownOpen ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isMeetingLocationDropdownOpen && (
+                        <View style={styles.meetingLocationDropdownMenu}>
+                          {meetingLocationOptions.map((option) => (
+                            <TouchableOpacity
+                              key={option.id}
+                              style={styles.meetingLocationOption}
+                              onPress={() => {
+                                setSelectedMeetingLocationId(option.id);
+                                setIsMeetingLocationDropdownOpen(false);
+                                if (!option.isOther) setMeetingLocationOther('');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.meetingLocationOptionText}>{option.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                      {requiresMeetingLocationOther ? (
+                        <TextInput
+                          value={meetingLocationOther}
+                          onChangeText={setMeetingLocationOther}
+                          placeholder="Enter location details"
+                          placeholderTextColor={colors.textMuted}
+                          style={styles.meetingLocationOtherInput}
+                        />
+                      ) : null}
+                    </View>
                     <TouchableOpacity
                       style={[styles.modalButton, styles.primaryButton, { marginTop: 16, opacity: isSendingRequest ? 0.6 : 1 }]}
                       onPress={() => handleSendMeetingRequest(getDefaultSlot())}
@@ -1189,6 +1433,53 @@ export const DelegateDetailsScreen = () => {
                       ))}
                     </ScrollView>
                     <View style={styles.separator3}/>
+                    <View style={styles.meetingLocationField}>
+                      <Text style={styles.meetingLocationLabel}>Meeting place</Text>
+                      <TouchableOpacity
+                        style={styles.meetingLocationDropdown}
+                        onPress={() => setIsMeetingLocationDropdownOpen((prev) => !prev)}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.meetingLocationDropdownText,
+                            !selectedMeetingLocationOption && styles.meetingLocationPlaceholder,
+                          ]}
+                        >
+                          {selectedMeetingLocationOption?.label || 'Select meeting place'}
+                        </Text>
+                        <Text style={styles.meetingLocationChevron}>
+                          {isMeetingLocationDropdownOpen ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isMeetingLocationDropdownOpen && (
+                        <View style={styles.meetingLocationDropdownMenu}>
+                          {meetingLocationOptions.map((option) => (
+                            <TouchableOpacity
+                              key={option.id}
+                              style={styles.meetingLocationOption}
+                              onPress={() => {
+                                setSelectedMeetingLocationId(option.id);
+                                setIsMeetingLocationDropdownOpen(false);
+                                if (!option.isOther) setMeetingLocationOther('');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.meetingLocationOptionText}>{option.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                      {requiresMeetingLocationOther ? (
+                        <TextInput
+                          value={meetingLocationOther}
+                          onChangeText={setMeetingLocationOther}
+                          placeholder="Enter location details"
+                          placeholderTextColor={colors.textMuted}
+                          style={styles.meetingLocationOtherInput}
+                        />
+                      ) : null}
+                    </View>
                     <View style={styles.modalButtonRow}>
                       <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
                         <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
@@ -1607,6 +1898,68 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   priorityChipTextActive: {
     color: colors.white,
   },
+  meetingLocationField: {
+    marginBottom: 16,
+  },
+  meetingLocationLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  meetingLocationDropdown: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  meetingLocationDropdownText: {
+    color: colors.text,
+    fontSize: 14,
+    flex: 1,
+  },
+  meetingLocationPlaceholder: {
+    color: colors.textMuted,
+  },
+  meetingLocationChevron: {
+    color: colors.textMuted,
+    marginLeft: 8,
+    fontSize: 12,
+  },
+  meetingLocationDropdownMenu: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  meetingLocationOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray100,
+  },
+  meetingLocationOptionText: {
+    color: colors.text,
+    fontSize: 14,
+  },
+  meetingLocationOtherInput: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.text,
+    fontSize: 14,
+  },
   separator3: {
     backgroundColor: colors.gray100,
     borderWidth: 1,
@@ -1691,6 +2044,30 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 14,
     color: colors.textMuted,
     fontWeight: '600',
+  },
+  imagePreviewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  imagePreviewClose: {
+    position: 'absolute',
+    top: 56,
+    right: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    zIndex: 2,
+  },
+  imagePreviewImage: {
+    width: '100%',
+    height: '72%',
+    borderRadius: 12,
   },
 });
 

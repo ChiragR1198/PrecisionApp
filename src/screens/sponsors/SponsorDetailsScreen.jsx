@@ -10,8 +10,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   ActivityIndicator,
+  Alert,
   Animated,
   BackHandler,
   Image,
@@ -22,6 +22,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View
@@ -31,9 +32,11 @@ import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
   useGetDelegateAttendeesQuery,
+  useGetDelegateMeetingLocationsQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
   useGetSponsorAllAttendeesQuery,
+  useGetSponsorMeetingLocationsQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
@@ -76,7 +79,54 @@ function normalizeOutcomeAccepted(raw) {
   return null;
 }
 
-function pickOutcomeFlag(map, attendee, viewerIsDelegate) {
+function resolveOutcomeFlagFromRow(row) {
+  const acceptRaw = row?.is_accepted ?? row?.isAccepted;
+  const statusRaw = row?.status ?? row?.meeting_status;
+  const acceptNum = Number(acceptRaw);
+  const statusNum = Number(statusRaw);
+
+  if (acceptNum === 1 && statusNum === 2) return 1;
+  if (acceptNum === 2) return 2;
+
+  const isAcceptMissing =
+    acceptRaw == null || acceptRaw === '' || String(acceptRaw).toUpperCase() === 'NULL';
+  if (isAcceptMissing && statusNum === 2) return 1;
+  if (isAcceptMissing && statusNum === 1) return 2;
+
+  return normalizeOutcomeAccepted(acceptRaw);
+}
+
+function formatMeetingTimeShort(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${min} ${ampm}`;
+}
+
+function formatMeetingDateDisplay(raw) {
+  if (!raw) return '';
+  const s = String(raw).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, mo, d] = s.split('-');
+    return `${d}/${mo}/${y}`;
+  }
+  return String(raw);
+}
+
+function normalizeMeetingLocationLabel(rawLabel, rawOther) {
+  const label = String(rawLabel ?? '').trim();
+  const other = String(rawOther ?? '').trim();
+  if (!label && !other) return '';
+  if (label.toLowerCase() === 'other') return other || 'Other';
+  return label || other;
+}
+
+function pickOutcomeInfo(map, attendee, viewerIsDelegate) {
   if (!map || !(map instanceof Map) || map.size === 0) return null;
   const raw = attendee && typeof attendee === 'object' ? attendee : {};
   const candidateKeys = viewerIsDelegate
@@ -86,10 +136,15 @@ function pickOutcomeFlag(map, attendee, viewerIsDelegate) {
     if (c == null || c === '') continue;
     const n = Number(c);
     if (!Number.isFinite(n)) continue;
-    const flag = map.get(n) ?? map.get(String(n));
-    if (flag === 1 || flag === 2) return flag;
+    const info = map.get(n) ?? map.get(String(n));
+    if (info && typeof info === 'object' && (info.flag === 1 || info.flag === 2)) return info;
   }
   return null;
+}
+
+function pickOutcomeFlag(map, attendee, viewerIsDelegate) {
+  const info = pickOutcomeInfo(map, attendee, viewerIsDelegate);
+  return info?.flag ?? null;
 }
 
 const MailIcon = ({ color = colors.primary, size = 22 }) => (
@@ -176,7 +231,11 @@ export const SponsorDetailsScreen = () => {
   const [modalStep, setModalStep] = useState('priority');
   const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
+  const [selectedMeetingLocationId, setSelectedMeetingLocationId] = useState(null);
+  const [meetingLocationOther, setMeetingLocationOther] = useState('');
+  const [isMeetingLocationDropdownOpen, setIsMeetingLocationDropdownOpen] = useState(false);
   const [isAboutExpanded, setIsAboutExpanded] = useState(false);
+  const [isImagePreviewVisible, setIsImagePreviewVisible] = useState(false);
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
   const [createDelegateMeetingRequestToDelegate] = useSendDelegateMeetingRequestToDelegateMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
@@ -229,6 +288,40 @@ export const SponsorDetailsScreen = () => {
 
   const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
   const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
+
+  const { data: delegateMeetingLocationsData } = useGetDelegateMeetingLocationsQuery(undefined, {
+    skip: !user || !isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: sponsorMeetingLocationsData } = useGetSponsorMeetingLocationsQuery(undefined, {
+    skip: !user || isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const meetingLocationOptions = useMemo(() => {
+    const source = isDelegate ? delegateMeetingLocationsData : sponsorMeetingLocationsData;
+    const raw = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+    return raw
+      .map((item) => {
+        const id = Number(item?.id ?? item?.meeting_location_option_id ?? item?.value);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        const key = String(item?.key ?? item?.option_key ?? '').trim().toLowerCase();
+        const label = String(item?.label ?? item?.name ?? item?.title ?? '').trim();
+        return {
+          id,
+          key,
+          label: label || `Option ${id}`,
+          isOther: Boolean(item?.is_other) || key === 'other' || label.toLowerCase() === 'other',
+        };
+      })
+      .filter(Boolean);
+  }, [isDelegate, delegateMeetingLocationsData, sponsorMeetingLocationsData]);
+
+  const selectedMeetingLocationOption = useMemo(
+    () => meetingLocationOptions.find((item) => item.id === selectedMeetingLocationId) || null,
+    [meetingLocationOptions, selectedMeetingLocationId]
+  );
+  const requiresMeetingLocationOther = Boolean(selectedMeetingLocationOption?.isOther);
 
   const defaultSponsor = useMemo(
     () => ({
@@ -407,7 +500,7 @@ export const SponsorDetailsScreen = () => {
 
   // numericTargetId is computed above from params; keep existing usages by referencing sponsor.id below
 
-  const attendeeOutcomeMap = useMemo(() => {
+  const attendeeOutcomeInfoMap = useMemo(() => {
     const list = extractOutcomesList(meetingOutcomesData);
     const map = new Map();
     list.forEach((row) => {
@@ -415,36 +508,105 @@ export const SponsorDetailsScreen = () => {
         ? Number(row?.sponsor_id ?? row?.sponsorId ?? row?.sponsorID ?? row?.sponsor_user_id)
         : Number(row?.delegate_id ?? row?.delegateId ?? row?.delegateID ?? row?.user_id);
       if (!Number.isFinite(id)) return;
-      const acceptRaw = row?.is_accepted ?? row?.isAccepted;
-      const flag =
-        acceptRaw != null && acceptRaw !== ''
-          ? normalizeOutcomeAccepted(acceptRaw)
-          : normalizeOutcomeAccepted(row?.status);
-      if (flag != null) {
-        map.set(id, flag);
-        map.set(String(id), flag);
-      }
+      const flag = resolveOutcomeFlagFromRow(row);
+      if (flag == null) return;
+      const date = row?.date ?? row?.meeting_date ?? null;
+      const time =
+        row?.time ?? row?.meeting_time_from ?? row?.meeting_time_to ?? row?.meeting_time ?? null;
+      const location =
+        normalizeMeetingLocationLabel(
+          row?.meeting_location_label ?? row?.location_label ?? row?.meeting_location,
+          row?.meeting_location_other ?? row?.location_other
+        ) ||
+        String(row?.meeting_location_option_id ?? '').trim();
+      const entry = { flag, date, time, location };
+      map.set(id, entry);
+      map.set(String(id), entry);
     });
     return map;
   }, [meetingOutcomesData, isDelegate]);
 
+  const outcomeInfoForProfile = useMemo(() => {
+    const merged = sponsor?.raw ? { ...sponsor, ...sponsor.raw } : sponsor;
+    return (
+      pickOutcomeInfo(attendeeOutcomeInfoMap, merged, isDelegate) ??
+      (Number.isFinite(numericTargetId)
+        ? attendeeOutcomeInfoMap.get(numericTargetId) ??
+          attendeeOutcomeInfoMap.get(String(numericTargetId))
+        : null)
+    );
+  }, [attendeeOutcomeInfoMap, sponsor, isDelegate, numericTargetId]);
+
   const requestOutcome = useMemo(() => {
     const merged = sponsor?.raw ? { ...sponsor, ...sponsor.raw } : sponsor;
     const flag =
-      pickOutcomeFlag(attendeeOutcomeMap, merged, isDelegate) ??
+      pickOutcomeFlag(attendeeOutcomeInfoMap, merged, isDelegate) ??
       (Number.isFinite(numericTargetId)
-        ? attendeeOutcomeMap.get(numericTargetId) ?? attendeeOutcomeMap.get(String(numericTargetId))
+        ? outcomeInfoForProfile?.flag ?? null
         : null);
     return flag === 1 ? 'accepted' : flag === 2 ? 'declined' : null;
-  }, [attendeeOutcomeMap, sponsor, isDelegate, numericTargetId]);
+  }, [attendeeOutcomeInfoMap, sponsor, isDelegate, numericTargetId, outcomeInfoForProfile?.flag]);
+
+  const acceptedMeetingWhenLabel = useMemo(() => {
+    if (requestOutcome !== 'accepted') return '';
+    const d = outcomeInfoForProfile?.date ?? sponsor?.meetingDate ?? sponsor?.meeting_date;
+    const t = outcomeInfoForProfile?.time ?? sponsor?.meetingTime ?? sponsor?.meeting_time;
+    if (!d && !t) return '';
+    const parts = [];
+    if (d) parts.push(formatMeetingDateDisplay(d));
+    if (t) parts.push(formatMeetingTimeShort(t));
+    return parts.join(' · ');
+  }, [requestOutcome, outcomeInfoForProfile, sponsor]);
+
+  const acceptedMeetingLocationLabel = useMemo(() => {
+    if (requestOutcome !== 'accepted') return '';
+    return (
+      normalizeMeetingLocationLabel(
+        outcomeInfoForProfile?.meeting_location_label ??
+          outcomeInfoForProfile?.location ??
+          sponsor?.meeting_location_label ??
+          sponsor?.meetingLocationLabel,
+        outcomeInfoForProfile?.meeting_location_other ??
+          sponsor?.meeting_location_other ??
+          sponsor?.meetingLocationOther
+      ) || ''
+    );
+  }, [requestOutcome, outcomeInfoForProfile, sponsor]);
 
   const hasPendingRequest = useMemo(() => {
-    // `hasRequest` is a legacy flag coming from sponsor/delegate lists.
-    // It is reliable for delegate->sponsor and sponsor->delegate flows, but not for delegate->delegate
-    // when this screen is reused to show a delegate profile.
-    const legacyHasRequest = isDelegate && isDelegateProfile ? false : Boolean(sponsor?.hasRequest);
-    return !requestOutcome && (hasRequested || legacyHasRequest);
-  }, [requestOutcome, hasRequested, sponsor?.hasRequest, isDelegate, isDelegateProfile]);
+    if (requestOutcome) return false;
+    const hasServerRequest =
+      sponsor?.hasRequest === true ||
+      sponsor?.hasRequest === 1 ||
+      sponsor?.hasRequest === '1';
+    const rawServerMeetingId = sponsor?.meetingId ?? sponsor?.meeting_id;
+    const hasServerMeetingId =
+      rawServerMeetingId !== null &&
+      rawServerMeetingId !== undefined &&
+      rawServerMeetingId !== '' &&
+      Number.isFinite(Number(rawServerMeetingId));
+    const serverMeetingStatus = sponsor?.meetingStatus ?? sponsor?.meeting_status;
+    const serverMeetingAccepted = sponsor?.is_accepted ?? sponsor?.meeting_is_accepted;
+    const hasServerPendingFromMeetingFields =
+      (hasServerMeetingId || (serverMeetingStatus != null && serverMeetingStatus !== '')) &&
+      (
+        serverMeetingAccepted == null ||
+        serverMeetingAccepted === '' ||
+        String(serverMeetingAccepted).toUpperCase() === 'NULL' ||
+        String(serverMeetingAccepted) === '0'
+      );
+    return hasRequested || hasServerRequest || hasServerPendingFromMeetingFields;
+  }, [
+    requestOutcome,
+    hasRequested,
+    sponsor?.hasRequest,
+    sponsor?.meetingId,
+    sponsor?.meeting_id,
+    sponsor?.meetingStatus,
+    sponsor?.meeting_status,
+    sponsor?.is_accepted,
+    sponsor?.meeting_is_accepted,
+  ]);
 
   const canBookMeeting = useMemo(
     // SponsorDetailsScreen is reused for both sponsor profiles and delegate profiles.
@@ -470,23 +632,38 @@ export const SponsorDetailsScreen = () => {
     !canBookMeeting || requestOutcome === 'accepted' || hasPendingRequest;
 
   useEffect(() => {
-    // Avoid disabling the button incorrectly for delegate->delegate profiles.
-    if (isDelegate && isDelegateProfile) return;
-    if (sponsor && typeof sponsor.hasRequest !== 'undefined') {
-      setHasRequested(Boolean(sponsor.hasRequest));
-      if (sponsor.priorityText && typeof sponsor.priorityText === 'string') {
-        setPriority(sponsor.priorityText);
-        setRequestedPriorityText(sponsor.priorityText);
-      } else if (sponsor.priority && typeof sponsor.priority === 'number') {
-        const mapped =
-          sponsor.priority === 1 ? '1st' : sponsor.priority === 2 ? '2nd' : '1st';
-        setPriority(mapped);
-        setRequestedPriorityText(mapped);
-      }
-    }
-  }, [sponsor, isDelegate, isDelegateProfile]);
+    // Keep request UI scoped to current profile only (avoid carry-over between profiles).
+    const hasRequestForCurrentProfile =
+      sponsor?.hasRequest === true ||
+      sponsor?.hasRequest === 1 ||
+      sponsor?.hasRequest === '1';
+    setHasRequested(hasRequestForCurrentProfile);
 
-  const todayDate = useMemo(() => new Date().toISOString().split('T')[0], []);
+    let mappedPriority = null;
+    if (typeof sponsor?.priorityText === 'string' && sponsor.priorityText.trim() !== '') {
+      mappedPriority = sponsor.priorityText.trim();
+    } else if (Number.isFinite(Number(sponsor?.priority ?? sponsor?.meeting_priority))) {
+      const priorityNum = Number(sponsor?.priority ?? sponsor?.meeting_priority);
+      mappedPriority = priorityNum === 1 ? '1st' : priorityNum === 2 ? '2nd' : null;
+    }
+
+    setRequestedPriorityText(hasRequestForCurrentProfile ? mappedPriority : null);
+    setPriority(mappedPriority || '1st');
+  }, [
+    sponsor?.id,
+    sponsor?.hasRequest,
+    sponsor?.priorityText,
+    sponsor?.priority,
+    sponsor?.meeting_priority,
+  ]);
+
+  const todayDate = useMemo(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }, []);
 
   const meetingDate = useMemo(() => {
     const raw = params?.eventDateFrom || selectedEventDateFrom;
@@ -494,7 +671,12 @@ export const SponsorDetailsScreen = () => {
     const s = String(raw);
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    if (!Number.isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
     return todayDate;
   }, [params?.eventDateFrom, selectedEventDateFrom, todayDate]);
 
@@ -732,6 +914,9 @@ export const SponsorDetailsScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setSelectedMeetingLocationId(null);
+    setMeetingLocationOther('');
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   };
 
@@ -741,8 +926,19 @@ export const SponsorDetailsScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setSelectedMeetingLocationId(null);
+    setMeetingLocationOther('');
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   };
+
+  const openImagePreview = useCallback(() => {
+    if (sponsor?.image) setIsImagePreviewVisible(true);
+  }, [sponsor?.image]);
+
+  const closeImagePreview = useCallback(() => {
+    setIsImagePreviewVisible(false);
+  }, []);
 
   const openTimeModal = () => {
     if (!sponsor || !sponsor.id) return;
@@ -773,10 +969,12 @@ export const SponsorDetailsScreen = () => {
 
     setMeetingTimesParams(timeParams);
     setSelectedTimeSlot(null);
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('time');
   };
 
   const closeTimeModal = () => {
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   };
 
@@ -814,6 +1012,18 @@ export const SponsorDetailsScreen = () => {
         return;
       }
 
+      if (!selectedMeetingLocationId) {
+        Alert.alert('Error', 'Please select a meeting location');
+        setIsSendingRequest(false);
+        return;
+      }
+      const meetingLocationOtherText = requiresMeetingLocationOther ? meetingLocationOther.trim() : '';
+      if (requiresMeetingLocationOther && !meetingLocationOtherText) {
+        Alert.alert('Error', 'Please enter location details for "Other"');
+        setIsSendingRequest(false);
+        return;
+      }
+
       let payload;
       if (isDelegate) {
         // Delegate is the logged-in user, and `sponsor` variable represents the profile we are viewing.
@@ -827,6 +1037,8 @@ export const SponsorDetailsScreen = () => {
               meeting_date: meetingDateVal,
               meeting_time_from: meetingTimeFrom,
               meeting_time_to: meetingTimeTo,
+              meeting_location_option_id: selectedMeetingLocationId,
+              meeting_location_other: meetingLocationOtherText,
               message: '',
             }
           : {
@@ -836,6 +1048,8 @@ export const SponsorDetailsScreen = () => {
               meeting_date: meetingDateVal,
               meeting_time_from: meetingTimeFrom,
               meeting_time_to: meetingTimeTo,
+              meeting_location_option_id: selectedMeetingLocationId,
+              meeting_location_other: meetingLocationOtherText,
               message: '',
             };
       } else {
@@ -850,6 +1064,8 @@ export const SponsorDetailsScreen = () => {
               meeting_date: meetingDateVal,
               meeting_time_from: meetingTimeFrom,
               meeting_time_to: meetingTimeTo,
+              meeting_location_option_id: selectedMeetingLocationId,
+              meeting_location_other: meetingLocationOtherText,
               message: '',
             }
           : {
@@ -859,6 +1075,8 @@ export const SponsorDetailsScreen = () => {
               meeting_date: meetingDateVal,
               meeting_time_from: meetingTimeFrom,
               meeting_time_to: meetingTimeTo,
+              meeting_location_option_id: selectedMeetingLocationId,
+              meeting_location_other: meetingLocationOtherText,
               message: '',
             };
       }
@@ -876,6 +1094,9 @@ export const SponsorDetailsScreen = () => {
       setRequestedPriorityText(priority);
       setIsRequestSuccess(true);
       setSelectedTimeSlot(null);
+      setSelectedMeetingLocationId(null);
+      setMeetingLocationOther('');
+      setIsMeetingLocationDropdownOpen(false);
       refetchMeetingOutcomes();
     } catch (e) {
       console.error('Error sending meeting request:', e);
@@ -959,11 +1180,13 @@ export const SponsorDetailsScreen = () => {
             <View style={[styles.logoContainer, { width: SIZES.logoSize + 8, height: SIZES.logoSize + 8, borderRadius: (SIZES.logoSize + 8) / 2 }]}>
               <View style={[styles.logo, { backgroundColor: sponsor.logoBg, width: SIZES.logoSize + 8, height: SIZES.logoSize + 8, borderRadius: (SIZES.logoSize + 8) / 2 }]}>
                 {sponsor.image ? (
-                  <Image
-                    source={{ uri: sponsor.image }}
-                    style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: SIZES.logoSize / 2 }}
-                    resizeMode="cover"
-                  />
+                  <TouchableOpacity activeOpacity={0.85} onPress={openImagePreview}>
+                    <Image
+                      source={{ uri: sponsor.image }}
+                      style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: SIZES.logoSize / 2 }}
+                      resizeMode="cover"
+                    />
+                  </TouchableOpacity>
                 ) : (
                   <Text style={styles.logoText}>{sponsor.logoText}</Text>
                 )}
@@ -1056,6 +1279,20 @@ export const SponsorDetailsScreen = () => {
                   onAction={handleOpenLocation}
                 />
               )}
+              {requestOutcome === 'accepted' && acceptedMeetingLocationLabel ? (
+                <ContactItem
+                  icon={MapPinIcon}
+                  label="Meeting Location"
+                  value={acceptedMeetingLocationLabel}
+                />
+              ) : null}
+              {requestOutcome === 'accepted' && acceptedMeetingWhenLabel ? (
+                <ContactItem
+                  icon={MapPinIcon}
+                  label="Meeting"
+                  value={acceptedMeetingWhenLabel}
+                />
+              ) : null}
             </View>
           </View>
 
@@ -1114,6 +1351,21 @@ export const SponsorDetailsScreen = () => {
         </View>
       )}
 
+      <Modal
+        transparent
+        animationType="fade"
+        visible={isImagePreviewVisible}
+        onRequestClose={closeImagePreview}
+      >
+        <View style={styles.imagePreviewOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeImagePreview} />
+          <TouchableOpacity style={styles.imagePreviewClose} onPress={closeImagePreview} activeOpacity={0.8}>
+            <Ionicons name="close" size={28} color={colors.white} />
+          </TouchableOpacity>
+          <Image source={{ uri: sponsor?.image }} style={styles.imagePreviewImage} resizeMode="contain" />
+        </View>
+      </Modal>
+
       <Modal transparent animationType="fade" visible={isModalVisible} onRequestClose={closeModal}>
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
@@ -1170,6 +1422,53 @@ export const SponsorDetailsScreen = () => {
                     <Text style={[styles.loadingTextModal, { marginTop: 8, fontSize: 12 }]}>
                       You can still send a request with a default time.
                     </Text>
+                    <View style={styles.meetingLocationField}>
+                      <Text style={styles.meetingLocationLabel}>Meeting place</Text>
+                      <TouchableOpacity
+                        style={styles.meetingLocationDropdown}
+                        onPress={() => setIsMeetingLocationDropdownOpen((prev) => !prev)}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.meetingLocationDropdownText,
+                            !selectedMeetingLocationOption && styles.meetingLocationPlaceholder,
+                          ]}
+                        >
+                          {selectedMeetingLocationOption?.label || 'Select meeting place'}
+                        </Text>
+                        <Text style={styles.meetingLocationChevron}>
+                          {isMeetingLocationDropdownOpen ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isMeetingLocationDropdownOpen && (
+                        <View style={styles.meetingLocationDropdownMenu}>
+                          {meetingLocationOptions.map((option) => (
+                            <TouchableOpacity
+                              key={option.id}
+                              style={styles.meetingLocationOption}
+                              onPress={() => {
+                                setSelectedMeetingLocationId(option.id);
+                                setIsMeetingLocationDropdownOpen(false);
+                                if (!option.isOther) setMeetingLocationOther('');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.meetingLocationOptionText}>{option.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                      {requiresMeetingLocationOther ? (
+                        <TextInput
+                          value={meetingLocationOther}
+                          onChangeText={setMeetingLocationOther}
+                          placeholder="Enter location details"
+                          placeholderTextColor={colors.textMuted}
+                          style={styles.meetingLocationOtherInput}
+                        />
+                      ) : null}
+                    </View>
                     <TouchableOpacity
                       style={[styles.modalButton, styles.primaryButton, { marginTop: 16, opacity: isSendingRequest ? 0.6 : 1 }]}
                       onPress={() => handleSendMeetingRequest(getDefaultSlot())}
@@ -1220,6 +1519,53 @@ export const SponsorDetailsScreen = () => {
                       ))}
                     </ScrollView>
                     <View style={styles.separator3} />
+                    <View style={styles.meetingLocationField}>
+                      <Text style={styles.meetingLocationLabel}>Meeting place</Text>
+                      <TouchableOpacity
+                        style={styles.meetingLocationDropdown}
+                        onPress={() => setIsMeetingLocationDropdownOpen((prev) => !prev)}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.meetingLocationDropdownText,
+                            !selectedMeetingLocationOption && styles.meetingLocationPlaceholder,
+                          ]}
+                        >
+                          {selectedMeetingLocationOption?.label || 'Select meeting place'}
+                        </Text>
+                        <Text style={styles.meetingLocationChevron}>
+                          {isMeetingLocationDropdownOpen ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isMeetingLocationDropdownOpen && (
+                        <View style={styles.meetingLocationDropdownMenu}>
+                          {meetingLocationOptions.map((option) => (
+                            <TouchableOpacity
+                              key={option.id}
+                              style={styles.meetingLocationOption}
+                              onPress={() => {
+                                setSelectedMeetingLocationId(option.id);
+                                setIsMeetingLocationDropdownOpen(false);
+                                if (!option.isOther) setMeetingLocationOther('');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.meetingLocationOptionText}>{option.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                      {requiresMeetingLocationOther ? (
+                        <TextInput
+                          value={meetingLocationOther}
+                          onChangeText={setMeetingLocationOther}
+                          placeholder="Enter location details"
+                          placeholderTextColor={colors.textMuted}
+                          style={styles.meetingLocationOtherInput}
+                        />
+                      ) : null}
+                    </View>
                     <View style={styles.modalButtonRow}>
                       <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
                         <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
@@ -1713,6 +2059,68 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   priorityChipTextActive: {
     color: colors.white,
   },
+  meetingLocationField: {
+    marginBottom: 16,
+  },
+  meetingLocationLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  meetingLocationDropdown: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  meetingLocationDropdownText: {
+    color: colors.text,
+    fontSize: 14,
+    flex: 1,
+  },
+  meetingLocationPlaceholder: {
+    color: colors.textMuted,
+  },
+  meetingLocationChevron: {
+    color: colors.textMuted,
+    marginLeft: 8,
+    fontSize: 12,
+  },
+  meetingLocationDropdownMenu: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  meetingLocationOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray100,
+  },
+  meetingLocationOptionText: {
+    color: colors.text,
+    fontSize: 14,
+  },
+  meetingLocationOtherInput: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.text,
+    fontSize: 14,
+  },
   separator3: {
     backgroundColor: colors.gray100,
     borderWidth: 1,
@@ -1797,6 +2205,30 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 14,
     color: colors.textMuted,
     fontWeight: '600',
+  },
+  imagePreviewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  imagePreviewClose: {
+    position: 'absolute',
+    top: 56,
+    right: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    zIndex: 2,
+  },
+  imagePreviewImage: {
+    width: '100%',
+    height: '72%',
+    borderRadius: 12,
   },
 });
 

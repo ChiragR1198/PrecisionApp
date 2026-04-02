@@ -19,6 +19,32 @@ const MapPinIcon = ({ color = colors.white, size = 14 }) => (
   <Icon name="map-pin" size={size} color={color} />
 );
 
+/** Display string from API only — formatted on backend (`date_display`). */
+const getEventDateDisplayFromApi = (event) => {
+  const v = event?.date_display;
+  if (v == null) return '';
+  const s = String(v).trim();
+  return s;
+};
+
+const parseApiDate = (value) => {
+  if (!value) return { date: null, useUTC: false };
+  const raw = String(value).trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|[T\s])/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    return {
+      date: new Date(Date.UTC(year, month, day)),
+      useUTC: true,
+    };
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return { date: null, useUTC: false };
+  return { date: parsed, useUTC: false };
+};
+
 // Helper function to format date
 const formatDate = (dateFrom, dateTo) => {
   if (!dateFrom) return '';
@@ -38,28 +64,38 @@ const formatDate = (dateFrom, dateTo) => {
     'December',
   ];
 
-  const formatFullDate = (date) =>
-    `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+  const formatFullDate = (date, useUTC) => {
+    const month = useUTC ? date.getUTCMonth() : date.getMonth();
+    const day = useUTC ? date.getUTCDate() : date.getDate();
+    const year = useUTC ? date.getUTCFullYear() : date.getFullYear();
+    return `${months[month]} ${day}, ${year}`;
+  };
 
-  const formatMonthDay = (date) =>
-    `${months[date.getMonth()]} ${date.getDate()}`;
+  const formatMonthDay = (date, useUTC) => {
+    const month = useUTC ? date.getUTCMonth() : date.getMonth();
+    const day = useUTC ? date.getUTCDate() : date.getDate();
+    return `${months[month]} ${day}`;
+  };
 
-  const fromDate = new Date(dateFrom);
-  const toDate = dateTo ? new Date(dateTo) : null;
+  const { date: fromDate, useUTC: fromUseUTC } = parseApiDate(dateFrom);
+  const { date: toDate, useUTC: toUseUTC } = parseApiDate(dateTo);
+  if (!fromDate) return '';
 
-  if (toDate && dateFrom !== dateTo) {
-    const sameYear = fromDate.getFullYear() === toDate.getFullYear();
+  if (toDate && String(dateFrom) !== String(dateTo)) {
+    const fromYear = fromUseUTC ? fromDate.getUTCFullYear() : fromDate.getFullYear();
+    const toYear = toUseUTC ? toDate.getUTCFullYear() : toDate.getFullYear();
+    const sameYear = fromYear === toYear;
 
     // Example: April 30 – May 1, 2026 (en dash, year once)
     if (sameYear) {
-      return `${formatMonthDay(fromDate)} – ${formatMonthDay(toDate)}, ${fromDate.getFullYear()}`;
+      return `${formatMonthDay(fromDate, fromUseUTC)} – ${formatMonthDay(toDate, toUseUTC)}, ${fromYear}`;
     }
 
     // Different years: April 30, 2026 – May 1, 2027
-    return `${formatFullDate(fromDate)} – ${formatFullDate(toDate)}`;
+    return `${formatFullDate(fromDate, fromUseUTC)} – ${formatFullDate(toDate, toUseUTC)}`;
   }
 
-  return formatFullDate(fromDate);
+  return formatFullDate(fromDate, fromUseUTC);
 };
 
 // Helper function to calculate dynamic font size based on title length
@@ -233,7 +269,7 @@ export const EventOverviewScreen = () => {
     if (!events[selectedEventIndex]) return null;
     
     const event = events[selectedEventIndex];
-    const dateText = formatDate(event.date_from, event.date_to);
+    const dateText = getEventDateDisplayFromApi(event) || formatDate(event.date_from, event.date_to);
     const locationText = event.venue || event.location || '';
     return {
       id: event.id,
@@ -463,7 +499,7 @@ export const EventOverviewScreen = () => {
               <Text style={styles.modalTitle}>Select Event</Text>
               <ScrollView style={styles.dropdownModalList} contentContainerStyle={styles.dropdownModalListContent} showsVerticalScrollIndicator>
                 {events.map((event, idx) => {
-                  const eventDate = formatDate(event.date_from, event.date_to);
+                  const eventDate = getEventDateDisplayFromApi(event) || formatDate(event.date_from, event.date_to);
                   const eventLocation = event.venue || event.location || '';
                   const modalTitleSize = getDynamicFontSize(event.title, SIZES.title, 11);
                   return (

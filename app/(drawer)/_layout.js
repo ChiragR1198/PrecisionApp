@@ -1,13 +1,18 @@
 import { Drawer } from 'expo-router/drawer';
 import React from 'react';
+import Constants from 'expo-constants';
 import { colors } from '../../src/constants/theme';
-import { PushNotificationSetup } from '../../src/components/notifications/PushNotificationSetup';
 import { CustomDrawerContent } from '../../src/navigation/CustomDrawerContent';
 
 export default function DrawerLayout() {
+  const isExpoGo = Constants?.appOwnership === 'expo';
+  const PushNotificationSetup = !isExpoGo
+    ? require('../../src/components/notifications/PushNotificationSetup').PushNotificationSetup
+    : null;
+
   return (
     <>
-      <PushNotificationSetup />
+      {PushNotificationSetup ? <PushNotificationSetup /> : null}
       <Drawer
       initialRouteName="dashboard"
       screenOptions={{
