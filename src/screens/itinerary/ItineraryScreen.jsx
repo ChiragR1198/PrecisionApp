@@ -18,11 +18,28 @@ import { useAppSelector } from '../../store/hooks';
 
 const FILTERS = ['All Days', 'Today', 'Tomorrow'];
 
+const parseApiDate = (dateString) => {
+  if (!dateString) return null;
+  const raw = String(dateString).trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|[T\s])/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    // Build local date (not UTC) so local comparisons like Today/Tomorrow stay accurate.
+    return new Date(year, month, day);
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+};
+
 // Format date to readable format (e.g., "March 15, 2025")
 const formatDate = (dateString) => {
   if (!dateString) return '';
   try {
-    const date = new Date(dateString);
+    const date = parseApiDate(dateString);
+    if (!date) return '';
     const options = { year: 'numeric', month: 'long', day: 'numeric' };
     return date.toLocaleDateString('en-US', options);
   } catch (e) {
@@ -42,6 +59,14 @@ const formatTime = (timeString) => {
   } catch (e) {
     return timeString;
   }
+};
+
+const normalizeMeetingLocationLabel = (rawLabel, rawOther) => {
+  const label = String(rawLabel ?? '').trim();
+  const other = String(rawOther ?? '').trim();
+  if (!label && !other) return '';
+  if (label.toLowerCase() === 'other') return other || 'Other';
+  return label || other;
 };
 
 // Get icon based on priority or default
@@ -157,12 +182,17 @@ export const ItineraryScreen = () => {
       const time = formatTime(rawTime);
       const priority = item.priority || '1';
       const tableNo = item.table_no || '';
+      const meetingLocation = normalizeMeetingLocationLabel(
+        item.meeting_location_label ?? item.location_label ?? item.meeting_location,
+        item.meeting_location_other ?? item.location_other
+      );
 
       // Build subtitle
       let subtitle = '';
       if (company) subtitle += company;
       if (jobTitle) subtitle += (subtitle ? ' • ' : '') + jobTitle;
       if (tableNo) subtitle += (subtitle ? ' • ' : '') + `Table ${tableNo}`;
+      if (meetingLocation) subtitle += (subtitle ? ' • ' : '') + `Meeting Location: ${meetingLocation}`;
       if (!subtitle) subtitle = 'Meeting';
 
       groupedByDate[groupKey].push({
@@ -187,7 +217,7 @@ export const ItineraryScreen = () => {
       .sort()
       .map((date, index) => {
         const isNoDate = date === '__no_date__';
-        const dateObj = isNoDate ? null : new Date(date);
+        const dateObj = isNoDate ? null : parseApiDate(date);
         const formattedDate = isNoDate ? 'Itinerary' : formatDate(date);
         return {
           id: `day-${date}`,
@@ -214,11 +244,13 @@ export const ItineraryScreen = () => {
     return itinerary.filter((day) => {
       // Apply date filter
       if (activeFilter === 'Today') {
-        const dayDate = new Date(day.date);
+        const dayDate = parseApiDate(day.date);
+        if (!dayDate) return false;
         dayDate.setHours(0, 0, 0, 0);
         if (dayDate.getTime() !== today.getTime()) return false;
       } else if (activeFilter === 'Tomorrow') {
-        const dayDate = new Date(day.date);
+        const dayDate = parseApiDate(day.date);
+        if (!dayDate) return false;
         dayDate.setHours(0, 0, 0, 0);
         if (dayDate.getTime() !== tomorrow.getTime()) return false;
       }

@@ -40,6 +40,7 @@ export const API_ENDPOINTS = {
   DELEGATE_VIEW_ITINERARY: '/delegate/view-itinerary',
   // Delegate Meeting Times
   DELEGATE_MEETING_TIMES: '/delegate/meeting-times',
+  DELEGATE_MEETING_LOCATIONS: '/delegate/meeting-locations',
   
   // Delegate Meeting Requests
   DELEGATE_REVIEW_MEETING_REQUESTS: '/delegate/review-meeting-request',
@@ -79,6 +80,7 @@ export const API_ENDPOINTS = {
   SPONSOR_CHAT_MESSAGES: '/sponsor/chat/messages',
   // Sponsor Meeting Times
   SPONSOR_MEETING_TIMES: '/sponsor/meeting-times',
+  SPONSOR_MEETING_LOCATIONS: '/sponsor/meeting-locations',
   
   // Sponsor Contacts
   SPONSOR_CONTACTS: '/sponsor/contacts',

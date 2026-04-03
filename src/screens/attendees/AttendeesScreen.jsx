@@ -16,6 +16,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View
@@ -27,11 +28,13 @@ import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import {
   useGetDelegateAttendeesQuery,
+  useGetDelegateMeetingLocationsQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingRequestsQuery,
   useGetDelegateMeetingTimesQuery,
   useGetPresenceOnlineQuery,
   useGetSponsorAllAttendeesQuery,
+  useGetSponsorMeetingLocationsQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingRequestsQuery,
   useGetSponsorMeetingTimesQuery,
@@ -270,6 +273,9 @@ export const AttendeesScreen = () => {
 
   // Must be declared before meeting-times queries
   const [meetingTimesParams, setMeetingTimesParams] = useState(null);
+  const [selectedMeetingLocationId, setSelectedMeetingLocationId] = useState(null);
+  const [meetingLocationOther, setMeetingLocationOther] = useState('');
+  const [isMeetingLocationDropdownOpen, setIsMeetingLocationDropdownOpen] = useState(false);
   
   // Conditionally fetch attendees based on user type
   const { 
@@ -440,7 +446,10 @@ export const AttendeesScreen = () => {
   // Fetch sponsor services for filter (ensure valid number to avoid NaN → 403)
   const todayDate = useMemo(() => {
     const now = new Date();
-    return now.toISOString().split('T')[0];
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }, []);
 
   const meetingDate = useMemo(() => {
@@ -449,7 +458,12 @@ export const AttendeesScreen = () => {
     const s = String(raw);
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    if (!Number.isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
     return todayDate;
   }, [selectedEventDateFrom, todayDate]);
 
@@ -474,6 +488,40 @@ export const AttendeesScreen = () => {
   const meetingTimesData = isDelegate ? delegateMeetingTimesData : sponsorMeetingTimesData;
   const meetingTimesLoading = isDelegate ? delegateMeetingTimesLoading : sponsorMeetingTimesLoading;
   const refetchMeetingTimes = isDelegate ? refetchDelegateMeetingTimes : refetchSponsorMeetingTimes;
+
+  const { data: delegateMeetingLocationsData } = useGetDelegateMeetingLocationsQuery(undefined, {
+    skip: !isAuthenticated || !user || !isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: sponsorMeetingLocationsData } = useGetSponsorMeetingLocationsQuery(undefined, {
+    skip: !isAuthenticated || !user || isDelegate,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const meetingLocationOptions = useMemo(() => {
+    const source = isDelegate ? delegateMeetingLocationsData : sponsorMeetingLocationsData;
+    const raw = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+    return raw
+      .map((item) => {
+        const id = Number(item?.id ?? item?.meeting_location_option_id ?? item?.value);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        const key = String(item?.key ?? item?.option_key ?? '').trim().toLowerCase();
+        const label = String(item?.label ?? item?.name ?? item?.title ?? '').trim();
+        return {
+          id,
+          key,
+          label: label || `Option ${id}`,
+          isOther: Boolean(item?.is_other) || key === 'other' || label.toLowerCase() === 'other',
+        };
+      })
+      .filter(Boolean);
+  }, [isDelegate, delegateMeetingLocationsData, sponsorMeetingLocationsData]);
+
+  const selectedMeetingLocationOption = useMemo(
+    () => meetingLocationOptions.find((item) => item.id === selectedMeetingLocationId) || null,
+    [meetingLocationOptions, selectedMeetingLocationId]
+  );
+  const requiresMeetingLocationOther = Boolean(selectedMeetingLocationOption?.isOther);
 
   const meetingSlotGroups = useMemo(() => {
     if (!meetingTimesData) return [];
@@ -721,7 +769,15 @@ export const AttendeesScreen = () => {
       const hasLocalRequest = Number.isFinite(numericId) && locallyRequestedIds.includes(numericId);
       const availability = String(attendee?.status || '').toLowerCase();
       const mappedPriorityText = attendeePriorityMap.get(numericId) || null;
-      const priorityText = localPriorityMap[numericId] || mappedPriorityText || null;
+      const backendPriorityText =
+        typeof attendee?.priorityText === 'string' && attendee.priorityText.trim() !== ''
+          ? attendee.priorityText.trim()
+          : (Number(attendee?.priority ?? attendee?.meeting_priority) === 1
+              ? '1st'
+              : Number(attendee?.priority ?? attendee?.meeting_priority) === 2
+                ? '2nd'
+                : null);
+      const priorityText = localPriorityMap[numericId] || mappedPriorityText || backendPriorityText || null;
 
       const outcomeInfo =
         pickOutcomeInfo(attendeeOutcomeInfoMap, attendee, isDelegate) ??
@@ -741,9 +797,35 @@ export const AttendeesScreen = () => {
               .join(' · ')
           : '';
 
+      const rawServerHasRequest = attendee?.hasRequest;
+      const hasServerRequest =
+        rawServerHasRequest === true ||
+        rawServerHasRequest === 1 ||
+        rawServerHasRequest === '1';
+      const rawServerMeetingId = attendee?.meetingId ?? attendee?.meeting_id;
+      const hasServerMeetingId =
+        rawServerMeetingId !== null &&
+        rawServerMeetingId !== undefined &&
+        rawServerMeetingId !== '' &&
+        Number.isFinite(Number(rawServerMeetingId));
+      const serverMeetingStatus = attendee?.meetingStatus ?? attendee?.meeting_status;
+      const serverMeetingAccepted = attendee?.is_accepted ?? attendee?.meeting_is_accepted;
+      const hasServerPendingFromMeetingFields =
+        (hasServerMeetingId || (serverMeetingStatus != null && serverMeetingStatus !== '')) &&
+        (
+          serverMeetingAccepted == null ||
+          serverMeetingAccepted === '' ||
+          String(serverMeetingAccepted).toUpperCase() === 'NULL' ||
+          String(serverMeetingAccepted) === '0'
+        );
       const hasPendingRequest =
         !requestOutcome &&
-        (hasLocalRequest || requestedAttendeeIds.has(numericId));
+        (
+          hasLocalRequest ||
+          requestedAttendeeIds.has(numericId) ||
+          hasServerRequest ||
+          hasServerPendingFromMeetingFields
+        );
 
       const isCurrentUser =
         currentUserNumericId != null &&
@@ -865,6 +947,9 @@ export const AttendeesScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setSelectedMeetingLocationId(null);
+    setMeetingLocationOther('');
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
     setIsModalVisible(true);
   }, [attendeePriorityMap]);
@@ -874,6 +959,9 @@ export const AttendeesScreen = () => {
     setIsSendingRequest(false);
     setIsRequestSuccess(false);
     setSelectedTimeSlot(null);
+    setSelectedMeetingLocationId(null);
+    setMeetingLocationOther('');
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   }, []);
 
@@ -916,10 +1004,12 @@ export const AttendeesScreen = () => {
 
     setMeetingTimesParams(params);
     setSelectedTimeSlot(null);
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('time');
   }, [selectedAttendee, eventId, meetingDate, selectedEventDateFrom, selectedEventDateTo, isDelegate]);
 
   const closeTimeModal = useCallback(() => {
+    setIsMeetingLocationDropdownOpen(false);
     setModalStep('priority');
   }, []);
 
@@ -963,6 +1053,18 @@ export const AttendeesScreen = () => {
         return;
       }
 
+      if (!selectedMeetingLocationId) {
+        Alert.alert('Error', 'Please select a meeting location');
+        setIsSendingRequest(false);
+        return;
+      }
+      const meetingLocationOtherText = requiresMeetingLocationOther ? meetingLocationOther.trim() : '';
+      if (requiresMeetingLocationOther && !meetingLocationOtherText) {
+        Alert.alert('Error', 'Please enter location details for "Other"');
+        setIsSendingRequest(false);
+        return;
+      }
+
       // API expects meeting_date, meeting_time_from, meeting_time_to
       const requestData = isDelegate
         ? {
@@ -972,6 +1074,8 @@ export const AttendeesScreen = () => {
             meeting_date: meetingDateVal,
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
+            meeting_location_option_id: selectedMeetingLocationId,
+            meeting_location_other: meetingLocationOtherText,
             message: '',
           }
         : {
@@ -981,6 +1085,8 @@ export const AttendeesScreen = () => {
             meeting_date: meetingDateVal,
             meeting_time_from: meetingTimeFrom,
             meeting_time_to: meetingTimeTo,
+            meeting_location_option_id: selectedMeetingLocationId,
+            meeting_location_other: meetingLocationOtherText,
             message: '',
           };
 
@@ -1006,6 +1112,9 @@ export const AttendeesScreen = () => {
       setIsSendingRequest(false);
       setIsRequestSuccess(true);
       setModalStep('priority');
+      setSelectedMeetingLocationId(null);
+      setMeetingLocationOther('');
+      setIsMeetingLocationDropdownOpen(false);
     } catch (e) {
       console.error('Error sending meeting request:', e);
       setIsSendingRequest(false);
@@ -1186,7 +1295,7 @@ export const AttendeesScreen = () => {
                 style={styles.searchBarInline}
               />
             </View>
-            {/* {!isDelegate && ( */}
+            {!isDelegate && (
               <TouchableOpacity
                 style={[styles.filterIconBtn, selectedServices.length > 0 && styles.filterIconBtnActive]}
                 activeOpacity={0.8}
@@ -1194,7 +1303,7 @@ export const AttendeesScreen = () => {
               >
                 <Icon name="filter" size={18} color={colors.white} />
               </TouchableOpacity>
-            {/* )} */}
+            )}
             <TouchableOpacity
               style={styles.filterIconBtn}
               activeOpacity={0.8}
@@ -1421,6 +1530,53 @@ export const AttendeesScreen = () => {
                     <Text style={[styles.loadingTextModal, { marginTop: 8, fontSize: 12 }]}>
                       You can still send a request with a default time.
                     </Text>
+                    <View style={styles.meetingLocationField}>
+                      <Text style={styles.meetingLocationLabel}>Meeting place</Text>
+                      <TouchableOpacity
+                        style={styles.meetingLocationDropdown}
+                        onPress={() => setIsMeetingLocationDropdownOpen((prev) => !prev)}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.meetingLocationDropdownText,
+                            !selectedMeetingLocationOption && styles.meetingLocationPlaceholder,
+                          ]}
+                        >
+                          {selectedMeetingLocationOption?.label || 'Select meeting place'}
+                        </Text>
+                        <Text style={styles.meetingLocationChevron}>
+                          {isMeetingLocationDropdownOpen ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isMeetingLocationDropdownOpen && (
+                        <View style={styles.meetingLocationDropdownMenu}>
+                          {meetingLocationOptions.map((option) => (
+                            <TouchableOpacity
+                              key={option.id}
+                              style={styles.meetingLocationOption}
+                              onPress={() => {
+                                setSelectedMeetingLocationId(option.id);
+                                setIsMeetingLocationDropdownOpen(false);
+                                if (!option.isOther) setMeetingLocationOther('');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.meetingLocationOptionText}>{option.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                      {requiresMeetingLocationOther ? (
+                        <TextInput
+                          value={meetingLocationOther}
+                          onChangeText={setMeetingLocationOther}
+                          placeholder="Enter location details"
+                          placeholderTextColor={colors.textMuted}
+                          style={styles.meetingLocationOtherInput}
+                        />
+                      ) : null}
+                    </View>
                     <TouchableOpacity
                       style={[styles.modalButton, styles.primaryButton, { marginTop: 16, opacity: isSendingRequest ? 0.6 : 1 }]}
                       onPress={() => handleSendMeetingRequest(getDefaultSlot())}
@@ -1461,6 +1617,53 @@ export const AttendeesScreen = () => {
                       ))}
                     </ScrollView>
                     <View style={styles.separator3}/>
+                    <View style={styles.meetingLocationField}>
+                      <Text style={styles.meetingLocationLabel}>Meeting place</Text>
+                      <TouchableOpacity
+                        style={styles.meetingLocationDropdown}
+                        onPress={() => setIsMeetingLocationDropdownOpen((prev) => !prev)}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.meetingLocationDropdownText,
+                            !selectedMeetingLocationOption && styles.meetingLocationPlaceholder,
+                          ]}
+                        >
+                          {selectedMeetingLocationOption?.label || 'Select meeting place'}
+                        </Text>
+                        <Text style={styles.meetingLocationChevron}>
+                          {isMeetingLocationDropdownOpen ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isMeetingLocationDropdownOpen && (
+                        <View style={styles.meetingLocationDropdownMenu}>
+                          {meetingLocationOptions.map((option) => (
+                            <TouchableOpacity
+                              key={option.id}
+                              style={styles.meetingLocationOption}
+                              onPress={() => {
+                                setSelectedMeetingLocationId(option.id);
+                                setIsMeetingLocationDropdownOpen(false);
+                                if (!option.isOther) setMeetingLocationOther('');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={styles.meetingLocationOptionText}>{option.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                      {requiresMeetingLocationOther ? (
+                        <TextInput
+                          value={meetingLocationOther}
+                          onChangeText={setMeetingLocationOther}
+                          placeholder="Enter location details"
+                          placeholderTextColor={colors.textMuted}
+                          style={styles.meetingLocationOtherInput}
+                        />
+                      ) : null}
+                    </View>
                     <View style={styles.modalButtonRow}>
                       <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={closeTimeModal}>
                         <Text style={[styles.modalButtonText, styles.cancelButtonText]}>Back</Text>
@@ -2110,6 +2313,68 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
   priorityChipTextActive: {
     color: colors.white,
+  },
+  meetingLocationField: {
+    marginBottom: 16,
+  },
+  meetingLocationLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  meetingLocationDropdown: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  meetingLocationDropdownText: {
+    color: colors.text,
+    fontSize: 14,
+    flex: 1,
+  },
+  meetingLocationPlaceholder: {
+    color: colors.textMuted,
+  },
+  meetingLocationChevron: {
+    color: colors.textMuted,
+    marginLeft: 8,
+    fontSize: 12,
+  },
+  meetingLocationDropdownMenu: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  meetingLocationOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray100,
+  },
+  meetingLocationOptionText: {
+    color: colors.text,
+    fontSize: 14,
+  },
+  meetingLocationOtherInput: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.text,
+    fontSize: 14,
   },
   separator3: {
     backgroundColor: colors.gray100,

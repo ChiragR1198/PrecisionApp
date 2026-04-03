@@ -9,6 +9,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -30,10 +31,32 @@ import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { websocketManager } from '../../utils/websocket';
 
 // Format date string to time (e.g., "2:30 PM")
+const parseBackendDate = (dateInput) => {
+  if (!dateInput) return null;
+  if (dateInput instanceof Date) return dateInput;
+
+  const raw = String(dateInput).trim();
+  if (!raw) return null;
+
+  // Backend commonly returns "YYYY-MM-DD HH:mm:ss" without timezone.
+  // Treat it as UTC to avoid local-time drift (e.g. 5h/5h30 offset).
+  const mysqlLike = raw.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/);
+  if (mysqlLike) {
+    const isoUtc = raw.replace(' ', 'T') + (raw.length === 16 ? ':00Z' : 'Z');
+    const parsedUtc = new Date(isoUtc);
+    if (!Number.isNaN(parsedUtc.getTime())) return parsedUtc;
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) return parsed;
+  return null;
+};
+
 const formatMessageTime = (dateString) => {
   if (!dateString) return '';
   try {
-    const date = new Date(dateString);
+    const date = parseBackendDate(dateString);
+    if (!date) return '';
     const hours = date.getHours();
     const minutes = date.getMinutes();
     const ampm = hours >= 12 ? 'PM' : 'AM';
@@ -45,12 +68,43 @@ const formatMessageTime = (dateString) => {
   }
 };
 
+const formatSeenTimeAgo = (dateString) => {
+  if (!dateString) return 'Seen';
+  const parsed = parseBackendDate(dateString);
+  if (!parsed) return 'Seen';
+  const ts = parsed.getTime();
+  if (Number.isNaN(ts)) return 'Seen';
+
+  const diffMs = Date.now() - ts;
+  const diffMins = Math.max(0, Math.floor(diffMs / (1000 * 60)));
+
+  if (diffMins < 1) return 'Seen just now';
+  if (diffMins < 60) return `Seen ${diffMins}m ago`;
+
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `Seen ${diffHours}h ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `Seen ${diffDays}d ago`;
+};
+
+const QUICK_MESSAGE_TEMPLATES = [
+  'Hi, How are you?',
+  "It's a pleasure to connect",
+  'What time are you arriving at the summit?',
+  'Do you want to schedule a small meeting?',
+  'Tell me about your company?',
+  'I look forward to meeting you at the summit!',
+  'Do you have any questions?',
+];
+
 export const MessageDetailScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
   const navigation = useNavigation();
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState([]);
+  const [, setSeenTicker] = useState(0);
   const insets = useSafeAreaInsets();
   const { user } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -423,6 +477,13 @@ export const MessageDetailScreen = () => {
               sender: sender,
               text: msg.message || msg.text || msg.content || '',
               time: formatMessageTime(msg.date || msg.created_at || msg.timestamp || msg.time),
+              isRead: String(msg.is_read ?? msg.isRead ?? 0) === '1',
+              readAt:
+                msg.read_at ||
+                msg.readAt ||
+                msg.seen_at ||
+                msg.updated_at ||
+                null,
             };
           });
           
@@ -533,6 +594,12 @@ export const MessageDetailScreen = () => {
           sender: 'me',
           text: result.data.message || messageText,
           time: formatMessageTime(result.data.date || new Date().toISOString()),
+          isRead: String(result?.data?.is_read ?? 0) === '1',
+          readAt:
+            result?.data?.read_at ||
+            result?.data?.readAt ||
+            result?.data?.seen_at ||
+            null,
         };
         setMessages((prev) => [...prev, sentMessage]);
         setInputValue('');
@@ -555,6 +622,8 @@ export const MessageDetailScreen = () => {
           sender: 'me',
           text: messageText,
           time: formatMessageTime(new Date().toISOString()),
+          isRead: false,
+          readAt: null,
         };
         setMessages((prev) => [...prev, sentMessage]);
         setInputValue('');
@@ -586,6 +655,27 @@ export const MessageDetailScreen = () => {
   }, [SCREEN_WIDTH]);
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
+  const filteredQuickTemplates = useMemo(() => {
+    const keyword = inputValue.trim().toLowerCase();
+    if (!keyword) return [];
+    return QUICK_MESSAGE_TEMPLATES.filter((template) => template.toLowerCase().includes(keyword));
+  }, [inputValue]);
+  const lastSeenOutgoingMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (msg?.sender === 'me' && msg?.isRead) {
+        return msg.id;
+      }
+    }
+    return null;
+  }, [messages]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSeenTicker((prev) => prev + 1);
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const renderMessage = ({ item }) => {
     const isMe = item.sender === 'me';
@@ -604,6 +694,9 @@ export const MessageDetailScreen = () => {
             <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.text}</Text>
           </View>
           <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>{item.time}</Text>
+          {isMe && item.id === lastSeenOutgoingMessageId && item.isRead ? (
+            <Text style={styles.seenText}>{formatSeenTimeAgo(item.readAt)}</Text>
+          ) : null}
         </View>
       </View>
     );
@@ -852,6 +945,28 @@ export const MessageDetailScreen = () => {
           )}
         </View>
 
+        {filteredQuickTemplates.length > 0 && (
+          <View style={styles.quickTemplatesContainer}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.quickTemplatesScrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              {filteredQuickTemplates.map((template) => (
+                <TouchableOpacity
+                  key={template}
+                  activeOpacity={0.8}
+                  style={styles.quickTemplateChip}
+                  onPress={() => setInputValue(template)}
+                >
+                  <Text style={styles.quickTemplateChipText}>{template}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
         <View style={[styles.inputBar, { paddingHorizontal: SIZES.paddingHorizontal, paddingBottom: Math.max(insets.bottom - 34, 0) }]}>
           <TouchableOpacity activeOpacity={0.7} style={styles.attachButton}>
             <Text style={styles.attachText}>＋</Text>
@@ -894,6 +1009,30 @@ const createStyles = (SIZES) =>
     },
     messagesContainer: {
       flex: 1,
+    },
+    quickTemplatesContainer: {
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      backgroundColor: colors.white,
+      paddingTop: 8,
+      paddingBottom: 4,
+    },
+    quickTemplatesScrollContent: {
+      paddingHorizontal: SIZES.paddingHorizontal,
+      gap: 8,
+    },
+    quickTemplateChip: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.gray100,
+      borderRadius: radius.pill,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    quickTemplateChipText: {
+      color: colors.text,
+      fontSize: 13,
+      maxWidth: 260,
     },
     headerCenter: {
       flexDirection: 'row',
@@ -977,6 +1116,12 @@ const createStyles = (SIZES) =>
       alignSelf: 'flex-start',
     },
     messageTimeMe: {
+      alignSelf: 'flex-end',
+    },
+    seenText: {
+      marginTop: 2,
+      fontSize: 11,
+      color: colors.textMuted,
       alignSelf: 'flex-end',
     },
     inputBar: {
