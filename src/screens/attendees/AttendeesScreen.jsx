@@ -9,6 +9,7 @@ import {
   AppState,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -44,6 +45,7 @@ import {
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
+import { exportCsvNative } from '../../utils/exportCsvNative';
 
 const UserIcon = Icons.User;
 
@@ -84,6 +86,75 @@ function formatMeetingDateDisplay(raw) {
     return `${d}/${mo}/${y}`;
   }
   return String(raw);
+}
+
+function escapeCsvField(value) {
+  const s = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+/** Same columns as delegate list export on Delegates screen (SponsorsScreen). */
+function buildDelegatesCsv(rows) {
+  const headers = [
+    'ID',
+    'Name',
+    'Company',
+    'Job Title',
+    'Email',
+    'Phone',
+    'Website',
+    'Location',
+    'Online',
+    'Meeting request',
+  ];
+  const lines = [headers.map(escapeCsvField).join(',')];
+  for (const item of rows) {
+    const meeting =
+      item.requestOutcome === 'accepted'
+        ? 'Accepted'
+        : item.requestOutcome === 'declined'
+          ? 'Declined'
+          : item.hasRequest
+            ? 'Pending'
+            : '';
+    lines.push(
+      [
+        item.id,
+        item.name,
+        item.company ?? '',
+        item.partnerType ?? '',
+        item.email ?? '',
+        item.phone ?? '',
+        item.website ?? '',
+        item.location ?? '',
+        item.isOnline ? 'Yes' : 'No',
+        meeting,
+      ]
+        .map(escapeCsvField)
+        .join(',')
+    );
+  }
+  return lines.join('\r\n');
+}
+
+function mapAttendeeRowToCsvShape(item) {
+  const raw = item.raw && typeof item.raw === 'object' ? item.raw : {};
+  return {
+    id: item.id,
+    name: item.name,
+    company: item.company ?? '',
+    partnerType: item.role ?? '',
+    email: item.email ?? '',
+    phone: item.phone ?? '',
+    website: raw.website ?? raw.linkedin_url ?? item.linkedin ?? '',
+    location: item.address ?? raw.address ?? '',
+    isOnline: item.isOnline,
+    requestOutcome: item.requestOutcome,
+    hasRequest: item.hasRequest,
+  };
 }
 
 function pickOutcomeInfo(map, attendee, isDelegate) {
@@ -262,6 +333,7 @@ export const AttendeesScreen = () => {
   const [locallyRequestedIds, setLocallyRequestedIds] = useState([]);
   const [localPriorityMap, setLocalPriorityMap] = useState({});
   const [availabilityFilter, setAvailabilityFilter] = useState('all'); // 'all' | 'online'
+  const [listCsvExporting, setListCsvExporting] = useState(false);
 
   useEffect(() => {
     setAvailabilityFilter((prev) => {
@@ -287,6 +359,8 @@ export const AttendeesScreen = () => {
   } = useGetDelegateAttendeesQuery(undefined, {
     skip: !isAuthenticated || !user || !isDelegate, // Skip for sponsors
     refetchOnMountOrArgChange: true,
+    // Sponsor/web can delete meeting requests; refresh list while this screen is mounted
+    pollingInterval: !isAuthenticated || !user || !isDelegate ? 0 : 30000,
   });
 
   // For sponsors, pass selectedServices to filter attendees by service
@@ -367,6 +441,7 @@ export const AttendeesScreen = () => {
     {
       skip: !isAuthenticated || !user || !isDelegate,
       refetchOnMountOrArgChange: true,
+      pollingInterval: !isAuthenticated || !user || !isDelegate ? 0 : 30000,
     }
   );
   const {
@@ -410,20 +485,25 @@ export const AttendeesScreen = () => {
 
   useFocusEffect(
     useCallback(() => {
+      // Skipped RTK Query hooks have no subscription; refetch() throws after logout.
+      if (!isAuthenticated || !user) return;
+      refetch();
       refetchMeetingOutcomes();
       refetchMeetingRequests();
-    }, [refetchMeetingOutcomes, refetchMeetingRequests])
+    }, [isAuthenticated, user, refetch, refetchMeetingOutcomes, refetchMeetingRequests])
   );
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'active') {
+        if (!isAuthenticated || !user) return;
+        refetch();
         refetchMeetingOutcomes();
         refetchMeetingRequests();
       }
     });
     return () => sub.remove();
-  }, [refetchMeetingOutcomes, refetchMeetingRequests]);
+  }, [isAuthenticated, user, refetch, refetchMeetingOutcomes, refetchMeetingRequests]);
   
   // --- requestedAttendeeIds: ONLY outgoing (I requested them), NOT inbox (they requested me) ---
   // meeting-request APIs return INCOMING: delegate inbox = sponsors who requested delegate;
@@ -667,6 +747,46 @@ export const AttendeesScreen = () => {
   const attendees = useMemo(() => {
     return attendeesData?.data || attendeesData || [];
   }, [attendeesData]);
+
+  // When sponsor deletes a request (or web updates DB), clear optimistic "Requested" if server no longer has pending
+  useEffect(() => {
+    if (!isDelegate || !Array.isArray(attendees)) return;
+    setLocallyRequestedIds((prev) => {
+      if (!prev.length) return prev;
+      let changed = false;
+      const next = prev.filter((sid) => {
+        const att = attendees.find((a) => Number(a?.id) === Number(sid));
+        if (!att) {
+          changed = true;
+          return false;
+        }
+        const stillPending =
+          att.hasRequest === true || att.hasRequest === 1 || att.hasRequest === '1';
+        if (!stillPending) changed = true;
+        return stillPending;
+      });
+      return changed ? next : prev;
+    });
+    setLocalPriorityMap((prev) => {
+      const keys = Object.keys(prev || {});
+      if (!keys.length) return prev;
+      let changed = false;
+      const next = { ...prev };
+      keys.forEach((key) => {
+        const sid = Number(key);
+        const att = attendees.find((a) => Number(a?.id) === sid);
+        const stillPending =
+          att &&
+          (att.hasRequest === true || att.hasRequest === 1 || att.hasRequest === '1');
+        if (!stillPending) {
+          delete next[key];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [attendees, isDelegate]);
+
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
   const [sortBy, setSortBy] = useState('Name (A to Z)');
@@ -939,6 +1059,36 @@ export const AttendeesScreen = () => {
     return sortedData.filter((a) => matchesSearch(a) && matchesAvailability(a));
   }, [searchQueryDebounced, sortedData, availabilityFilter]);
 
+  /** Delegate login → sponsor list; sponsor login → delegate list. Same columns as SponsorsScreen delegate CSV. */
+  const handleDownloadAttendeesListCsv = useCallback(async () => {
+    const rows = filteredData;
+    if (!rows.length) {
+      Alert.alert(
+        'No data',
+        isDelegate ? 'There are no sponsors to export.' : 'There are no delegates to export.'
+      );
+      return;
+    }
+    const prefix = isDelegate ? 'sponsors' : 'delegates';
+    const dialogTitle = isDelegate ? 'Export sponsors' : 'Export delegates';
+    const safeName = `${prefix}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+    try {
+      setListCsvExporting(true);
+      const csvRows = rows.map(mapAttendeeRowToCsvShape);
+      const csvBody = buildDelegatesCsv(csvRows);
+      await exportCsvNative({
+        csvBody,
+        fileName: safeName,
+        fallbackDialogTitle: dialogTitle,
+      });
+    } catch (e) {
+      console.error('Attendees list CSV export:', e);
+      Alert.alert('Export failed', e?.message || 'Could not create the CSV file.');
+    } finally {
+      setListCsvExporting(false);
+    }
+  }, [isDelegate, filteredData]);
+
   const openModal = useCallback((attendee) => {
     const attendeeId = attendee?.id ? Number(attendee.id) : null;
     const existingPriority = attendeeId ? attendeePriorityMap.get(attendeeId) : null;
@@ -1131,7 +1281,7 @@ export const AttendeesScreen = () => {
 
   const onOpenDetails = useCallback((item) => {
     const payload = item?.raw ? { ...item.raw, ...item } : item;
-    if (payload?.raw) delete payload.raw;
+    // Keep `raw` so Delegate Details can merge full API row (Profile fields) for sponsor login.
 
     // Navigate based on login type:
     // - Delegate user viewing sponsors -> use DelegateDetails-style UI (profileType: 'sponsor')
@@ -1153,18 +1303,22 @@ export const AttendeesScreen = () => {
           delegate: JSON.stringify(payload),
           returnTo: 'attendees',
           eventDateFrom: selectedEventDateFrom || '',
+          ...(selectedServices.length > 0
+            ? { sponsorServicesFilter: JSON.stringify(selectedServices) }
+            : {}),
         },
       });
     }
-  }, [isDelegate, selectedEventDateFrom]);
+  }, [isDelegate, selectedEventDateFrom, selectedServices]);
 
   const onOpenRequest = openModal;
 
   const onRefreshAttendees = useCallback(() => {
+    if (!isAuthenticated || !user) return;
     refetch();
     refetchMeetingOutcomes();
     refetchMeetingRequests();
-  }, [refetch, refetchMeetingOutcomes, refetchMeetingRequests]);
+  }, [isAuthenticated, user, refetch, refetchMeetingOutcomes, refetchMeetingRequests]);
 
   const renderItem = useCallback(
     ({ item }) => (
@@ -1339,8 +1493,32 @@ export const AttendeesScreen = () => {
           </View>
 
           <View style={styles.countRow}>
-            <View style={styles.countDot} />
-            <Text style={styles.countText}>{`${String(filteredData.length)} ${listLabel.toUpperCase()}`}</Text>
+            <View style={styles.countRowLeft}>
+              <View style={styles.countDot} />
+              <Text style={styles.countText} numberOfLines={1}>
+                {`${String(filteredData.length)} ${listLabel.toUpperCase()}`}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.downloadCsvBtn,
+                (listCsvExporting || filteredData.length === 0) && styles.downloadCsvBtnDisabled,
+              ]}
+              onPress={handleDownloadAttendeesListCsv}
+              disabled={listCsvExporting || filteredData.length === 0}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel={isDelegate ? 'Download sponsors as CSV' : 'Download delegates as CSV'}
+            >
+              {listCsvExporting ? (
+                <ActivityIndicator size="small" color={colors.primary} />
+              ) : (
+                <>
+                  <Icon name="download" size={16} color={colors.primary} />
+                  <Text style={styles.downloadCsvText}>CSV</Text>
+                </>
+              )}
+            </TouchableOpacity>
           </View>
 
           {filteredData.length > 0 ? (
@@ -1476,6 +1654,11 @@ export const AttendeesScreen = () => {
         visible={isModalVisible || !!selectedAttendee}
         onRequestClose={closeModal}
       >
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}
+        >
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
           <Pressable 
             style={StyleSheet.absoluteFill} 
@@ -1766,6 +1949,7 @@ export const AttendeesScreen = () => {
             )}
           </Animated.View>
         </SafeAreaView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1844,8 +2028,35 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   countRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     marginTop: 6,
     marginBottom: 14,
+    gap: 10,
+  },
+  countRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+  },
+  downloadCsvBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.white,
+  },
+  downloadCsvBtnDisabled: {
+    opacity: 0.45,
+  },
+  downloadCsvText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primary,
   },
   countDot: {
     width: 8,

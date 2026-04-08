@@ -7,6 +7,7 @@ import { ActivityIndicator, AppState, Platform, StyleSheet, Text, TextInput, Vie
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Provider } from 'react-redux';
+import { ForceUpdateGate } from '../src/components/common/ForceUpdateGate';
 import { useAuth } from '../src/hooks/useAuth';
 import { usePresenceHeartbeat } from '../src/hooks/usePresenceHeartbeat';
 import { store } from '../src/store';
@@ -27,6 +28,9 @@ if (Text && TextInput) {
   // This ensures fonts always render at their specified pixel sizes
   Text.defaultProps.maxFontSizeMultiplier = 1;
   TextInput.defaultProps.maxFontSizeMultiplier = 1;
+
+  // Long-press to select / copy (iOS & Android). Opt out per screen with selectable={false}.
+  Text.defaultProps.selectable = true;
 }
 
 // Note: This global setting applies to all Text and TextInput components
@@ -159,7 +163,9 @@ export default function RootLayout() {
     <Provider store={store}>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
-          <RootLayoutNav />
+          <ForceUpdateGate>
+            <RootLayoutNav />
+          </ForceUpdateGate>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     </Provider>

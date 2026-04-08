@@ -1,5 +1,11 @@
+import Icon from '@expo/vector-icons/Feather';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -7,8 +13,12 @@ import {
   BackHandler,
   FlatList,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
+  Linking,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -68,6 +78,29 @@ const formatMessageTime = (dateString) => {
   }
 };
 
+/** Ensures each row belongs to the DM between the logged-in user and the open peer (blocks stale RTK/cache). */
+function chatRowMatchesOpenThread(msg, meIdRaw, meTypeRaw, peerIdRaw, peerTypeRaw) {
+  const fid = Number(msg?.from_id);
+  const tid = Number(msg?.to_id);
+  const m = Number(meIdRaw);
+  const p = Number(peerIdRaw);
+  if (![fid, tid, m, p].every((x) => Number.isFinite(x))) return false;
+
+  const idOk = (fid === m && tid === p) || (fid === p && tid === m);
+  if (!idOk) return false;
+
+  const ft = String(msg?.from_type ?? '').toLowerCase();
+  const tt = String(msg?.to_type ?? '').toLowerCase();
+  const mt = String(meTypeRaw ?? '').toLowerCase();
+  const pt = String(peerTypeRaw ?? '').toLowerCase();
+
+  if (!ft && !tt) return true;
+
+  const forward = fid === m && tid === p && ft === mt && tt === pt;
+  const backward = fid === p && tid === m && ft === pt && tt === mt;
+  return forward || backward;
+}
+
 const formatSeenTimeAgo = (dateString) => {
   if (!dateString) return 'Seen';
   const parsed = parseBackendDate(dateString);
@@ -98,8 +131,26 @@ const QUICK_MESSAGE_TEMPLATES = [
   'Do you have any questions?',
 ];
 
+/** Backend allows up to 8 MB (see Mobile_Model::saveChatAttachmentFile) */
+const MAX_CHAT_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+function resolveChatRecipient(thread) {
+  if (!thread) return null;
+  const toIdValue = thread.user_id || thread.id;
+  const toId = Number(toIdValue);
+  if (!toId || Number.isNaN(toId)) return null;
+  const rawType =
+    thread.user_type ||
+    thread.userType ||
+    (thread.delegate_id != null && thread.sponsor_id == null ? 'delegate' : null) ||
+    (thread.sponsor_id != null && thread.delegate_id == null ? 'sponsor' : null);
+  const finalToType = rawType != null && rawType !== '' ? String(rawType).trim().toLowerCase() : '';
+  if (!finalToType || (finalToType !== 'delegate' && finalToType !== 'sponsor')) return null;
+  return { toId, finalToType };
+}
+
 export const MessageDetailScreen = () => {
-  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
   const params = useLocalSearchParams();
   const navigation = useNavigation();
   const [inputValue, setInputValue] = useState('');
@@ -120,6 +171,10 @@ export const MessageDetailScreen = () => {
   const [sendDelegateMessage, { isLoading: delegateSending }] = useSendDelegateMessageMutation();
   const [sendSponsorMessage, { isLoading: sponsorSending }] = useSendSponsorMessageMutation();
   const isSending = delegateSending || sponsorSending;
+  const [isUploading, setIsUploading] = useState(false);
+  /** In-app lightbox for chat images `{ uri, name? }` */
+  const [imagePreview, setImagePreview] = useState(null);
+  const [isSavingImage, setIsSavingImage] = useState(false);
 
   // Debug: Log params when they change
   useEffect(() => {
@@ -130,17 +185,17 @@ export const MessageDetailScreen = () => {
     });
   }, [params]);
 
-  // Parse thread from params
+  // Parse thread from params (expo-router may pass string or string[])
   const thread = useMemo(() => {
-    if (params?.thread) {
-      try {
-        return JSON.parse(params.thread);
-      } catch (e) {
-        return null;
-      }
+    const raw = params?.thread;
+    const json = Array.isArray(raw) ? raw[0] : raw;
+    if (!json || typeof json !== 'string') return null;
+    try {
+      return JSON.parse(json);
+    } catch (e) {
+      return null;
     }
-    return null;
-  }, [params]);
+  }, [params?.thread]);
 
   const getThreadTarget = useCallback(() => {
     if (!thread) return { targetId: null, targetType: null, profileName: 'Unknown', profileImage: null };
@@ -188,29 +243,42 @@ export const MessageDetailScreen = () => {
     return { targetId: targetId || null, targetType: targetType || null, profileName, profileImage };
   }, [thread, currentUserId, loginType]);
 
-  // Determine to_type based on thread user_type
-  const toType = useMemo(() => {
-    if (!thread) return null;
-    // Use user_type from API response (should always be present)
-    return thread.user_type || null;
-  }, [thread?.user_type]);
-
-  // Get to_id from thread for fetching messages
+  // Get to_id from thread for fetching messages (numeric — must match API / DB)
   const toId = useMemo(() => {
     if (!thread) return null;
-    return thread.user_id || thread.id || null;
+    const v = thread.user_id ?? thread.id;
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
   }, [thread?.user_id, thread?.id]);
 
+  // Other participant type (required by API — delegate/sponsor ids can overlap)
+  const chatPeerType = useMemo(() => {
+    const t = String(thread?.user_type || thread?.userType || '').toLowerCase();
+    return t === 'delegate' || t === 'sponsor' ? t : null;
+  }, [thread?.user_type, thread?.userType]);
+
+  const chatMessagesArg = useMemo(
+    () => (toId && chatPeerType ? { toId, toType: chatPeerType } : null),
+    [toId, chatPeerType]
+  );
+
+  // Must include user_type: delegate/sponsor ids can match across tables (sponsor 977 ≠ delegate 977).
+  const stableThreadKey = useMemo(() => {
+    if (!toId || !chatPeerType) return null;
+    return `${String(toId)}:${chatPeerType}`;
+  }, [toId, chatPeerType]);
+
   // Fetch messages with specific user based on login type
-  const shouldSkipDelegateMessages = !toId || !isDelegate;
-  const shouldSkipSponsorMessages = !toId || !isSponsor;
-  
+  const shouldSkipDelegateMessages = !toId || !isDelegate || !chatPeerType;
+  const shouldSkipSponsorMessages = !toId || !isSponsor || !chatPeerType;
+
   const {
     data: delegateMessagesData,
     isLoading: isLoadingDelegateMessages,
     error: delegateMessagesError,
     refetch: refetchDelegateMessages,
-  } = useGetDelegateChatMessagesQuery(toId, {
+  } = useGetDelegateChatMessagesQuery(chatMessagesArg, {
     skip: shouldSkipDelegateMessages,
     // Disable cache - always fetch fresh data
     keepUnusedDataFor: 0,
@@ -224,7 +292,7 @@ export const MessageDetailScreen = () => {
     isLoading: isLoadingSponsorMessages,
     error: sponsorMessagesError,
     refetch: refetchSponsorMessages,
-  } = useGetSponsorChatMessagesQuery(toId, {
+  } = useGetSponsorChatMessagesQuery(chatMessagesArg, {
     skip: shouldSkipSponsorMessages,
     // Disable cache - always fetch fresh data
     keepUnusedDataFor: 0,
@@ -245,8 +313,8 @@ export const MessageDetailScreen = () => {
   const currentOpenKey = useRef(null);
 
   useEffect(() => {
-    if (isFocused && toId && thread) {
-      const openKey = `${String(toId)}_${String(thread.user_type || '').toLowerCase() || 'delegate'}`;
+    if (isFocused && toId && thread && chatPeerType) {
+      const openKey = `${String(toId)}:${chatPeerType}`;
       if (!hasOpenedChat.current || currentOpenKey.current !== openKey) {
         hasOpenedChat.current = true;
         currentOpenKey.current = openKey;
@@ -263,7 +331,33 @@ export const MessageDetailScreen = () => {
       currentOpenKey.current = null;
     }
     return undefined;
-  }, [isFocused, toId, thread, refetchMessages, dispatch]);
+  }, [isFocused, toId, chatPeerType, thread, refetchMessages, dispatch]);
+
+  /** True if this WS payload is for the open DM (both participants + types). */
+  const websocketMatchesOpenThread = useCallback(
+    (data) => {
+      if (!toId || !chatPeerType || !currentUserId || !loginType) return false;
+      const meId = String(currentUserId).trim();
+      const meType = String(loginType).toLowerCase();
+      const peerId = String(toId).trim();
+      const peerType = String(chatPeerType).toLowerCase();
+
+      const fid = String(data?.from_id ?? data?.fromId ?? '').trim();
+      const tid = String(data?.to_id ?? data?.toId ?? '').trim();
+      const ftype = String(data?.from_type ?? data?.fromType ?? '').toLowerCase();
+      const ttype = String(data?.to_type ?? data?.toType ?? '').toLowerCase();
+
+      const involvesPeer =
+        (fid === peerId && (!ftype || ftype === peerType)) ||
+        (tid === peerId && (!ttype || ttype === peerType));
+      const involvesMe =
+        (fid === meId && (!ftype || ftype === meType)) ||
+        (tid === meId && (!ttype || ttype === meType));
+
+      return involvesPeer && involvesMe;
+    },
+    [toId, chatPeerType, currentUserId, loginType]
+  );
 
   // Setup WebSocket for real-time message updates in chat detail
   useEffect(() => {
@@ -283,30 +377,16 @@ export const MessageDetailScreen = () => {
     // Listen for new messages in this chat
     const unsubscribeNewMessage = websocketManager.on('new_message', (data) => {
       console.log('💬 New message in chat via WebSocket:', data);
-      // Check if message is for current chat
-      const messageToId = String(data.to_id || data.toId || '');
-      const messageFromId = String(data.from_id || data.fromId || '');
-      const currentToId = String(toId);
-      
-      if (messageToId === currentToId || messageFromId === currentToId) {
-        // Refetch messages for this chat only when WebSocket message arrives
-        if (refetchMessages) {
-          refetchMessages();
-        }
+      if (websocketMatchesOpenThread(data) && refetchMessages) {
+        refetchMessages();
       }
     });
 
     // Listen for message updates
     const unsubscribeMessageUpdate = websocketManager.on('message_update', (data) => {
       console.log('💬 Message update via WebSocket:', data);
-      const messageToId = String(data.to_id || data.toId || '');
-      const messageFromId = String(data.from_id || data.fromId || '');
-      const currentToId = String(toId);
-      
-      if (data.message_id || messageToId === currentToId || messageFromId === currentToId) {
-        if (refetchMessages) {
-          refetchMessages();
-        }
+      if (websocketMatchesOpenThread(data) && refetchMessages) {
+        refetchMessages();
       }
     });
 
@@ -315,7 +395,7 @@ export const MessageDetailScreen = () => {
       unsubscribeNewMessage();
       unsubscribeMessageUpdate();
     };
-  }, [isFocused, toId, user, refetchMessages]);
+  }, [isFocused, toId, chatPeerType, user, refetchMessages, websocketMatchesOpenThread]);
 
   // Initialize messages from API data
   useEffect(() => {
@@ -327,14 +407,19 @@ export const MessageDetailScreen = () => {
       return;
     }
 
-    // Use user_id (from API) or id (fallback) as thread identifier
-    const currentThreadId = thread.user_id || thread.id;
-    
-    // Check if thread changed - reset state
-    if (threadIdRef.current !== currentThreadId) {
+    if (!stableThreadKey) {
       initializedRef.current = false;
       lastProcessedMessagesRef.current = null;
-      threadIdRef.current = currentThreadId;
+      setMessages([]);
+      return;
+    }
+
+    // Composite key so sponsor #N and delegate #N are different threads
+    if (threadIdRef.current !== stableThreadKey) {
+      initializedRef.current = false;
+      lastProcessedMessagesRef.current = null;
+      threadIdRef.current = stableThreadKey;
+      setMessages([]);
     }
     
     // Log API response for debugging
@@ -359,7 +444,28 @@ export const MessageDetailScreen = () => {
         messagesArray = dataObj.data;
       }
     }
-    
+
+    // Reject payloads that belong to another DM (stale RTK result after navigation)
+    if (
+      messagesArray.length > 0 &&
+      currentUserId &&
+      toId != null &&
+      chatPeerType &&
+      loginType
+    ) {
+      const allMatch = messagesArray.every((msg) =>
+        chatRowMatchesOpenThread(msg, currentUserId, loginType, toId, chatPeerType)
+      );
+      if (!allMatch) {
+        console.warn('MessageDetailScreen: ignoring chat payload — not for this thread', {
+          openThread: `${toId}:${chatPeerType}`,
+          me: `${currentUserId}:${loginType}`,
+          sampleRow: messagesArray[0],
+        });
+        return;
+      }
+    }
+
     // Always process messages when API data is available
     if (messagesData && !isLoadingMessages) {
       const dataLength = messagesArray.length;
@@ -368,7 +474,7 @@ export const MessageDetailScreen = () => {
       const lastMessage = dataLength > 0 ? messagesArray[dataLength - 1] : null;
       const lastMessageId = lastMessage ? String(lastMessage.id || '') : '';
       const lastMessageTime = lastMessage ? (lastMessage.date || lastMessage.created_at || lastMessage.timestamp || '') : '';
-      const dataKey = `${currentThreadId}-${dataLength}-${lastMessageId}-${lastMessageTime}`;
+      const dataKey = `${stableThreadKey}-${dataLength}-${lastMessageId}-${lastMessageTime}`;
       
       // Always update if data changed (new messages detected by different key)
       if (lastProcessedMessagesRef.current !== dataKey || !initializedRef.current) {
@@ -472,10 +578,20 @@ export const MessageDetailScreen = () => {
               });
             }
             
+            const mt = String(msg.message_type || msg.messageType || 'text').toLowerCase();
+            let messageType = mt === 'image' || mt === 'file' ? mt : 'text';
+            const attachmentUrl = msg.attachment_url || msg.attachmentUrl || null;
+            if (attachmentUrl && messageType === 'text') {
+              if (/\.(jpe?g|png|gif|webp)(\?|#|$)/i.test(attachmentUrl)) messageType = 'image';
+              else if (/\.pdf(\?|#|$)/i.test(attachmentUrl)) messageType = 'file';
+            }
             return {
               id: String(msg.id || msg.message_id || `msg-${index}-${Date.now()}`),
               sender: sender,
               text: msg.message || msg.text || msg.content || '',
+              messageType,
+              attachmentUrl,
+              attachmentName: msg.attachment_name || msg.attachmentName || null,
               time: formatMessageTime(msg.date || msg.created_at || msg.timestamp || msg.time),
               isRead: String(msg.is_read ?? msg.isRead ?? 0) === '1',
               readAt:
@@ -515,7 +631,7 @@ export const MessageDetailScreen = () => {
         
         if (lastMessage && lastMessage.trim()) {
           const initialMessage = {
-            id: `last-${currentThreadId}`,
+            id: `last-${stableThreadKey}`,
             sender: 'them',
             text: lastMessage,
             time: formatMessageTime(lastMessageDate),
@@ -527,46 +643,237 @@ export const MessageDetailScreen = () => {
         initializedRef.current = true;
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toId, isLoadingMessages, currentUserId, messagesData]);
+  }, [toId, chatPeerType, stableThreadKey, thread, isLoadingMessages, currentUserId, loginType, messagesData, user]);
+
+  const uploadChatAttachment = useCallback(
+    async ({ uri, name, mimeType }) => {
+      const recipient = resolveChatRecipient(thread);
+      if (!recipient) {
+        Alert.alert('Error', 'Unable to determine recipient.');
+        return;
+      }
+      const caption = inputValue.trim();
+      const form = new FormData();
+      form.append('to_id', String(recipient.toId));
+      form.append('to_type', recipient.finalToType);
+      if (caption) form.append('message', caption);
+      form.append('attachment', {
+        uri,
+        name: name || 'attachment.jpg',
+        type: mimeType || 'application/octet-stream',
+      });
+
+      setIsUploading(true);
+      try {
+        const result = isDelegate
+          ? await sendDelegateMessage(form).unwrap()
+          : await sendSponsorMessage(form).unwrap();
+
+        if (result?.success && result?.data) {
+          const d = result.data;
+          const sentMessage = {
+            id: String(d.id || Date.now()),
+            sender: 'me',
+            text: d.message || caption || '',
+            messageType: d.message_type || (d.attachment_url ? 'image' : 'text'),
+            attachmentUrl: d.attachment_url || null,
+            attachmentName: d.attachment_name || null,
+            time: formatMessageTime(d.date || new Date().toISOString()),
+            isRead: String(d?.is_read ?? 0) === '1',
+            readAt: null,
+          };
+          setMessages((prev) => [...prev, sentMessage]);
+          setInputValue('');
+          setTimeout(() => refetchMessages?.(), 500);
+        } else {
+          Alert.alert('Error', result?.message || 'Upload failed');
+        }
+      } catch (error) {
+        if (error?.status === 'PARSING_ERROR') {
+          setInputValue('');
+          setTimeout(() => refetchMessages?.(), 500);
+          return;
+        }
+        const errMsg = error?.data?.message || error?.message || 'Upload failed';
+        Alert.alert('Error', errMsg);
+      } finally {
+        setIsUploading(false);
+      }
+    },
+    [thread, currentUserId, loginType, inputValue, isDelegate, sendDelegateMessage, sendSponsorMessage, refetchMessages]
+  );
+
+  const pickImageFromLibrary = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Allow photo library access to attach images.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 0.85,
+    });
+    if (result.canceled) return;
+    const asset = result.assets?.[0];
+    if (!asset?.uri) return;
+    if (asset.fileSize && asset.fileSize > MAX_CHAT_ATTACHMENT_BYTES) {
+      Alert.alert('File too large', 'Maximum size is 8 MB.');
+      return;
+    }
+    const ext = asset.mimeType?.includes('png') ? 'png' : asset.mimeType?.includes('webp') ? 'webp' : 'jpg';
+    await uploadChatAttachment({
+      uri: asset.uri,
+      name: `photo.${ext}`,
+      mimeType: asset.mimeType || 'image/jpeg',
+    });
+  }, [uploadChatAttachment]);
+
+  const pickImageFromCamera = useCallback(async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Allow camera access to take a photo.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.85 });
+    if (result.canceled) return;
+    const asset = result.assets?.[0];
+    if (!asset?.uri) return;
+    await uploadChatAttachment({
+      uri: asset.uri,
+      name: 'photo.jpg',
+      mimeType: asset.mimeType || 'image/jpeg',
+    });
+  }, [uploadChatAttachment]);
+
+  const pickPdf = useCallback(async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: 'application/pdf',
+      copyToCacheDirectory: true,
+    });
+    if (result.canceled) return;
+    const asset = result.assets?.[0];
+    const uri = asset?.uri ?? result.uri;
+    if (!uri) return;
+    const size = asset?.size ?? result.size;
+    if (size && size > MAX_CHAT_ATTACHMENT_BYTES) {
+      Alert.alert('File too large', 'Maximum size is 8 MB.');
+      return;
+    }
+    await uploadChatAttachment({
+      uri,
+      name: asset?.name || result.name || 'document.pdf',
+      mimeType: asset?.mimeType || 'application/pdf',
+    });
+  }, [uploadChatAttachment]);
+
+  const handleAttachPress = useCallback(() => {
+    Alert.alert('Attach', 'Send a photo or PDF (max 8 MB)', [
+      { text: 'Photo library', onPress: () => pickImageFromLibrary() },
+      { text: 'Camera', onPress: () => pickImageFromCamera() },
+      { text: 'PDF', onPress: () => pickPdf() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [pickImageFromLibrary, pickImageFromCamera, pickPdf]);
+
+  const closeImagePreview = useCallback(() => setImagePreview(null), []);
+
+  const openChatImagePreview = useCallback((uri, name) => {
+    if (uri) setImagePreview({ uri, name: name || null });
+  }, []);
+
+  const handleDownloadPreviewImage = useCallback(async () => {
+    if (!imagePreview?.uri) return;
+    setIsSavingImage(true);
+    try {
+      const rawName =
+        imagePreview.name ||
+        imagePreview.uri.split('/').pop()?.split('?')[0] ||
+        `chat_${Date.now()}.jpg`;
+      const safe = String(rawName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'image.jpg';
+      const dest = `${FileSystem.cacheDirectory}dl_${Date.now()}_${safe}`;
+
+      const token = await AsyncStorage.getItem('auth_token');
+      const cleanToken = token ? token.trim().replace(/^["']|["']$/g, '') : '';
+      const authHeaders = cleanToken ? { Authorization: `Bearer ${cleanToken}` } : {};
+
+      const writeFetchToFile = async () => {
+        const res = await fetch(imagePreview.uri, { headers: authHeaders });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const ab = await res.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const b64 = btoa(binary);
+        await FileSystem.writeAsStringAsync(dest, b64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        return dest;
+      };
+
+      let localUri = dest;
+      try {
+        const dl = await FileSystem.downloadAsync(imagePreview.uri, dest, { headers: authHeaders });
+        if (dl.status < 200 || dl.status >= 300) {
+          throw new Error(`Download HTTP ${dl.status}`);
+        }
+        localUri = dl.uri;
+      } catch (firstErr) {
+        console.warn('downloadAsync failed, trying fetch', firstErr);
+        localUri = await writeFetchToFile();
+      }
+
+      const ext = safe.split('.').pop()?.toLowerCase() || 'jpg';
+      const mime =
+        ext === 'png'
+          ? 'image/png'
+          : ext === 'gif'
+            ? 'image/gif'
+            : ext === 'webp'
+              ? 'image/webp'
+              : 'image/jpeg';
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri, {
+          mimeType: mime,
+          dialogTitle: 'Save or share image',
+        });
+      } else {
+        Alert.alert('Downloaded', 'Image saved to app cache.');
+      }
+    } catch (e) {
+      console.warn('Download image failed', e);
+      Alert.alert('Error', 'Could not download image. Check your connection and try again.');
+    } finally {
+      setIsSavingImage(false);
+    }
+  }, [imagePreview]);
 
   // Handle send message
   const handleSendMessage = useCallback(async () => {
     const messageText = inputValue.trim();
-    
+
     if (!messageText) {
       return;
     }
-    
+
     if (!thread) {
       Alert.alert('Error', 'No conversation selected');
       return;
     }
 
-    // Get to_id from thread - prioritize user_id (from API), fallback to id
-    const toIdValue = thread.user_id || thread.id;
-    const toId = Number(toIdValue);
-    
-    if (!toId || isNaN(toId)) {
-      Alert.alert('Error', `Invalid recipient ID: ${toIdValue}`);
-      console.error('Invalid toId:', { toIdValue, thread });
-      return;
-    }
-
-    // Recipient type: lowercase delegate | sponsor (must match backend)
-    const rawType =
-      thread.user_type ||
-      thread.userType ||
-      (thread.delegate_id != null && thread.sponsor_id == null ? 'delegate' : null) ||
-      (thread.sponsor_id != null && thread.delegate_id == null ? 'sponsor' : null);
-    const finalToType =
-      rawType != null && rawType !== '' ? String(rawType).trim().toLowerCase() : '';
-
-    if (!finalToType || (finalToType !== 'delegate' && finalToType !== 'sponsor')) {
+    const recipient = resolveChatRecipient(thread);
+    if (!recipient) {
       Alert.alert('Error', 'Unable to determine recipient type. Please go back and try again.');
       console.error('Missing or invalid user_type in thread:', thread);
       return;
     }
+
+    const { toId, finalToType } = recipient;
 
     try {
       const requestData = {
@@ -593,6 +900,9 @@ export const MessageDetailScreen = () => {
           id: String(result.data.id || Date.now()),
           sender: 'me',
           text: result.data.message || messageText,
+          messageType: 'text',
+          attachmentUrl: null,
+          attachmentName: null,
           time: formatMessageTime(result.data.date || new Date().toISOString()),
           isRead: String(result?.data?.is_read ?? 0) === '1',
           readAt:
@@ -621,6 +931,9 @@ export const MessageDetailScreen = () => {
           id: String(Date.now()),
           sender: 'me',
           text: messageText,
+          messageType: 'text',
+          attachmentUrl: null,
+          attachmentName: null,
           time: formatMessageTime(new Date().toISOString()),
           isRead: false,
           readAt: null,
@@ -677,10 +990,24 @@ export const MessageDetailScreen = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Android: `softwareKeyboardLayoutMode: "resize"` (app.json) shrinks the window — do not add extra keyboard padding (that caused a gap above the keyboard). Only scroll the thread when the keyboard opens.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return undefined;
+    const sub = Keyboard.addListener('keyboardDidShow', () => {
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
+    });
+    return () => sub.remove();
+  }, []);
+
   const renderMessage = ({ item }) => {
     const isMe = item.sender === 'me';
-    console.log(`💬 Rendering message: sender="${item.sender}", isMe=${isMe}, text="${item.text.substring(0, 20)}"`);
-    
+    const preview = String(item.text || '').substring(0, 20);
+    console.log(`💬 Rendering message: sender="${item.sender}", isMe=${isMe}, text="${preview}"`);
+
+    const openPdfExternal = () => {
+      if (item.attachmentUrl) Linking.openURL(item.attachmentUrl);
+    };
+
     return (
       <View style={[styles.messageRow, isMe ? styles.messageRowMe : styles.messageRowThem]}>
         <View style={styles.messageContainer}>
@@ -691,7 +1018,29 @@ export const MessageDetailScreen = () => {
               { maxWidth: SIZES.bubbleMaxWidth },
             ]}
           >
-            <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.text}</Text>
+            {item.messageType === 'image' && item.attachmentUrl ? (
+              <TouchableOpacity
+                onPress={() => openChatImagePreview(item.attachmentUrl, item.attachmentName)}
+                activeOpacity={0.9}
+              >
+                <Image
+                  source={{ uri: item.attachmentUrl }}
+                  style={styles.bubbleImage}
+                  resizeMode="cover"
+                />
+              </TouchableOpacity>
+            ) : null}
+            {item.messageType === 'file' && item.attachmentUrl ? (
+              <TouchableOpacity onPress={openPdfExternal} activeOpacity={0.85}>
+                <Text style={[styles.bubbleFileLabel, isMe && styles.bubbleFileLabelMe]}>
+                  📎 {item.attachmentName || 'PDF'}
+                </Text>
+                <Text style={[styles.bubbleFileHint, isMe && styles.bubbleFileHintMe]}>Tap to open</Text>
+              </TouchableOpacity>
+            ) : null}
+            {(item.text || '').trim().length > 0 ? (
+              <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.text}</Text>
+            ) : null}
           </View>
           <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>{item.time}</Text>
           {isMe && item.id === lastSeenOutgoingMessageId && item.isRead ? (
@@ -771,28 +1120,42 @@ export const MessageDetailScreen = () => {
         return;
       } catch (error) {
         console.error('❌ Navigation to messages failed:', error);
-        // Fallback: try router.back()
-        try {
-          console.log('🔙 Fallback: trying router.back()');
-          router.back();
-        } catch (backError) {
-          console.error('❌ Router.back() also failed:', backError);
+        if (router.canGoBack()) {
+          try {
+            console.log('🔙 Fallback: trying router.back()');
+            router.back();
+          } catch (backError) {
+            console.error('❌ Router.back() also failed:', backError);
+          }
+        } else {
+          try {
+            router.push('/(drawer)/messages');
+          } catch (e2) {
+            console.error('❌ Fallback navigation failed:', e2);
+          }
         }
       }
     }
     
-    // If no returnTo param, try router.back() first
-    try {
-      console.log('🔙 Trying router.back()');
-      router.back();
-    } catch (error) {
-      console.warn('⚠️ router.back() failed, navigating to messages screen');
-      // Last resort: navigate to messages screen
+    // If no returnTo param, go back only when history exists (avoids GO_BACK unhandled warning)
+    if (router.canGoBack()) {
       try {
-        console.log('🔙 Fallback: navigating to messages screen');
+        console.log('🔙 Trying router.back()');
+        router.back();
+      } catch (error) {
+        console.warn('⚠️ router.back() failed, navigating to messages screen');
+        try {
+          router.push('/(drawer)/messages');
+        } catch (navError) {
+          console.error('❌ Navigation failed:', navError);
+        }
+      }
+    } else {
+      try {
+        console.log('🔙 No back stack — navigating to messages screen');
         router.push('/(drawer)/messages');
       } catch (navError) {
-        console.error('❌ All navigation methods failed:', navError);
+        console.error('❌ Navigation failed:', navError);
       }
     }
   }, [navigation, params?.returnTo, params?.returnSponsor, params?.returnDelegate]);
@@ -840,19 +1203,26 @@ export const MessageDetailScreen = () => {
 
   // Handle Android hardware back button
   useEffect(() => {
-    if (Platform.OS === 'android') {
-      const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-        handleBack();
-        return true; // Prevent default behavior
-      });
+    if (Platform.OS !== 'android') return undefined;
 
-      return () => backHandler.remove();
-    }
-  }, [handleBack]);
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (imagePreview) {
+        setImagePreview(null);
+        return true;
+      }
+      handleBack();
+      return true;
+    });
+
+    return () => backHandler.remove();
+  }, [handleBack, imagePreview]);
+
+  // Top safe area is handled inside `Header` (paddingTop: insets.top + gradient). Do NOT use 'top' here or you get a white strip above the header.
+  const safeAreaEdges = ['bottom'];
 
   if (!thread) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={safeAreaEdges}>
         <Header
           leftIcon="arrow-left"
           onLeftPress={handleBack}
@@ -869,7 +1239,7 @@ export const MessageDetailScreen = () => {
   const threadAvatar = thread.avatar || thread.user_image || null;
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={safeAreaEdges}>
       <Header
         leftIcon="arrow-left"
         onLeftPress={handleBack}
@@ -909,8 +1279,9 @@ export const MessageDetailScreen = () => {
 
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        enabled={Platform.OS === 'ios'}
+        keyboardVerticalOffset={0}
       >
         <View style={styles.messagesContainer}>
           {isLoadingMessages ? (
@@ -967,8 +1338,21 @@ export const MessageDetailScreen = () => {
           </View>
         )}
 
-        <View style={[styles.inputBar, { paddingHorizontal: SIZES.paddingHorizontal, paddingBottom: Math.max(insets.bottom - 34, 0) }]}>
-          <TouchableOpacity activeOpacity={0.7} style={styles.attachButton}>
+        <View
+          style={[
+            styles.inputBar,
+            {
+              paddingHorizontal: SIZES.paddingHorizontal,
+              paddingBottom: 10,
+            },
+          ]}
+        >
+          <TouchableOpacity
+            activeOpacity={0.7}
+            style={[styles.attachButton, (isSending || isUploading) && styles.attachButtonDisabled]}
+            onPress={handleAttachPress}
+            disabled={isSending || isUploading}
+          >
             <Text style={styles.attachText}>＋</Text>
           </TouchableOpacity>
           <TextInput
@@ -977,16 +1361,16 @@ export const MessageDetailScreen = () => {
             placeholderTextColor={colors.textMuted}
             value={inputValue}
             onChangeText={setInputValue}
-            editable={!isSending}
+            editable={!isSending && !isUploading}
             onSubmitEditing={handleSendMessage}
           />
           <TouchableOpacity
             activeOpacity={0.8}
-            style={[styles.sendButton, (isSending || !inputValue.trim()) && styles.sendButtonDisabled]}
+            style={[styles.sendButton, (isSending || isUploading || !inputValue.trim()) && styles.sendButtonDisabled]}
             onPress={handleSendMessage}
-            disabled={isSending || !inputValue.trim()}
+            disabled={isSending || isUploading || !inputValue.trim()}
           >
-            {isSending ? (
+            {isSending || isUploading ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <Text style={styles.sendIcon}>➤</Text>
@@ -994,6 +1378,55 @@ export const MessageDetailScreen = () => {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={!!imagePreview}
+        transparent
+        animationType="fade"
+        onRequestClose={closeImagePreview}
+      >
+        <View style={[styles.imagePreviewRoot, { paddingTop: insets.top }]}>
+          <View style={styles.imagePreviewToolbar}>
+            <Pressable
+              onPress={closeImagePreview}
+              hitSlop={12}
+              style={styles.imagePreviewToolbarBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Close preview"
+            >
+              <Icon name="x" size={26} color={colors.white} />
+            </Pressable>
+            <Pressable
+              onPress={handleDownloadPreviewImage}
+              disabled={isSavingImage}
+              style={[styles.imagePreviewToolbarBtn, styles.imagePreviewDownloadRow]}
+              accessibilityRole="button"
+              accessibilityLabel="Download or share image"
+            >
+              {isSavingImage ? (
+                <ActivityIndicator color={colors.white} size="small" />
+              ) : (
+                <>
+                  <Icon name="download" size={22} color={colors.white} />
+                  <Text style={styles.imagePreviewDownloadLabel}>Download</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+          {imagePreview ? (
+            <View style={styles.imagePreviewBody}>
+              <Image
+                source={{ uri: imagePreview.uri }}
+                style={{
+                  width: SCREEN_WIDTH - 24,
+                  height: Math.min(SCREEN_HEIGHT * 0.78, SCREEN_WIDTH * 1.2),
+                }}
+                resizeMode="contain"
+              />
+            </View>
+          ) : null}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -1109,6 +1542,29 @@ const createStyles = (SIZES) =>
     bubbleTextMe: {
       color: colors.white,
     },
+    bubbleImage: {
+      width: 220,
+      height: 180,
+      borderRadius: 12,
+      marginBottom: 8,
+      backgroundColor: colors.gray200,
+    },
+    bubbleFileLabel: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.text,
+      marginBottom: 4,
+    },
+    bubbleFileLabelMe: {
+      color: colors.white,
+    },
+    bubbleFileHint: {
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    bubbleFileHintMe: {
+      color: 'rgba(255,255,255,0.85)',
+    },
     messageTime: {
       marginTop: 4,
       fontSize: 11,
@@ -1132,7 +1588,6 @@ const createStyles = (SIZES) =>
       borderTopWidth: 1,
       borderTopColor: colors.border,
       backgroundColor: colors.white,
-      // paddingBottom will be set dynamically based on safe area insets
     },
     attachButton: {
       width: 34,
@@ -1147,6 +1602,41 @@ const createStyles = (SIZES) =>
       color: colors.textMuted,
       fontSize: 18,
       marginTop: -4,
+    },
+    attachButtonDisabled: {
+      opacity: 0.45,
+    },
+    imagePreviewRoot: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.94)',
+    },
+    imagePreviewToolbar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingBottom: 8,
+    },
+    imagePreviewToolbarBtn: {
+      padding: 8,
+      borderRadius: 8,
+    },
+    imagePreviewDownloadRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    imagePreviewDownloadLabel: {
+      color: colors.white,
+      fontSize: 16,
+      fontWeight: '600',
+    },
+    imagePreviewBody: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingBottom: 24,
     },
     input: {
       flex: 1,

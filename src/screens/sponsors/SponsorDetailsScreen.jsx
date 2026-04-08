@@ -15,6 +15,7 @@ import {
   Animated,
   BackHandler,
   Image,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -31,10 +32,12 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
+  useGetAllDelegatesQuery,
   useGetDelegateAttendeesQuery,
   useGetDelegateMeetingLocationsQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
+  useGetEventSponsorQuery,
   useGetSponsorAllAttendeesQuery,
   useGetSponsorMeetingLocationsQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
@@ -45,6 +48,8 @@ import {
   useSendSponsorMeetingRequestToSponsorMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
+import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 const meetingRed = '#DC2626';
 
@@ -147,6 +152,126 @@ function pickOutcomeFlag(map, attendee, viewerIsDelegate) {
   return info?.flag ?? null;
 }
 
+/** Same as Attendees / Delegate details: unwrap RTK / mobile JSON `data` array */
+function extractApiAttendeesList(source) {
+  if (source == null) return [];
+  if (Array.isArray(source)) return source;
+  const tryArrays = [
+    source.data,
+    source?.data?.data,
+    source?.records,
+    source?.items,
+    source?.result,
+  ];
+  for (const c of tryArrays) {
+    if (Array.isArray(c)) return c;
+  }
+  const d = source.data;
+  if (d && typeof d === 'object' && Array.isArray(d.data)) return d.data;
+  return [];
+}
+
+function sameNumericId(rowId, target) {
+  const a = Number(rowId);
+  const b = Number(target);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return a === b;
+}
+
+/** Expo Router may pass `sponsor` as a string, array of strings, or already-parsed object. */
+function parseRouteSponsorParam(raw) {
+  if (raw == null) return null;
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (first == null) return null;
+  if (typeof first === 'object') return first;
+  if (typeof first === 'string') {
+    try {
+      return JSON.parse(first);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Stable numeric id for matching directory + event-sponsor API rows (list row id vs user_id/sponsor_id).
+ */
+function resolveProfileNumericId(base) {
+  if (!base || typeof base !== 'object') return null;
+  const raw = base.raw && typeof base.raw === 'object' ? base.raw : {};
+  const candidates = [base.id, base.user_id, base.sponsor_id, raw.id, raw.user_id, raw.sponsor_id];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function eventSponsorRowMatchesProfile(row, targetId) {
+  if (!Number.isFinite(targetId) || targetId <= 0) return false;
+  return (
+    sameNumericId(row?.id, targetId) ||
+    sameNumericId(row?.user_id, targetId) ||
+    sameNumericId(row?.sponsor_id, targetId) ||
+    sameNumericId(row?.member_id, targetId)
+  );
+}
+
+/** Two-letter initials from company name (same as Sponsors list). */
+function getCompanyInitials(company) {
+  const s = String(company || '').trim();
+  if (!s) return '·';
+  const parts = s.split(/[\s,&]+/).filter((p) => p.length > 0);
+  if (parts.length >= 2) {
+    const a = parts[0][0] || '';
+    const b = parts[1][0] || '';
+    return `${a}${b}`.toUpperCase();
+  }
+  if (s.length >= 2) return s.slice(0, 2).toUpperCase();
+  return `${s[0]}`.toUpperCase();
+}
+
+/** First non-empty company logo URL from merged sponsor objects (camelCase or snake_case). */
+function pickCompanyLogoUrl(...sources) {
+  for (const src of sources) {
+    if (!src || typeof src !== 'object') continue;
+    for (const key of ['companyLogo', 'company_logo']) {
+      const v = src[key];
+      if (v != null && String(v).trim() !== '' && String(v).toLowerCase() !== 'null') {
+        return String(v).trim();
+      }
+    }
+  }
+  return null;
+}
+
+/** DB/API `company_website_url` (snake or camel) from merged sponsor rows — same field phpMyAdmin shows. */
+function pickCompanyWebsiteUrl(...sources) {
+  for (const src of sources) {
+    if (!src || typeof src !== 'object') continue;
+    for (const key of ['company_website_url', 'companyWebsiteUrl']) {
+      const v = src[key];
+      if (v != null && String(v).trim() !== '' && String(v).toLowerCase() !== 'null') {
+        return String(v).trim();
+      }
+    }
+  }
+  return null;
+}
+
+function profileFieldVisible(v) {
+  if (v == null) return false;
+  const s = String(v).trim();
+  if (!s) return false;
+  if (s.toLowerCase() === 'null') return false;
+  return true;
+}
+
+function profileDisplayOrDash(v) {
+  return profileFieldVisible(v) ? String(v).trim() : '—';
+}
+
 const MailIcon = ({ color = colors.primary, size = 22 }) => (
   <MaterialIcons name="email" size={size} color={color} />
 );
@@ -191,10 +316,6 @@ const InfoIcon = ({ color = colors.primary, size = 24 }) => (
   <Ionicons name="information-circle" size={size} color={color} />
 );
 
-const BuildingIcon = ({ color = colors.white, size = 18 }) => (
-  <MaterialIcons name="business" size={size} color={color} />
-);
-
 // Color palettes for delegates (same as SponsorsScreen)
 const LOGO_COLORS = [
   '#EEF2FF', '#E6FFFA', '#FFF7ED', '#F5F3FF', '#FDF2F8',
@@ -236,6 +357,8 @@ export const SponsorDetailsScreen = () => {
   const [isMeetingLocationDropdownOpen, setIsMeetingLocationDropdownOpen] = useState(false);
   const [isAboutExpanded, setIsAboutExpanded] = useState(false);
   const [isImagePreviewVisible, setIsImagePreviewVisible] = useState(false);
+  const [avatarStage, setAvatarStage] = useState(0);
+  const [companyInlineLogoFailed, setCompanyInlineLogoFailed] = useState(false);
   const [createDelegateMeetingRequest] = useSendDelegateMeetingRequestMutation();
   const [createDelegateMeetingRequestToDelegate] = useSendDelegateMeetingRequestToDelegateMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
@@ -328,6 +451,8 @@ export const SponsorDetailsScreen = () => {
       id: '',
       name: '',
       tier: '',
+      image: null,
+      companyLogo: null,
       logoBg: null,
       logoText: '',
       partnerType: '',
@@ -338,6 +463,7 @@ export const SponsorDetailsScreen = () => {
       about: '',
       company: '',
       job_title: '',
+      company_website_url: '',
       raw: {},
     }),
     []
@@ -353,11 +479,55 @@ export const SponsorDetailsScreen = () => {
     refetchOnMountOrArgChange: true,
   });
 
+  // Delegate login: peer profiles come from /delegate/all-delegates (same as Sponsors list). NOT from delegate-attendees (sponsors).
+  const rawEventIdForDelegates = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
+  const eventIdForDelegatesList =
+    typeof rawEventIdForDelegates === 'number' &&
+    Number.isFinite(rawEventIdForDelegates) &&
+    rawEventIdForDelegates > 0
+      ? rawEventIdForDelegates
+      : Number(rawEventIdForDelegates) || 27;
+
+  const allDelegatesQueryArg = useMemo(() => {
+    if (!isDelegate) return undefined;
+    const o = { event_id: eventIdForDelegatesList };
+    const sf = params?.delegateServicesFilter;
+    if (sf != null && sf !== '') {
+      try {
+        const raw = Array.isArray(sf) ? sf[0] : String(sf);
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length > 0) o.services = arr;
+      } catch {
+        /* ignore */
+      }
+    }
+    return o;
+  }, [isDelegate, eventIdForDelegatesList, params?.delegateServicesFilter]);
+
+  const { data: allDelegatesData } = useGetAllDelegatesQuery(allDelegatesQueryArg, {
+    skip: !user || !isDelegate || !allDelegatesQueryArg,
+    refetchOnMountOrArgChange: true,
+  });
+
   const sponsorFromParams = useMemo(() => {
-    if (!params?.sponsor) return null;
+    const parsed = parseRouteSponsorParam(params?.sponsor);
+    if (!parsed) return null;
     try {
-      const parsed = JSON.parse(params.sponsor);
-      return { ...defaultSponsor, ...parsed };
+      const rawNested = parsed.raw && typeof parsed.raw === 'object' ? parsed.raw : {};
+      const companyUrlFromNav = [
+        parsed.company_website_url,
+        parsed.companyWebsiteUrl,
+        rawNested.company_website_url,
+        rawNested.companyWebsiteUrl,
+      ].find((v) => v != null && String(v).trim() !== '' && String(v).toLowerCase() !== 'null');
+      return {
+        ...defaultSponsor,
+        ...parsed,
+        // List rows often only carry this on raw.* — defaultSponsor's '' must not win over API raw.
+        company_website_url: companyUrlFromNav != null ? String(companyUrlFromNav).trim() : '',
+        companyLogo: pickCompanyLogoUrl(parsed, rawNested),
+        image: parsed.image || parsed.user_image || parsed.avatar || rawNested.image || null,
+      };
     } catch {
       return null;
     }
@@ -365,14 +535,56 @@ export const SponsorDetailsScreen = () => {
 
   const numericTargetId = useMemo(() => {
     const base = sponsorFromParams || defaultSponsor;
-    return Number(base?.id ?? base?.raw?.id) || null;
+    return resolveProfileNumericId(base);
   }, [sponsorFromParams, defaultSponsor]);
+
+  const { data: eventSponsorsData, refetch: refetchEventSponsors } = useGetEventSponsorQuery(eventId, {
+    skip:
+      !user ||
+      isDelegate ||
+      !Number.isFinite(Number(eventId)) ||
+      Number(eventId) <= 0 ||
+      String(sponsorFromParams?.tier || '').toLowerCase() === 'delegate',
+    refetchOnMountOrArgChange: true,
+  });
+
+  // Refresh event-sponsor list when opening details so company_website_url merges from API (sponsor login).
+  useFocusEffect(
+    useCallback(() => {
+      if (!user || isDelegate) return;
+      if (
+        !Number.isFinite(Number(eventId)) ||
+        Number(eventId) <= 0 ||
+        String(sponsorFromParams?.tier || '').toLowerCase() === 'delegate'
+      ) {
+        return;
+      }
+      refetchEventSponsors();
+    }, [user, isDelegate, eventId, sponsorFromParams?.tier, refetchEventSponsors])
+  );
+
+  const eventSponsorEnrichment = useMemo(() => {
+    if (!eventSponsorsData) return null;
+    const list = extractApiAttendeesList(eventSponsorsData);
+    if (Number.isFinite(numericTargetId) && numericTargetId > 0) {
+      const byId = list.find((r) => eventSponsorRowMatchesProfile(r, numericTargetId));
+      if (byId) return byId;
+    }
+    // Sponsor login: list param id can disagree with event-sponsor row id shape — match by email so company_website_url still merges.
+    const email = String(
+      sponsorFromParams?.email || sponsorFromParams?.raw?.email || ''
+    )
+      .trim()
+      .toLowerCase();
+    if (email) {
+      const byEmail = list.find((r) => String(r?.email || '').trim().toLowerCase() === email);
+      if (byEmail) return byEmail;
+    }
+    return null;
+  }, [numericTargetId, eventSponsorsData, sponsorFromParams?.email, sponsorFromParams?.raw]);
 
   const resolvedSponsorFromDirectory = useMemo(() => {
     if (!Number.isFinite(numericTargetId)) return null;
-
-    const source = isDelegate ? delegateAttendeesData : sponsorAllAttendeesData;
-    const list = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
 
     const findId = (row) => {
       const candidates = [
@@ -389,7 +601,27 @@ export const SponsorDetailsScreen = () => {
       return null;
     };
 
-    const match = list.find((row) => findId(row) === numericTargetId);
+    const findMatch = (listWrapper) => {
+      const list = extractApiAttendeesList(listWrapper);
+      return list.find((row) => findId(row) === numericTargetId) || null;
+    };
+
+    // Sponsor login: `sponsorAllAttendeesData` is DELEGATES only (all-attendees). Do not match a sponsor's
+    // user id against delegate rows — ids can collide across tables and wipe `company_website_url` / profile fields.
+    // Only merge from that list when this screen is showing a delegate profile (tier delegate).
+    // Delegate login: search peer delegates first (all-delegates), then sponsors (delegate-attendees inbox / mixed flows).
+    let match = null;
+    let fromPeerDelegateList = false;
+    if (isDelegate) {
+      match = findMatch(allDelegatesData);
+      if (match) fromPeerDelegateList = true;
+      else {
+        match = findMatch(delegateAttendeesData);
+      }
+    } else if (String(sponsorFromParams?.tier || '').toLowerCase() === 'delegate') {
+      match = findMatch(sponsorAllAttendeesData);
+    }
+
     if (!match) return null;
 
     const name =
@@ -400,11 +632,48 @@ export const SponsorDetailsScreen = () => {
       sponsorFromParams?.name ||
       '';
 
+    if (isDelegate && fromPeerDelegateList) {
+      return {
+        id: String(numericTargetId),
+        name,
+        tier: 'delegate',
+        image: match?.image || match?.user_image || match?.avatar || sponsorFromParams?.image || null,
+        companyLogo:
+          match?.company_logo ||
+          match?.companyLogo ||
+          sponsorFromParams?.companyLogo ||
+          null,
+        company: match?.company || sponsorFromParams?.company || '',
+        company_website_url:
+          match?.company_website_url ||
+          sponsorFromParams?.company_website_url ||
+          sponsorFromParams?.raw?.company_website_url ||
+          '',
+        job_title: match?.job_title || match?.title || sponsorFromParams?.job_title || '',
+        email: match?.email || sponsorFromParams?.email || '',
+        phone: match?.mobile || match?.phone || sponsorFromParams?.phone || '',
+        website: '',
+        location: match?.address || match?.location || sponsorFromParams?.location || '',
+        about: match?.bio || '',
+        raw: match,
+      };
+    }
+
     const normalized = {
       id: String(numericTargetId),
       name,
       image: match?.image || match?.user_image || match?.avatar || sponsorFromParams?.image || null,
+      companyLogo:
+        match?.company_logo ||
+        match?.companyLogo ||
+        sponsorFromParams?.companyLogo ||
+        null,
       company: match?.company || sponsorFromParams?.company || '',
+      company_website_url:
+        match?.company_website_url ||
+        sponsorFromParams?.company_website_url ||
+        sponsorFromParams?.raw?.company_website_url ||
+        '',
       job_title: match?.job_title || match?.title || sponsorFromParams?.job_title || '',
       email: match?.email || sponsorFromParams?.email || '',
       phone: match?.mobile || match?.phone || sponsorFromParams?.phone || '',
@@ -415,6 +684,7 @@ export const SponsorDetailsScreen = () => {
 
     return normalized;
   }, [
+    allDelegatesData,
     delegateAttendeesData,
     sponsorAllAttendeesData,
     isDelegate,
@@ -427,13 +697,58 @@ export const SponsorDetailsScreen = () => {
     sponsorFromParams?.phone,
     sponsorFromParams?.website,
     sponsorFromParams?.location,
+    sponsorFromParams?.companyLogo,
+    sponsorFromParams?.company_website_url,
   ]);
 
   // Get sponsor data from params and enrich from directory
   const sponsor = useMemo(() => {
     const parsed = sponsorFromParams || defaultSponsor;
-    const enriched = resolvedSponsorFromDirectory ? { ...parsed, ...resolvedSponsorFromDirectory } : parsed;
+    let enriched = resolvedSponsorFromDirectory ? { ...parsed, ...resolvedSponsorFromDirectory } : { ...parsed };
     const raw = enriched?.raw || {};
+
+    const fromNested = pickCompanyLogoUrl(enriched, raw, sponsorFromParams, sponsorFromParams?.raw);
+    if (fromNested) {
+      enriched.companyLogo = fromNested;
+    }
+
+    if (eventSponsorEnrichment) {
+      const evLogo = pickCompanyLogoUrl(eventSponsorEnrichment);
+      if (evLogo) {
+        enriched.companyLogo = evLogo;
+      }
+      if (!enriched.image) {
+        enriched.image =
+          eventSponsorEnrichment.image ||
+          eventSponsorEnrichment.user_image ||
+          eventSponsorEnrichment.avatar ||
+          null;
+      }
+      const evUrl =
+        eventSponsorEnrichment.company_website_url ?? eventSponsorEnrichment.companyWebsiteUrl;
+      if (evUrl != null && String(evUrl).trim() !== '') {
+        enriched.company_website_url = String(evUrl).trim();
+      }
+    }
+
+    // Sponsor login: same cache as Sponsors list — if params missed URL, merge from full event-sponsor payload.
+    if (
+      !isDelegate &&
+      eventSponsorsData &&
+      (!enriched.company_website_url || String(enriched.company_website_url).trim() === '') &&
+      Number.isFinite(numericTargetId)
+    ) {
+      const evList = extractApiAttendeesList(eventSponsorsData);
+      const hit = evList.find((r) => eventSponsorRowMatchesProfile(r, numericTargetId)) || null;
+      const hitUrl = hit?.company_website_url ?? hit?.companyWebsiteUrl;
+      if (hitUrl != null && String(hitUrl).trim() !== '') {
+        enriched.company_website_url = String(hitUrl).trim();
+      }
+    }
+
+    if (!enriched.logoText || String(enriched.logoText).trim() === '') {
+      enriched.logoText = getCompanyInitials(enriched.company || enriched.name);
+    }
 
     // Prefer backend biography/company_information for sponsor profiles
     if (!enriched.about || enriched.about.trim().length === 0) {
@@ -476,8 +791,43 @@ export const SponsorDetailsScreen = () => {
       }
     }
 
+    enriched.companyLogo = resolveMediaUrl(enriched.companyLogo);
+    enriched.image = resolveMediaUrl(enriched.image);
+
     return enriched;
-  }, [defaultSponsor, sponsorFromParams, resolvedSponsorFromDirectory]);
+  }, [
+    defaultSponsor,
+    sponsorFromParams,
+    resolvedSponsorFromDirectory,
+    eventSponsorEnrichment,
+    isDelegate,
+    eventSponsorsData,
+    numericTargetId,
+  ]);
+
+  // Company badge: only `company_website_url` from sponsor row / API (no `website` or email-derived fallbacks).
+  const companyWebsiteHref = useMemo(() => {
+    const fromDbOrApi = pickCompanyWebsiteUrl(
+      sponsor,
+      sponsor?.raw,
+      eventSponsorEnrichment,
+      sponsorFromParams,
+      sponsorFromParams?.raw
+    );
+    return normalizeWebsiteUrl(fromDbOrApi);
+  }, [
+    sponsor,
+    sponsor?.company_website_url,
+    sponsor?.raw,
+    eventSponsorEnrichment,
+    sponsorFromParams,
+    sponsorFromParams?.raw,
+  ]);
+
+  const openCompanyWebsite = useCallback(() => {
+    if (!companyWebsiteHref) return;
+    Linking.openURL(companyWebsiteHref).catch(() => {});
+  }, [companyWebsiteHref]);
 
   const ABOUT_TEXT = useMemo(() => (sponsor?.about || '').trim(), [sponsor]);
   const PREVIEW_ABOUT_TEXT = useMemo(() => {
@@ -497,6 +847,73 @@ export const SponsorDetailsScreen = () => {
     const raw = sponsor?.raw || {};
     return Boolean(raw?.linkedin_url || raw?.fname || raw?.lname);
   }, [sponsor]);
+
+  useEffect(() => {
+    setAvatarStage(0);
+  }, [sponsor?.id, sponsor?.companyLogo, sponsor?.image, isDelegateProfile]);
+
+  useEffect(() => {
+    setCompanyInlineLogoFailed(false);
+  }, [sponsor?.companyLogo, sponsor?.id]);
+
+  // Match Sponsors list: person photo first, then company logo (fallback if first URL fails).
+  const profileFirstUri = useMemo(() => {
+    if (isDelegateProfile) return sponsor?.image || null;
+    return sponsor?.image || sponsor?.companyLogo || null;
+  }, [isDelegateProfile, sponsor?.image, sponsor?.companyLogo]);
+
+  const profileSecondUri = useMemo(() => {
+    if (isDelegateProfile) return null;
+    if (sponsor?.image && sponsor?.companyLogo) {
+      return sponsor.image === profileFirstUri ? sponsor.companyLogo : sponsor.image;
+    }
+    return null;
+  }, [isDelegateProfile, sponsor?.image, sponsor?.companyLogo, profileFirstUri]);
+
+  const profileAvatarUri = useMemo(() => {
+    if (isDelegateProfile) {
+      return avatarStage === 0 ? profileFirstUri : null;
+    }
+    if (avatarStage === 0) return profileFirstUri;
+    if (avatarStage === 1) return profileSecondUri;
+    return null;
+  }, [isDelegateProfile, profileFirstUri, profileSecondUri, avatarStage]);
+
+  const mergedDelegateProfile = useMemo(() => {
+    if (!isDelegateProfile) return null;
+    const r = sponsor?.raw && typeof sponsor.raw === 'object' ? sponsor.raw : {};
+    return { ...r, ...sponsor };
+  }, [sponsor, isDelegateProfile]);
+
+  const purchasingRoleDisplay = useMemo(() => {
+    const m = mergedDelegateProfile;
+    if (!m) return '';
+    const pr = String(m.purchasing_role || '').trim();
+    const pri = String(m.purchasing_role_input || '').trim();
+    if (!pr) return '';
+    if (pr.toLowerCase() === 'other' && pri) return `Other (${pri})`;
+    return pr;
+  }, [mergedDelegateProfile]);
+
+  const purchasingPlansDisplay = useMemo(() => {
+    if (!mergedDelegateProfile) return '';
+    return String(mergedDelegateProfile.products_services || '').trim();
+  }, [mergedDelegateProfile]);
+
+  const keyPrioritiesDisplay = useMemo(() => {
+    if (!mergedDelegateProfile) return '';
+    const parts = [mergedDelegateProfile.key_priority1, mergedDelegateProfile.key_priority2, mergedDelegateProfile.key_priority3]
+      .map((x) => String(x || '').trim())
+      .filter((x) => x && x.toLowerCase() !== 'null');
+    if (!parts.length) return '';
+    return parts.map((p) => `• ${p}`).join('\n');
+  }, [mergedDelegateProfile]);
+
+  // Always show Profile for peer-delegate views so Budget & Purchasing plans stay visible (with — when empty).
+  const hasDelegateProfileRows = useMemo(
+    () => Boolean(isDelegateProfile && mergedDelegateProfile && sponsor?.name),
+    [isDelegateProfile, mergedDelegateProfile, sponsor?.name]
+  );
 
   // numericTargetId is computed above from params; keep existing usages by referencing sponsor.id below
 
@@ -887,14 +1304,18 @@ export const SponsorDetailsScreen = () => {
       return;
     }
 
+    const chatAvatar = isDelegateProfile
+      ? sponsor.image
+      : sponsor.image || sponsor.companyLogo || null;
+
     const threadData = {
       id: String(sponsorId),
       user_id: Number(sponsorId),
       user_type: isDelegateProfile ? 'delegate' : 'sponsor',
       name: sponsor.name,
       user_name: sponsor.name,
-      avatar: sponsor.image,
-      user_image: sponsor.image,
+      avatar: chatAvatar,
+      user_image: chatAvatar,
       company: sponsor.company,
       email: sponsor.email,
     };
@@ -933,8 +1354,8 @@ export const SponsorDetailsScreen = () => {
   };
 
   const openImagePreview = useCallback(() => {
-    if (sponsor?.image) setIsImagePreviewVisible(true);
-  }, [sponsor?.image]);
+    if (profileAvatarUri) setIsImagePreviewVisible(true);
+  }, [profileAvatarUri]);
 
   const closeImagePreview = useCallback(() => {
     setIsImagePreviewVisible(false);
@@ -1135,6 +1556,16 @@ export const SponsorDetailsScreen = () => {
     });
   };
 
+  const handleOpenLinkedIn = () => {
+    const url = mergedDelegateProfile?.linkedin_url || mergedDelegateProfile?.linkedin;
+    if (!url) return;
+    const u = String(url).trim();
+    const href = u.startsWith('http') ? u : `https://${u}`;
+    Linking.openURL(href).catch(() => {
+      Alert.alert('Error', 'Could not open link');
+    });
+  };
+
   const ContactItem = ({ icon: IconComponent, label, value, actionIcon: ActionIcon, onAction }) => (
     <View style={styles.contactItem}>
       <View style={styles.contactLeft}>
@@ -1154,6 +1585,23 @@ export const SponsorDetailsScreen = () => {
     </View>
   );
 
+  const LinkedinIcon = ({ color = colors.textMuted, size = 18 }) => (
+    <Icon name="linkedin" size={size} color={color} />
+  );
+
+  const DetailRow = ({ label, value, multiline }) => (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={[styles.detailValue, multiline && styles.detailValueMultiline]}>{value}</Text>
+    </View>
+  );
+
+  const delegateLinkedinUrl =
+    isDelegateProfile &&
+    (mergedDelegateProfile?.linkedin_url || mergedDelegateProfile?.linkedin)
+      ? String(mergedDelegateProfile.linkedin_url || mergedDelegateProfile.linkedin).trim()
+      : '';
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
@@ -1168,6 +1616,7 @@ export const SponsorDetailsScreen = () => {
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false} 
         bounces={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.content}>
           {/* Sponsor Profile Section */}
@@ -1179,12 +1628,21 @@ export const SponsorDetailsScreen = () => {
           >
             <View style={[styles.logoContainer, { width: SIZES.logoSize + 8, height: SIZES.logoSize + 8, borderRadius: (SIZES.logoSize + 8) / 2 }]}>
               <View style={[styles.logo, { backgroundColor: sponsor.logoBg, width: SIZES.logoSize + 8, height: SIZES.logoSize + 8, borderRadius: (SIZES.logoSize + 8) / 2 }]}>
-                {sponsor.image ? (
+                {profileAvatarUri ? (
                   <TouchableOpacity activeOpacity={0.85} onPress={openImagePreview}>
                     <Image
-                      source={{ uri: sponsor.image }}
+                      source={{ uri: profileAvatarUri }}
                       style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: SIZES.logoSize / 2 }}
                       resizeMode="cover"
+                      onError={() => {
+                        if (isDelegateProfile) {
+                          setAvatarStage(2);
+                        } else if (avatarStage === 0 && profileSecondUri) {
+                          setAvatarStage(1);
+                        } else {
+                          setAvatarStage(2);
+                        }
+                      }}
                     />
                   </TouchableOpacity>
                 ) : (
@@ -1196,12 +1654,82 @@ export const SponsorDetailsScreen = () => {
             {sponsor.partnerType && (
               <Text style={[styles.partnerBadgeText]}>{sponsor.partnerType}</Text>
             )}
-            {sponsor.company && (
-              <View style={styles.companyBadge}>
-                <BuildingIcon size={16} />
-                <Text style={styles.companyText}>{sponsor.company}</Text>
-              </View>
-            )}
+            {sponsor.company &&
+              (companyWebsiteHref ? (
+                <TouchableOpacity
+                  style={[styles.companyBadge, styles.companyBadgePressable]}
+                  onPress={openCompanyWebsite}
+                  activeOpacity={0.88}
+                  hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                  accessibilityRole="link"
+                  accessibilityLabel={`Open ${sponsor.company} website`}
+                >
+                  {/* pointerEvents: logo + text must not steal touches (esp. Android Image) */}
+                  <View style={styles.companyInlineLogoWrap} pointerEvents="none">
+                    {sponsor.companyLogo && !companyInlineLogoFailed ? (
+                      <Image
+                        key={`${sponsor.id}-${sponsor.companyLogo}`}
+                        source={{ uri: sponsor.companyLogo }}
+                        style={styles.companyInlineLogo}
+                        resizeMode="cover"
+                        pointerEvents="none"
+                        onError={() => setCompanyInlineLogoFailed(true)}
+                      />
+                    ) : (
+                      <View
+                        style={[
+                          styles.companyInlineLogoPlaceholder,
+                          {
+                            backgroundColor:
+                              sponsor.logoBg || getColorFromString(sponsor.company, LOGO_COLORS),
+                          },
+                        ]}
+                        pointerEvents="none"
+                      >
+                        <Text style={styles.companyInlineLogoInitials} numberOfLines={1}>
+                          {getCompanyInitials(sponsor.company)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text
+                    style={[styles.companyText, styles.companyTextLink]}
+                    pointerEvents="none"
+                    numberOfLines={2}
+                  >
+                    {sponsor.company}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.companyBadge}>
+                  <View style={styles.companyInlineLogoWrap}>
+                    {sponsor.companyLogo && !companyInlineLogoFailed ? (
+                      <Image
+                        key={`${sponsor.id}-${sponsor.companyLogo}`}
+                        source={{ uri: sponsor.companyLogo }}
+                        style={styles.companyInlineLogo}
+                        resizeMode="cover"
+                        onError={() => setCompanyInlineLogoFailed(true)}
+                      />
+                    ) : (
+                      <View
+                        style={[
+                          styles.companyInlineLogoPlaceholder,
+                          {
+                            backgroundColor:
+                              sponsor.logoBg || getColorFromString(sponsor.company, LOGO_COLORS),
+                          },
+                        ]}
+                      >
+                        <Text style={styles.companyInlineLogoInitials} numberOfLines={1}>
+                          {getCompanyInitials(sponsor.company)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.companyText}>{sponsor.company}</Text>
+                </View>
+              ))}
 
             {!!sponsor?.name && (
               <View style={styles.actionRow}>
@@ -1252,6 +1780,15 @@ export const SponsorDetailsScreen = () => {
                   onAction={handleCopyEmail}
                 />
               )}
+              {delegateLinkedinUrl ? (
+                <ContactItem
+                  icon={LinkedinIcon}
+                  label="LinkedIn"
+                  value={delegateLinkedinUrl}
+                  actionIcon={ExternalLinkIcon}
+                  onAction={handleOpenLinkedIn}
+                />
+              ) : null}
               {sponsor.phone && !isDelegateProfile && (
                 <ContactItem
                   icon={PhoneIcon}
@@ -1295,6 +1832,44 @@ export const SponsorDetailsScreen = () => {
               ) : null}
             </View>
           </View>
+
+          {hasDelegateProfileRows ? (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <UserIcon />
+                <Text style={styles.sectionTitle}>Profile</Text>
+              </View>
+              <View style={styles.profileFieldsCard}>
+                {profileFieldVisible(mergedDelegateProfile?.state) ? (
+                  <DetailRow label="State" value={String(mergedDelegateProfile.state).trim()} />
+                ) : null}
+                {profileFieldVisible(mergedDelegateProfile?.country) ? (
+                  <DetailRow label="Country" value={String(mergedDelegateProfile.country).trim()} />
+                ) : null}
+                {profileFieldVisible(mergedDelegateProfile?.company_size) ? (
+                  <DetailRow label="Company size" value={String(mergedDelegateProfile.company_size).trim()} />
+                ) : null}
+                <DetailRow label="Budget" value={profileDisplayOrDash(mergedDelegateProfile?.budget)} />
+                {keyPrioritiesDisplay ? (
+                  <DetailRow label="Key priorities" value={keyPrioritiesDisplay} multiline />
+                ) : null}
+                {profileFieldVisible(mergedDelegateProfile?.next_due_to_start) ? (
+                  <DetailRow
+                    label="Next project due"
+                    value={String(mergedDelegateProfile.next_due_to_start).trim()}
+                  />
+                ) : null}
+                {profileFieldVisible(purchasingRoleDisplay) ? (
+                  <DetailRow label="Purchasing role" value={purchasingRoleDisplay} />
+                ) : null}
+                <DetailRow
+                  label="Purchasing plans"
+                  value={profileFieldVisible(purchasingPlansDisplay) ? purchasingPlansDisplay : '—'}
+                  multiline
+                />
+              </View>
+            </View>
+          ) : null}
 
           {/* About Section with inline Read More */}
           {ABOUT_TEXT && (
@@ -1362,11 +1937,20 @@ export const SponsorDetailsScreen = () => {
           <TouchableOpacity style={styles.imagePreviewClose} onPress={closeImagePreview} activeOpacity={0.8}>
             <Ionicons name="close" size={28} color={colors.white} />
           </TouchableOpacity>
-          <Image source={{ uri: sponsor?.image }} style={styles.imagePreviewImage} resizeMode="contain" />
+          <Image
+            source={{ uri: profileAvatarUri }}
+            style={styles.imagePreviewImage}
+            resizeMode="contain"
+          />
         </View>
       </Modal>
 
       <Modal transparent animationType="fade" visible={isModalVisible} onRequestClose={closeModal}>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}
+        >
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
           <Animated.View
@@ -1620,8 +2204,8 @@ export const SponsorDetailsScreen = () => {
               <>
                 <View style={styles.modalContactRow}>
                   <View style={styles.modalAvatar}>
-                    {sponsor?.image ? (
-                      <Image source={{ uri: sponsor.image }} style={styles.avatarImage} />
+                    {profileAvatarUri ? (
+                      <Image source={{ uri: profileAvatarUri }} style={styles.avatarImage} />
                     ) : (
                       <View
                         style={[
@@ -1668,6 +2252,7 @@ export const SponsorDetailsScreen = () => {
             )}
           </Animated.View>
         </SafeAreaView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1755,15 +2340,52 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     borderRadius: radius.pill,
     paddingVertical: 6,
     paddingHorizontal: 14,
-    gap: 6,
+    gap: 8,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  // Ensures taps register above LinearGradient / siblings (esp. Android).
+  companyBadgePressable: {
+    zIndex: 2,
+    ...Platform.select({
+      android: { elevation: 6 },
+      default: {},
+    }),
+  },
+  companyInlineLogoWrap: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  companyInlineLogo: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+  },
+  companyInlineLogoPlaceholder: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  companyInlineLogoInitials: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.text,
   },
   companyText: {
     fontSize: SIZES.body,
     fontWeight: '500',
     color: colors.white,
     opacity: 0.95,
+  },
+  companyTextLink: {
+    textDecorationLine: 'underline',
   },
   partnerBadge: {
     flexDirection: 'row',
@@ -1860,6 +2482,30 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   contactCard: {
     backgroundColor: colors.white,
     borderRadius: radius.md,
+  },
+  profileFieldsCard: {
+    backgroundColor: colors.white,
+    borderRadius: radius.md,
+    paddingHorizontal: SIZES.paddingHorizontal / 2,
+    paddingVertical: 12,
+  },
+  detailRow: {
+    marginBottom: 16,
+  },
+  detailLabel: {
+    fontSize: SIZES.body - 1,
+    fontWeight: '500',
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  detailValue: {
+    fontSize: SIZES.body,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  detailValueMultiline: {
+    lineHeight: 22,
+    marginTop: 2,
   },
   contactItem: {
     flexDirection: 'row',

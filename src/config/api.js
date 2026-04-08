@@ -35,9 +35,15 @@ export const API_ENDPOINTS = {
   DELEGATE_EVENTS: '/delegate/events',
   DELEGATE_ATTENDEES: '/delegate/attendees',
   DELEGATE_ALL_DELEGATES: '/delegate/all-delegates',
+  /** Same service labels as sponsor filter; uses delegate auth */
+  DELEGATE_EVENT_SERVICES: '/delegate/event-services',
   DELEGATE_PROFILE: '/delegate/profile',
   DELEGATE_PROFILE_UPDATE: '/delegate/profile/update',
   DELEGATE_VIEW_ITINERARY: '/delegate/view-itinerary',
+  DELEGATE_DELETE_ITINERARY_MEETING: '/delegate/delete-itinerary-meeting',
+  DELEGATE_MODIFY_ITINERARY_MEETING: '/delegate/modify-itinerary-meeting',
+  /** Dashboard: sponsor_logo rows for current event (same as web) */
+  DELEGATE_EVENT_SPONSOR_LOGOS: '/delegate/event-sponsor-logos',
   // Delegate Meeting Times
   DELEGATE_MEETING_TIMES: '/delegate/meeting-times',
   DELEGATE_MEETING_LOCATIONS: '/delegate/meeting-locations',
@@ -53,7 +59,7 @@ export const API_ENDPOINTS = {
   // Delegate Messages
   DELEGATE_CHAT_SEND_MESSAGE: '/delegate/chat/send-message',
   DELEGATE_CHAT_MESSAGE_LIST: '/delegate/chat/all-messages',
-  DELEGATE_CHAT_MESSAGES: '/delegate/chat/messages', // Get messages with specific user (query param: to_id)
+  DELEGATE_CHAT_MESSAGES: '/delegate/chat/messages', // query: to_id, to_type (delegate|sponsor)
   
   // Delegate Contacts
   DELEGATE_CONTACTS: '/delegate/contacts',
@@ -73,6 +79,10 @@ export const API_ENDPOINTS = {
   SPONSOR_SERVICES: '/sponsor/services', // Query param: event_id
   SPONSOR_ALL_ATTENDEES: '/sponsor/all-attendees',
   SPONSOR_VIEW_ITINERARY: '/sponsor/view-itinerary',
+  SPONSOR_DELETE_ITINERARY_MEETING: '/sponsor/delete-itinerary-meeting',
+  SPONSOR_MODIFY_ITINERARY_MEETING: '/sponsor/modify-itinerary-meeting',
+  /** Dashboard: sponsor_logo rows for current event (same as web) */
+  SPONSOR_EVENT_SPONSOR_LOGOS: '/sponsor/event-sponsor-logos',
   SPONSOR_PROFILE: '/sponsor/profile',
   SPONSOR_PROFILE_UPDATE: '/sponsor/profile/update',
   SPONSOR_CHAT_SEND_MESSAGE: '/sponsor/chat/send-message',
@@ -96,12 +106,21 @@ export const API_ENDPOINTS = {
   // ============ PUSH NOTIFICATIONS ============
   PUSH_REGISTER_TOKEN: 'push/register-token',
 
+  /** In-app inbox (last notifications, read/unread) — requires Bearer */
+  NOTIFICATIONS_INBOX: 'notifications/inbox',
+  NOTIFICATIONS_UNREAD_COUNT: 'notifications/unread-count',
+  NOTIFICATIONS_MARK_READ: 'notifications/mark-read',
+  NOTIFICATIONS_DELETE: 'notifications/delete',
+
   // ============ CONTACT US ============
   CONTACT_SUBMIT: 'contact/submit',
 
   // Presence (active session — same token as rest of app)
   PRESENCE_PING: '/presence/ping',
   PRESENCE_ONLINE: '/presence/online',
+
+  /** Public GET — no auth. Used by ForceUpdateGate (min version / store URLs). */
+  APP_VERSION: 'app-version',
 };
 
 export default {

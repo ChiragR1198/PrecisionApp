@@ -1,19 +1,23 @@
+import Icon from '@expo/vector-icons/Feather';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
-  View
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
@@ -22,20 +26,76 @@ import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
 import {
   useGetAllDelegatesQuery,
+  useGetDelegateEventServicesQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useGetDelegateMeetingTimesQuery,
   useGetEventSponsorQuery,
+  useGetPresenceOnlineQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
   useSendDelegateMeetingRequestMutation,
   useSendSponsorMeetingRequestMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { exportCsvNative } from '../../utils/exportCsvNative';
+import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 const UserIcon = Icons.User;
 const ChatIcon = ({ color = colors.icon, size = 24 }) => (
   <MaterialCommunityIcons name="chat" size={size} color={color} />
 );
+
+function escapeCsvField(value) {
+  const s = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+/** Build CSV for delegate rows currently shown (filters / sort / online apply). */
+function buildDelegatesCsv(rows) {
+  const headers = [
+    'ID',
+    'Name',
+    'Company',
+    'Job Title',
+    'Email',
+    'Phone',
+    'Website',
+    'Location',
+    'Online',
+    'Meeting request',
+  ];
+  const lines = [headers.map(escapeCsvField).join(',')];
+  for (const item of rows) {
+    const meeting =
+      item.requestOutcome === 'accepted'
+        ? 'Accepted'
+        : item.requestOutcome === 'declined'
+          ? 'Declined'
+          : item.hasRequest
+            ? 'Pending'
+            : '';
+    lines.push(
+      [
+        item.id,
+        item.name,
+        item.company ?? '',
+        item.partnerType ?? '',
+        item.email ?? '',
+        item.phone ?? '',
+        item.website ?? '',
+        item.location ?? '',
+        item.isOnline ? 'Yes' : 'No',
+        meeting,
+      ]
+        .map(escapeCsvField)
+        .join(',')
+    );
+  }
+  return lines.join('\r\n');
+}
 
 function extractOutcomesList(response) {
   if (response == null) return [];
@@ -82,6 +142,20 @@ function pickOutcomeFlag(map, attendee, viewerIsDelegate) {
     if (flag === 1 || flag === 2) return flag;
   }
   return null;
+}
+
+/** Two-letter initials from company name (Sponsors list avatar fallback). */
+function getCompanyInitials(company) {
+  const s = String(company || '').trim();
+  if (!s) return '·';
+  const parts = s.split(/[\s,&]+/).filter((p) => p.length > 0);
+  if (parts.length >= 2) {
+    const a = parts[0][0] || '';
+    const b = parts[1][0] || '';
+    return `${a}${b}`.toUpperCase();
+  }
+  if (s.length >= 2) return s.slice(0, 2).toUpperCase();
+  return `${s[0]}`.toUpperCase();
 }
 
 const SponsorListRow = React.memo(function SponsorListRow({
@@ -137,6 +211,19 @@ const SponsorListRow = React.memo(function SponsorListRow({
     item.hasRequest && !item.requestOutcome && styles.requestButtonTextDisabled,
   ];
 
+  const [avatarStage, setAvatarStage] = useState(0);
+  useEffect(() => {
+    setAvatarStage(0);
+  }, [item.id, item.companyLogo, item.image]);
+
+  // Prefer person photo, then company logo (if company logo is missing but image exists, image still shows).
+  const firstAvatarUri = item.image || item.companyLogo || null;
+  const secondAvatarUri =
+    item.image && item.companyLogo ? (item.image === firstAvatarUri ? item.companyLogo : item.image) : null;
+
+  const avatarUri =
+    avatarStage === 0 ? firstAvatarUri : avatarStage === 1 ? secondAvatarUri : null;
+
   return (
     <TouchableOpacity
       style={[styles.card, rowHighlight]}
@@ -150,11 +237,15 @@ const SponsorListRow = React.memo(function SponsorListRow({
             { backgroundColor: item.logoBg, width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md },
           ]}
         >
-          {item.image ? (
+          {avatarUri ? (
             <Image
-              source={{ uri: item.image }}
-              style={{ width: SIZES.logoSize, height: SIZES.logoSize, borderRadius: radius.md }}
+              source={{ uri: avatarUri }}
+              style={styles.logoImage}
               resizeMode="cover"
+              onError={() => {
+                if (avatarStage === 0 && secondAvatarUri) setAvatarStage(1);
+                else setAvatarStage(2);
+              }}
             />
           ) : (
             <Text style={styles.logoText}>{item.logoText}</Text>
@@ -357,11 +448,29 @@ export const SponsorsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchQueryDebounced, setSearchQueryDebounced] = useState('');
+  const [availabilityFilter, setAvailabilityFilter] = useState('all'); // 'all' | 'online'
+  const [sortBy, setSortBy] = useState('Name (A to Z)');
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [isSortOpen, setIsSortOpen] = useState(false);
+  const [selectedServices, setSelectedServices] = useState([]);
+  const [draftSelectedServices, setDraftSelectedServices] = useState([]);
+  const [listCsvExporting, setListCsvExporting] = useState(false);
   const { user } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const isSponsor = loginType === 'sponsor';
   const { isAuthenticated } = useAppSelector((state) => state.auth);
+
+  const currentUserNumericId = useMemo(() => {
+    const n = Number(user?.id ?? user?.user_id ?? user?.delegate_id ?? user?.sponsor_id);
+    return Number.isFinite(n) ? n : null;
+  }, [user]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQueryDebounced(searchQuery), 200);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
   const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
 
   const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
@@ -370,10 +479,59 @@ export const SponsorsScreen = () => {
       ? rawEventId
       : Number(rawEventId) || 27;
 
-  // Fetch delegates (for delegate login)
-  const { data: delegatesData, isLoading: delegatesLoading, error: delegatesError } = useGetAllDelegatesQuery(undefined, {
-    skip: !isAuthenticated || !user || !isDelegate,
+  const { data: presenceOnlineData } = useGetPresenceOnlineQuery(
+    { event_id: eventId, window: 120 },
+    {
+      skip:
+        !isAuthenticated ||
+        !user ||
+        !(isDelegate || isSponsor) ||
+        !Number.isFinite(Number(eventId)) ||
+        Number(eventId) <= 0,
+      pollingInterval: 30000,
+    }
+  );
+
+  const presenceDelegateSet = useMemo(() => {
+    const po = presenceOnlineData?.data ?? {};
+    const ids = po.delegate_ids;
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.map((x) => Number(x)).filter(Number.isFinite));
+  }, [presenceOnlineData]);
+
+  const presenceSponsorSet = useMemo(() => {
+    const po = presenceOnlineData?.data ?? {};
+    const ids = po.sponsor_ids;
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.map((x) => Number(x)).filter(Number.isFinite));
+  }, [presenceOnlineData]);
+
+  const allDelegatesQueryArg = useMemo(() => {
+    if (!isDelegate) return undefined;
+    const o = { event_id: eventId };
+    if (selectedServices.length > 0) o.services = selectedServices;
+    return o;
+  }, [isDelegate, eventId, selectedServices]);
+
+  const {
+    data: delegateEventServicesData,
+    isFetching: delegateServicesFetching,
+  } = useGetDelegateEventServicesQuery(eventId, {
+    skip:
+      !isAuthenticated ||
+      !user ||
+      !isDelegate ||
+      !Number.isFinite(Number(eventId)) ||
+      Number(eventId) <= 0,
   });
+
+  // Fetch delegates (for delegate login); optional service filter via API (same as sponsor attendees)
+  const { data: delegatesData, isLoading: delegatesLoading, error: delegatesError } = useGetAllDelegatesQuery(
+    allDelegatesQueryArg,
+    {
+      skip: !isAuthenticated || !user || !isDelegate || !allDelegatesQueryArg,
+    }
+  );
 
   // Fetch event sponsors (for sponsor login)
   const { data: sponsorsData, isLoading: sponsorsLoading, error: sponsorsError } = useGetEventSponsorQuery(eventId, {
@@ -633,6 +791,7 @@ export const SponsorsScreen = () => {
         paddingHorizontal: getResponsiveValue({ android: 16, ios: 18, tablet: 20, default: 16 }),
         sectionSpacing: getResponsiveValue({ android: 20, ios: 24, tablet: 26, default: 22 }),
         cardSpacing: getResponsiveValue({ android: 12, ios: 14, tablet: 16, default: 12 }),
+        filterHeight: getResponsiveValue({ android: 46, ios: 48, tablet: 48, default: 46 }),
         body: getResponsiveValue({ android: 13, ios: 14, tablet: 15, default: 13 }),
         title: getResponsiveValue({ android: 18, ios: 19, tablet: 21, default: 18 }),
         cardHeight: getResponsiveValue({ android: 78, ios: 80, tablet: 86, default: 78 }),
@@ -643,6 +802,54 @@ export const SponsorsScreen = () => {
   }, [SCREEN_WIDTH]);
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
+
+  const openServiceFilter = useCallback(() => {
+    setDraftSelectedServices(Array.isArray(selectedServices) ? [...selectedServices] : []);
+    setIsFilterOpen(true);
+  }, [selectedServices]);
+
+  const applyServiceFilter = useCallback(() => {
+    setSelectedServices(Array.isArray(draftSelectedServices) ? [...draftSelectedServices] : []);
+    setIsFilterOpen(false);
+  }, [draftSelectedServices]);
+
+  const clearDraftServiceFilter = useCallback(() => setDraftSelectedServices([]), []);
+
+  const draftSelectedServiceSet = useMemo(
+    () => new Set(Array.isArray(draftSelectedServices) ? draftSelectedServices : []),
+    [draftSelectedServices]
+  );
+
+  const toggleDraftService = useCallback((opt) => {
+    setDraftSelectedServices((prev) => {
+      const prevArr = Array.isArray(prev) ? prev : [];
+      const set = new Set(prevArr);
+      if (set.has(opt)) set.delete(opt);
+      else set.add(opt);
+      return Array.from(set);
+    });
+  }, []);
+
+  const renderServiceFilterItem = useCallback(
+    ({ item: opt }) => {
+      const isSelected = draftSelectedServiceSet.has(opt);
+      return (
+        <TouchableOpacity
+          style={[styles.modalItem, isSelected && styles.modalItemActive]}
+          activeOpacity={0.9}
+          onPress={() => toggleDraftService(opt)}
+        >
+          <Text style={[styles.modalItemText, isSelected && styles.modalItemTextActive]}>{opt}</Text>
+          {isSelected ? (
+            <Icon name="check" size={16} color={colors.primary} />
+          ) : (
+            <View style={styles.checkboxUnchecked} />
+          )}
+        </TouchableOpacity>
+      );
+    },
+    [draftSelectedServiceSet, styles, toggleDraftService]
+  );
 
   // Map API delegates to the sponsor card shape
   const delegates = useMemo(() => {
@@ -655,12 +862,14 @@ export const SponsorsScreen = () => {
         d.name ||
         '';
       const name = fullName || 'Unknown';
-      const initials = name
-        .split(' ')
-        .filter(Boolean)
-        .map((part) => part[0]?.toUpperCase())
-        .slice(0, 2)
-        .join('') || 'DL';
+      const personInitials =
+        name
+          .split(' ')
+          .filter(Boolean)
+          .map((part) => part[0]?.toUpperCase())
+          .slice(0, 2)
+          .join('') || 'DL';
+      const companyInitials = getCompanyInitials(d.company || name);
       const delegateId = String(d.id);
       const logoBg = getColorFromString(delegateId, LOGO_COLORS);
       const badgeColor = getColorFromString(delegateId + name, BADGE_COLORS);
@@ -669,8 +878,9 @@ export const SponsorsScreen = () => {
         name,
         tier: 'Delegate',
         logoBg,
-        logoText: initials,
-        image: d.image || null,
+        companyLogo: null,
+        logoText: personInitials || companyInitials,
+        image: resolveMediaUrl(d.image || d.user_image || d.avatar || d.profile_image || null),
         partnerType: d.job_title || '',
         email: d.email || '',
         phone: d.mobile || '',
@@ -687,15 +897,23 @@ export const SponsorsScreen = () => {
   // Map API sponsors to the sponsor card shape
   const sponsors = useMemo(() => {
     if (!isSponsor || !sponsorsData) return [];
-    const list = Array.isArray(sponsorsData?.data) ? sponsorsData.data : Array.isArray(sponsorsData) ? sponsorsData : [];
+    const list = Array.isArray(sponsorsData?.data)
+      ? sponsorsData.data
+      : Array.isArray(sponsorsData?.data?.data)
+        ? sponsorsData.data.data
+        : Array.isArray(sponsorsData)
+          ? sponsorsData
+          : [];
     return list.map((s) => {
       const name = s.name || s.full_name || 'Unknown';
-      const initials = name
-        .split(' ')
-        .filter(Boolean)
-        .map((part) => part[0]?.toUpperCase())
-        .slice(0, 2)
-        .join('') || 'SP';
+      const personInitials =
+        name
+          .split(' ')
+          .filter(Boolean)
+          .map((part) => part[0]?.toUpperCase())
+          .slice(0, 2)
+          .join('') || 'SP';
+      const companyInitials = getCompanyInitials(s.company || name);
       const sponsorId = String(s.id);
       const logoBg = getColorFromString(sponsorId, LOGO_COLORS);
       const badgeColor = getColorFromString(sponsorId + name, BADGE_COLORS);
@@ -708,8 +926,9 @@ export const SponsorsScreen = () => {
         name,
         tier,
         logoBg,
-        logoText: initials,
-        image: s.image || null,
+        companyLogo: resolveMediaUrl(s.company_logo || s.companyLogo || null),
+        logoText: personInitials || companyInitials,
+        image: resolveMediaUrl(s.image || s.user_image || s.avatar || s.profile_image || null),
         partnerType: s.job_title || '',
         email: s.email || '',
         phone: s.mobile || s.tel || '',
@@ -717,21 +936,162 @@ export const SponsorsScreen = () => {
         location: '',
         about: s.biography || s.company_information || '',
         company: s.company || '',
+        company_website_url: s.company_website_url || s.companyWebsiteUrl || '',
         badgeColor,
         raw: s,
       };
     });
   }, [isSponsor, sponsorsData]);
 
-  const filteredSponsors = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+  const SORT_OPTIONS = useMemo(
+    () => [
+      'Name (A to Z)',
+      'Name (Z to A)',
+      'Company (A to Z)',
+      'Company (Z to A)',
+      'Role (A to Z)',
+      'Role (Z to A)',
+      'Newest',
+      'Oldest',
+    ],
+    []
+  );
+
+  const delegateServiceFilterOptions = useMemo(() => {
+    if (!isDelegate) return [];
+    const raw =
+      delegateEventServicesData?.data ??
+      delegateEventServicesData?.services ??
+      delegateEventServicesData ??
+      [];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((s) => (typeof s === 'string' ? s : s?.name || s?.title || s?.service || ''))
+      .filter(Boolean);
+  }, [isDelegate, delegateEventServicesData]);
+
+  const filteredBeforeMeeting = useMemo(() => {
     const baseList = isDelegate ? delegates : isSponsor ? sponsors : SPONSORS;
-    if (!q) return baseList;
-    return baseList.filter((sponsor) => sponsor.name.toLowerCase().includes(q));
-  }, [searchQuery, isDelegate, isSponsor, delegates, sponsors]);
+
+    if (isDelegate) {
+      let list = baseList;
+      const q = searchQueryDebounced.trim().toLowerCase();
+      if (q) {
+        list = list.filter((s) => {
+          const blob = `${s.name} ${s.company || ''} ${s.partnerType || ''}`.toLowerCase();
+          return blob.includes(q);
+        });
+      }
+      const withKeys = list.map((item) => {
+        const numericId = Number(item.id);
+        const nameKey = String(item.name || '').toLowerCase();
+        const companyKey = String(item.company || '').toLowerCase();
+        const roleKey = String(item.partnerType || '').toLowerCase();
+        const isCurrentUser = currentUserNumericId != null && currentUserNumericId === numericId;
+        const inPresence = presenceDelegateSet.has(numericId);
+        const isOnline = Boolean(isCurrentUser || inPresence);
+        return { ...item, _nameKey: nameKey, _companyKey: companyKey, _roleKey: roleKey, isOnline };
+      });
+      const sorted = [...withKeys];
+      switch (sortBy) {
+        case 'Name (Z to A)':
+          sorted.sort((a, b) => String(b._nameKey || '').localeCompare(String(a._nameKey || '')));
+          break;
+        case 'Company (A to Z)':
+          sorted.sort((a, b) => String(a._companyKey || '').localeCompare(String(b._companyKey || '')));
+          break;
+        case 'Company (Z to A)':
+          sorted.sort((a, b) => String(b._companyKey || '').localeCompare(String(a._companyKey || '')));
+          break;
+        case 'Role (A to Z)':
+          sorted.sort((a, b) => String(a._roleKey || '').localeCompare(String(b._roleKey || '')));
+          break;
+        case 'Role (Z to A)':
+          sorted.sort((a, b) => String(b._roleKey || '').localeCompare(String(a._roleKey || '')));
+          break;
+        case 'Newest':
+          sorted.sort((a, b) => (Number(b?.id) || 0) - (Number(a?.id) || 0));
+          break;
+        case 'Oldest':
+          sorted.sort((a, b) => (Number(a?.id) || 0) - (Number(b?.id) || 0));
+          break;
+        case 'Name (A to Z)':
+        default:
+          sorted.sort((a, b) => String(a._nameKey || '').localeCompare(String(b._nameKey || '')));
+          break;
+      }
+      return sorted.filter((a) => availabilityFilter === 'all' || a.isOnline);
+    }
+    
+    if (isSponsor) {
+      let list = baseList;
+      const q = searchQueryDebounced.trim().toLowerCase();
+      if (q) {
+        list = list.filter((s) => {
+          const blob = `${s.name} ${s.company || ''} ${s.partnerType || ''}`.toLowerCase();
+          return blob.includes(q);
+        });
+      }
+
+      const withKeys = list.map((item) => {
+        const numericId = Number(item.id);
+        const nameKey = String(item.name || '').toLowerCase();
+        const companyKey = String(item.company || '').toLowerCase();
+        const roleKey = String(item.partnerType || '').toLowerCase();
+        const isCurrentUser = currentUserNumericId != null && currentUserNumericId === numericId;
+        const inPresence = presenceSponsorSet.has(numericId);
+        const isOnline = Boolean(isCurrentUser || inPresence);
+        return { ...item, _nameKey: nameKey, _companyKey: companyKey, _roleKey: roleKey, isOnline };
+      });
+
+      const sorted = [...withKeys];
+      switch (sortBy) {
+        case 'Name (Z to A)':
+          sorted.sort((a, b) => String(b._nameKey || '').localeCompare(String(a._nameKey || '')));
+          break;
+        case 'Company (A to Z)':
+          sorted.sort((a, b) => String(a._companyKey || '').localeCompare(String(b._companyKey || '')));
+          break;
+        case 'Company (Z to A)':
+          sorted.sort((a, b) => String(b._companyKey || '').localeCompare(String(a._companyKey || '')));
+          break;
+        case 'Role (A to Z)':
+          sorted.sort((a, b) => String(a._roleKey || '').localeCompare(String(b._roleKey || '')));
+          break;
+        case 'Role (Z to A)':
+          sorted.sort((a, b) => String(b._roleKey || '').localeCompare(String(a._roleKey || '')));
+          break;
+        case 'Newest':
+          sorted.sort((a, b) => (Number(b?.id) || 0) - (Number(a?.id) || 0));
+          break;
+        case 'Oldest':
+          sorted.sort((a, b) => (Number(a?.id) || 0) - (Number(b?.id) || 0));
+          break;
+        case 'Name (A to Z)':
+        default:
+          sorted.sort((a, b) => String(a._nameKey || '').localeCompare(String(b._nameKey || '')));
+          break;
+      }
+
+      return sorted.filter((a) => availabilityFilter === 'all' || a.isOnline);
+    }
+
+    return baseList;
+  }, [
+    isDelegate,
+    isSponsor,
+    delegates,
+    sponsors,
+    searchQueryDebounced,
+    sortBy,
+    availabilityFilter,
+    presenceDelegateSet,
+    presenceSponsorSet,
+    currentUserNumericId,
+  ]);
 
   const listWithMeetingState = useMemo(() => {
-    return filteredSponsors.map((item) => {
+    return filteredBeforeMeeting.map((item) => {
       const attendee = item.raw ? { ...item, ...item.raw } : item;
       const numericId = Number(item.id ?? item.raw?.id) || Number(item.id);
       const outcomeFlag =
@@ -781,7 +1141,7 @@ export const SponsorsScreen = () => {
       };
     });
   }, [
-    filteredSponsors,
+    filteredBeforeMeeting,
     attendeeOutcomeMap,
     isDelegate,
     locallyRequestedIds,
@@ -789,6 +1149,35 @@ export const SponsorsScreen = () => {
     attendeePriorityMap,
     requestedAttendeeIds,
   ]);
+
+  const handleDownloadListCsv = useCallback(async () => {
+    if (!isDelegate && !isSponsor) return;
+    const rows = listWithMeetingState;
+    if (!rows.length) {
+      Alert.alert(
+        'No data',
+        isDelegate ? 'There are no delegates to export.' : 'There are no sponsors to export.'
+      );
+      return;
+    }
+    const prefix = isDelegate ? 'delegates' : 'sponsors';
+    const safeName = `${prefix}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+    const dialogTitle = isDelegate ? 'Export delegates' : 'Export sponsors';
+    try {
+      setListCsvExporting(true);
+      const csvBody = buildDelegatesCsv(rows);
+      await exportCsvNative({
+        csvBody,
+        fileName: safeName,
+        fallbackDialogTitle: dialogTitle,
+      });
+    } catch (e) {
+      console.error('SponsorsScreen CSV export:', e);
+      Alert.alert('Export failed', e?.message || 'Could not create the CSV file.');
+    } finally {
+      setListCsvExporting(false);
+    }
+  }, [isDelegate, isSponsor, listWithMeetingState]);
 
   const openModal = useCallback(
     (attendee) => {
@@ -940,10 +1329,13 @@ export const SponsorsScreen = () => {
           sponsor: JSON.stringify(item),
           returnTo: 'sponsors',
           eventDateFrom: selectedEventDateFrom || '',
+          ...(isDelegate && selectedServices.length > 0
+            ? { delegateServicesFilter: JSON.stringify(selectedServices) }
+            : {}),
         },
       });
     },
-    [selectedEventDateFrom]
+    [selectedEventDateFrom, isDelegate, selectedServices]
   );
 
   const onStartChat = useCallback(
@@ -1008,48 +1400,320 @@ export const SponsorsScreen = () => {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={60}
       >
-        <View style={styles.content}>
-          <SearchBar
-            placeholder={isDelegate ? 'Search delegates...' : 'Search sponsors...'}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={styles.searchBar}
-          />
-          <Text style={styles.countText}>
-            {isDelegate
-              ? `${listWithMeetingState.length} Delegates found`
-              : `${listWithMeetingState.length} Sponsors found`}
-          </Text>
-        </View>
-        {isLoading ? (
-          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1 }]}>
-            <Text style={styles.countText}>Loading...</Text>
-          </View>
-        ) : error ? (
-          <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1, paddingHorizontal: 32 }]}>
-            <Text style={[styles.countText, { color: colors.textMuted }]}>{errorMessage}</Text>
-          </View>
+        {isDelegate ? (
+          <>
+            <View style={styles.content}>
+              <View style={styles.searchRow}>
+                <View style={styles.searchBarWrapper}>
+                  <SearchBar
+                    placeholder="Search delegates..."
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                    style={styles.searchBarInline}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.filterIconBtn,
+                    selectedServices.length > 0 && styles.filterIconBtnActive,
+                  ]}
+                  activeOpacity={0.8}
+                  onPress={openServiceFilter}
+                >
+                  <Icon name="filter" size={18} color={colors.white} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.filterIconBtn}
+                  activeOpacity={0.8}
+                  onPress={() => setIsSortOpen(true)}
+                >
+                  <Icon name="sliders" size={18} color={colors.white} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.advancedFiltersRow}>
+                <Text style={styles.advancedFiltersLabel}>Status</Text>
+                <View style={styles.advancedFiltersChips}>
+                  {['all', 'online'].map((key) => {
+                    const isActive = availabilityFilter === key;
+                    const label = key === 'all' ? 'All' : 'Online';
+                    return (
+                      <TouchableOpacity
+                        key={key}
+                        style={[styles.filterChip, isActive && styles.filterChipActive]}
+                        activeOpacity={0.8}
+                        onPress={() => setAvailabilityFilter(key)}
+                      >
+                        <Text
+                          style={[styles.filterChipText, isActive && styles.filterChipTextActive]}
+                        >
+                          {label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <View style={styles.countRow}>
+                <View style={styles.countRowLeft}>
+                  <View style={styles.countDot} />
+                  <Text style={styles.countLineText} numberOfLines={1}>
+                    {`${String(listWithMeetingState.length)} DELEGATES`}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.downloadCsvBtn,
+                    (listCsvExporting || listWithMeetingState.length === 0) && styles.downloadCsvBtnDisabled,
+                  ]}
+                  onPress={handleDownloadListCsv}
+                  disabled={listCsvExporting || listWithMeetingState.length === 0}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Download delegates as CSV"
+                >
+                  {listCsvExporting ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <>
+                      <Icon name="download" size={16} color={colors.primary} />
+                      <Text style={styles.downloadCsvText}>CSV</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+            {isLoading ? (
+              <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1 }]}>
+                <Text style={styles.countText}>Loading...</Text>
+              </View>
+            ) : error ? (
+              <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1, paddingHorizontal: 32 }]}>
+                <Text style={[styles.countText, { color: colors.textMuted }]}>{errorMessage}</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={listWithMeetingState}
+                keyExtractor={(item) =>
+                  `${String(item.id)}-${item.requestOutcome ?? 'n'}-${item.hasRequest ? 'p' : 'o'}`
+                }
+                renderItem={renderSponsor}
+                ItemSeparatorComponent={() => <View style={styles.separator} />}
+                showsVerticalScrollIndicator={true}
+                contentContainerStyle={[
+                  styles.listContent,
+                  listWithMeetingState.length === 0 && { flex: 1 },
+                  { paddingHorizontal: SIZES.paddingHorizontal },
+                ]}
+                bounces={true}
+                style={{ flex: 1, backgroundColor: '#F9FAFB' }}
+                keyboardShouldPersistTaps="handled"
+                extraData={[sortBy, availabilityFilter, selectedServices, attendeeOutcomeMap.size]}
+              />
+            )}
+          </>
         ) : (
-          <FlatList
-            data={listWithMeetingState}
-            keyExtractor={(item) =>
-              `${String(item.id)}-${item.requestOutcome ?? 'n'}-${item.hasRequest ? 'p' : 'o'}`
-            }
-            renderItem={renderSponsor}
-            ItemSeparatorComponent={() => <View style={styles.separator} />}
-            showsVerticalScrollIndicator={true}
-            contentContainerStyle={[
-              styles.listContent,
-              listWithMeetingState.length === 0 && { flex: 1 },
-              { paddingHorizontal: SIZES.paddingHorizontal },
-            ]}
-            bounces={true}
-            style={{ flex: 1, backgroundColor: '#F9FAFB' }}
-            keyboardShouldPersistTaps="handled"
-            extraData={attendeeOutcomeMap.size}
-          />
+          <>
+            <View style={styles.content}>
+              <View style={styles.searchRow}>
+                <View style={styles.searchBarWrapper}>
+                  <SearchBar
+                    placeholder="Search sponsors..."
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                    style={styles.searchBarInline}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={styles.filterIconBtn}
+                  activeOpacity={0.8}
+                  onPress={() => setIsSortOpen(true)}
+                >
+                  <Icon name="sliders" size={18} color={colors.white} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.advancedFiltersRow}>
+                <Text style={styles.advancedFiltersLabel}>Status</Text>
+                <View style={styles.advancedFiltersChips}>
+                  {['all', 'online'].map((key) => {
+                    const isActive = availabilityFilter === key;
+                    const label = key === 'all' ? 'All' : 'Online';
+                    return (
+                      <TouchableOpacity
+                        key={key}
+                        style={[styles.filterChip, isActive && styles.filterChipActive]}
+                        activeOpacity={0.8}
+                        onPress={() => setAvailabilityFilter(key)}
+                      >
+                        <Text
+                          style={[styles.filterChipText, isActive && styles.filterChipTextActive]}
+                        >
+                          {label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <View style={styles.countRow}>
+                <View style={styles.countRowLeft}>
+                  <View style={styles.countDot} />
+                  <Text style={styles.countLineText} numberOfLines={1}>
+                    {`${String(listWithMeetingState.length)} SPONSORS`}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.downloadCsvBtn,
+                    (listCsvExporting || listWithMeetingState.length === 0) && styles.downloadCsvBtnDisabled,
+                  ]}
+                  onPress={handleDownloadListCsv}
+                  disabled={listCsvExporting || listWithMeetingState.length === 0}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Download sponsors as CSV"
+                >
+                  {listCsvExporting ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <>
+                      <Icon name="download" size={16} color={colors.primary} />
+                      <Text style={styles.downloadCsvText}>CSV</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {isLoading ? (
+              <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1 }]}>
+                <Text style={styles.countText}>Loading...</Text>
+              </View>
+            ) : error ? (
+              <View style={[styles.listContent, { alignItems: 'center', justifyContent: 'center', flex: 1, paddingHorizontal: 32 }]}>
+                <Text style={[styles.countText, { color: colors.textMuted }]}>{errorMessage}</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={listWithMeetingState}
+                keyExtractor={(item) =>
+                  `${String(item.id)}-${item.requestOutcome ?? 'n'}-${item.hasRequest ? 'p' : 'o'}`
+                }
+                renderItem={renderSponsor}
+                ItemSeparatorComponent={() => <View style={styles.separator} />}
+                showsVerticalScrollIndicator={true}
+                contentContainerStyle={[
+                  styles.listContent,
+                  listWithMeetingState.length === 0 && { flex: 1 },
+                  { paddingHorizontal: SIZES.paddingHorizontal },
+                ]}
+                bounces={true}
+                style={{ flex: 1, backgroundColor: '#F9FAFB' }}
+                keyboardShouldPersistTaps="handled"
+                extraData={[sortBy, availabilityFilter, attendeeOutcomeMap.size]}
+              />
+            )}
+          </>
         )}
       </KeyboardAvoidingView>
+
+      {(isDelegate || isSponsor) ? (
+        <>
+          <Modal
+            transparent
+            animationType="fade"
+            visible={isDelegate && isFilterOpen}
+            onRequestClose={() => setIsFilterOpen(false)}
+          >
+            <View style={styles.filterModalBackdrop}>
+              <TouchableOpacity style={styles.filterModalBackdropPressable} activeOpacity={1} onPress={() => setIsFilterOpen(false)} />
+              <View style={styles.filterModalCenterWrap}>
+                <View style={styles.filterModalCard}>
+                  <Text style={styles.filterModalTitle}>Select Service</Text>
+                  {delegateServicesFetching && delegateServiceFilterOptions.length === 0 ? (
+                    <View style={styles.filterModalEmpty}>
+                      <ActivityIndicator size="small" color={colors.primary} />
+                      <Text style={[styles.filterModalEmptyText, { marginTop: 12 }]}>Loading services...</Text>
+                    </View>
+                  ) : delegateServiceFilterOptions.length === 0 ? (
+                    <View style={styles.filterModalEmpty}>
+                      <Text style={styles.filterModalEmptyText}>No services available</Text>
+                    </View>
+                  ) : (
+                    <FlatList
+                      style={styles.filterModalList}
+                      contentContainerStyle={styles.filterModalListContent}
+                      data={delegateServiceFilterOptions}
+                      keyExtractor={(opt) => String(opt)}
+                      renderItem={renderServiceFilterItem}
+                      showsVerticalScrollIndicator
+                      keyboardShouldPersistTaps="handled"
+                      initialNumToRender={12}
+                      maxToRenderPerBatch={12}
+                      windowSize={7}
+                      extraData={draftSelectedServices}
+                    />
+                  )}
+                  <View style={styles.filterModalButtonRow}>
+                    {draftSelectedServices.length > 0 && (
+                      <TouchableOpacity
+                        onPress={clearDraftServiceFilter}
+                        activeOpacity={0.8}
+                        style={[styles.filterModalBtn, styles.filterModalBtnClear]}
+                      >
+                        <Text style={[styles.filterModalBtnText, styles.filterModalBtnTextClear]}>Clear All</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity onPress={applyServiceFilter} activeOpacity={0.8} style={styles.filterModalBtn}>
+                      <Text style={styles.filterModalBtnText}>Apply</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </Modal>
+          <Modal transparent animationType="fade" visible={isSortOpen} onRequestClose={() => setIsSortOpen(false)}>
+            <View style={styles.filterModalBackdrop}>
+              <TouchableOpacity style={styles.filterModalBackdropPressable} activeOpacity={1} onPress={() => setIsSortOpen(false)} />
+              <View style={styles.filterModalCenterWrap}>
+                <View style={styles.filterModalCard}>
+                  <Text style={styles.filterModalTitle}>Sort By</Text>
+                  <ScrollView
+                    style={styles.filterModalList}
+                    contentContainerStyle={styles.filterModalListContent}
+                    showsVerticalScrollIndicator
+                  >
+                    {SORT_OPTIONS.map((opt) => (
+                      <TouchableOpacity
+                        key={opt}
+                        style={[styles.modalItem, sortBy === opt && styles.modalItemActive]}
+                        activeOpacity={0.9}
+                        onPress={() => {
+                          setSortBy(opt);
+                          setIsSortOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.modalItemText, sortBy === opt && styles.modalItemTextActive]}>{opt}</Text>
+                        {sortBy === opt ? (
+                          <Icon name="check" size={16} color={colors.primary} />
+                        ) : (
+                          <View />
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                  <TouchableOpacity onPress={() => setIsSortOpen(false)} activeOpacity={0.8} style={styles.filterModalBtn}>
+                    <Text style={styles.filterModalBtnText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        </>
+      ) : null}
 
       {/*
       <Modal
@@ -1291,11 +1955,221 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   searchBar: {
     marginTop: 12,
   },
+  searchRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  searchBarWrapper: {
+    flex: 1,
+    height: SIZES.filterHeight,
+  },
+  searchBarInline: {
+    height: SIZES.filterHeight,
+  },
+  filterIconBtn: {
+    width: SIZES.filterHeight,
+    height: SIZES.filterHeight,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterIconBtnActive: {
+    backgroundColor: colors.primaryDark,
+    borderWidth: 2,
+    borderColor: colors.white,
+  },
+  advancedFiltersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  advancedFiltersLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  advancedFiltersChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  filterChip: {
+    borderRadius: 9999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  filterChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  filterChipText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  filterChipTextActive: {
+    color: colors.white,
+  },
+  countRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+    marginBottom: 14,
+    gap: 10,
+  },
+  countRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+  },
+  downloadCsvBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.white,
+  },
+  downloadCsvBtnDisabled: {
+    opacity: 0.45,
+  },
+  downloadCsvText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  countDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+    marginRight: 8,
+  },
+  countLineText: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
   countText: {
     fontSize: SIZES.body + 2,
     color: colors.primary,
     fontWeight: '700',
     marginBottom: 16,
+  },
+  modalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalItemActive: {
+    backgroundColor: 'transparent',
+  },
+  modalItemText: {
+    fontSize: SIZES.body,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  modalItemTextActive: {
+    color: colors.primary,
+  },
+  checkboxUnchecked: {
+    width: 16,
+    height: 16,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: colors.border,
+  },
+  filterModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  filterModalBackdropPressable: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+  filterModalCenterWrap: {
+    width: '100%',
+    paddingHorizontal: 24,
+  },
+  filterModalCard: {
+    alignSelf: 'center',
+    width: '100%',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    maxWidth: isTablet ? 560 : 480,
+  },
+  filterModalTitle: {
+    fontSize: SIZES.title - 3,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  filterModalList: {
+    maxHeight: isTablet ? 460 : 360,
+  },
+  filterModalListContent: {
+    paddingVertical: 6,
+  },
+  filterModalEmpty: {
+    paddingVertical: 32,
+    alignItems: 'center',
+  },
+  filterModalEmptyText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
+  filterModalButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 12,
+  },
+  filterModalBtn: {
+    flex: 1,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(138, 52, 144, 0.12)',
+    alignItems: 'center',
+  },
+  filterModalBtnClear: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+  },
+  filterModalBtnText: {
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  filterModalBtnTextClear: {
+    color: '#EF4444',
   },
   listContent: {
     paddingBottom: 40,
@@ -1320,6 +2194,13 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   logo: {
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  logoImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
   },
   logoText: {
     fontSize: 18,

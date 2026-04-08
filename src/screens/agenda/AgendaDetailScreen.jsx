@@ -9,8 +9,8 @@ import {
   ActivityIndicator,
   BackHandler,
   Modal,
-  Pressable,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,6 +27,10 @@ import {
   useGetAgendaCheckInStatusQuery,
   useGetAgendaItemQuery,
 } from '../../store/api';
+import { useAppSelector } from '../../store/hooks';
+
+/** Must match truncation below; was 220 vs 200 and hid "Read More" for 201–220 char descriptions. */
+const DESCRIPTION_PREVIEW_LEN = 200;
 
 const ClockIcon = ({ color = colors.white, size = 20 }) => (
   <MaterialCommunityIcons name="clock" size={size} color={color} />
@@ -123,6 +127,28 @@ const normalizeWhitespace = (s) => {
     .trim();
 };
 
+/** Remove leading "Speaker:" / first paragraph that duplicates `speaker.name` (API HTML mirrors `data.speaker`). */
+const stripDuplicateSpeakerFromDescription = (cleanText, speaker) => {
+  if (!speaker?.name || typeof cleanText !== 'string') return cleanText;
+  const name = String(speaker.name).trim();
+  let t = cleanText.trim();
+  const blocks = t.split(/\n\n+/);
+  const out = [];
+  let removedNameBlock = false;
+  for (const block of blocks) {
+    const b = block.trim();
+    if (!b) continue;
+    const low = b.replace(/\s+/g, ' ').toLowerCase();
+    if (low === 'speaker:' || low === 'speaker') continue;
+    if (!removedNameBlock && b.startsWith(name)) {
+      removedNameBlock = true;
+      continue;
+    }
+    out.push(block.trim());
+  }
+  return out.join('\n\n').trim();
+};
+
 export const AgendaDetailScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const params = useLocalSearchParams();
@@ -138,6 +164,8 @@ export const AgendaDetailScreen = () => {
   const { data: checkInStatus } = useGetAgendaCheckInStatusQuery(params?.agendaId, {
     skip: !params?.agendaId,
   });
+
+  const { selectedEventDateFrom } = useAppSelector((state) => state.event);
 
   useEffect(() => {
     // Reset when navigating between different agenda items,
@@ -216,6 +244,7 @@ export const AgendaDetailScreen = () => {
         date: dateFormatted.date,
         dayName: dateFormatted.dayName,
         category: 'Session',
+        speaker: null,
         speakers: [],
       };
     }
@@ -229,16 +258,31 @@ export const AgendaDetailScreen = () => {
       const dateFormatted = selectedAgendaItem?.date_display
         ? { date: selectedAgendaItem.date_display, dayName: selectedAgendaItem?.day_name || '' }
         : formatDateDisplay(selectedAgendaItem.date);
+      const rawSp = selectedAgendaItem.speaker;
+      const speaker =
+        rawSp && typeof rawSp === 'object' && (rawSp.id != null || rawSp.name || selectedAgendaItem.speaker_id)
+          ? {
+              id: rawSp.id ?? selectedAgendaItem.speaker_id,
+              name: rawSp.name || '',
+              company: rawSp.company || '',
+              job_title: rawSp.job_title || '',
+              image: rawSp.image || '',
+              type: (rawSp.type || selectedAgendaItem.speaker_type || 'delegate').toLowerCase(),
+            }
+          : null;
+      const fullDesc = normalizeWhitespace(decodeEntities(stripHtml(selectedAgendaItem.description || '')));
+      const description = speaker ? stripDuplicateSpeakerFromDescription(fullDesc, speaker) : fullDesc;
       return {
         id: selectedAgendaItem.id,
         title: selectedAgendaItem.title || 'Untitled Session',
         time: selectedAgendaItem?.time_display || formatTime(selectedAgendaItem.time),
-        description: normalizeWhitespace(decodeEntities(stripHtml(selectedAgendaItem.description || ''))),
+        description,
         location: selectedAgendaItem.location || selectedAgendaItem.venue || '',
         locationDetails: '',
         date: dateFormatted.date,
         dayName: dateFormatted.dayName,
         category: 'Session',
+        speaker,
         speakers: [],
       };
     }
@@ -258,9 +302,49 @@ export const AgendaDetailScreen = () => {
       date: '',
       dayName: '',
       category: 'Session',
+      speaker: null,
       speakers: [],
     };
   }, [selectedAgendaItem, initialData]);
+
+  const openSpeakerProfile = useCallback(() => {
+    const sp = agendaItem.speaker;
+    if (!sp?.id) return;
+    const st = sp.type || 'delegate';
+    const eventDateFrom = selectedEventDateFrom || '';
+    if (st === 'sponsor') {
+      router.push({
+        pathname: '/sponsor-details',
+        params: {
+          sponsor: JSON.stringify({
+            id: sp.id,
+            name: sp.name,
+            company: sp.company,
+            job_title: sp.job_title,
+            image: sp.image,
+          }),
+          returnTo: 'agenda-detail',
+          eventDateFrom,
+        },
+      });
+      return;
+    }
+    router.push({
+      pathname: '/delegate-details',
+      params: {
+        delegate: JSON.stringify({
+          id: sp.id,
+          name: sp.name,
+          company: sp.company,
+          job_title: sp.job_title,
+          role: sp.job_title,
+          image: sp.image,
+        }),
+        returnTo: 'agenda-detail',
+        eventDateFrom,
+      },
+    });
+  }, [agendaItem.speaker, selectedEventDateFrom]);
 
   const canCheckIn = useMemo(() => {
     // Timezone-safe: backend returns can_check_in based on server/event-local time.
@@ -304,7 +388,12 @@ export const AgendaDetailScreen = () => {
 
   // Description expand state and long-desc boolean.
   const [isDescExpanded, setIsDescExpanded] = useState(false);
-  const isLongDescription = (descriptionText?.length || 0) > 220;
+
+  useEffect(() => {
+    setIsDescExpanded(false);
+  }, [params?.agendaId]);
+
+  const isLongDescription = (descriptionText?.length || 0) > DESCRIPTION_PREVIEW_LEN;
 
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
@@ -338,23 +427,23 @@ export const AgendaDetailScreen = () => {
 
   // Update SpeakerCard to match image
   const SpeakerCard = ({ speaker, isLast }) => (
-    <TouchableOpacity style={[ styles.speakerCard, isLast && { borderBottomWidth: 0, paddingBottom: 0, marginBottom: 0 }]} activeOpacity={0.8}>
+    <View style={[ styles.speakerCard, isLast && { borderBottomWidth: 0, paddingBottom: 0, marginBottom: 0 } ]}>
       <View style={styles.speakerAvatar}>
         <View style={styles.avatarPlaceholder}>
           <UserIcon />
         </View>
       </View>
       <View style={styles.speakerInfo}>
-        <Text style={styles.speakerName}>{speaker.name}</Text>
-        <Text style={styles.speakerTitle}>{speaker.title}</Text>
+        <Text selectable style={styles.speakerName}>{speaker.name}</Text>
+        <Text selectable style={styles.speakerTitle}>{speaker.title}</Text>
       </View>
       <ChevronRightIcon />
-    </TouchableOpacity>
+    </View>
   );
 
   const TopicTag = ({ topic }) => (
     <View style={styles.topicTag}>
-      <Text style={styles.topicTagText}>{topic}</Text>
+      <Text selectable style={styles.topicTagText}>{topic}</Text>
     </View>
   );
 
@@ -371,7 +460,7 @@ export const AgendaDetailScreen = () => {
         />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Loading agenda details...</Text>
+          <Text selectable style={styles.loadingText}>Loading agenda details...</Text>
         </View>
       </SafeAreaView>
     );
@@ -390,7 +479,7 @@ export const AgendaDetailScreen = () => {
         />
         <View style={styles.errorContainer}>
           <Icon name="alert-circle" size={48} color={colors.textMuted} />
-          <Text style={styles.errorText}>{errorMessage}</Text>
+          <Text selectable style={styles.errorText}>{errorMessage}</Text>
         </View>
       </SafeAreaView>
     );
@@ -422,15 +511,15 @@ export const AgendaDetailScreen = () => {
         >
           <View style={styles.bannerContent}>
             <View style={styles.categoryTag}>
-              <Text style={styles.categoryTagText}>{agendaItem.category}</Text>
+              <Text selectable style={styles.categoryTagText}>{agendaItem.category}</Text>
             </View>
             
-            <Text style={styles.eventTitle} numberOfLines={0}>{agendaItem.title}</Text>
+            <Text selectable style={styles.eventTitle} numberOfLines={0}>{agendaItem.title}</Text>
             
             {agendaItem.time && (
               <View style={styles.timeContainer}>
                 <ClockIcon />
-                <Text style={styles.timeText}>{agendaItem.time}</Text>
+                <Text selectable style={styles.timeText}>{agendaItem.time}</Text>
 
                 <TouchableOpacity
                   style={[
@@ -465,9 +554,9 @@ export const AgendaDetailScreen = () => {
                   <CalendarIcon />
                 </View>
                 <View style={styles.detailTextContainer}>
-                  <Text style={styles.detailTitle}>{agendaItem.date}</Text>
+                  <Text selectable style={styles.detailTitle}>{agendaItem.date}</Text>
                   {agendaItem.dayName && (
-                    <Text style={styles.detailSubtitle}>{agendaItem.dayName}</Text>
+                    <Text selectable style={styles.detailSubtitle}>{agendaItem.dayName}</Text>
                   )}
                 </View>
               </View>
@@ -479,9 +568,9 @@ export const AgendaDetailScreen = () => {
                   <MapPinIcon />
                 </View>
                 <View style={styles.detailTextContainer}>
-                  <Text style={styles.detailTitle}>{agendaItem.location}</Text>
+                  <Text selectable style={styles.detailTitle}>{agendaItem.location}</Text>
                   {agendaItem.locationDetails && (
-                    <Text style={styles.detailSubtitle}>{agendaItem.locationDetails}</Text>
+                    <Text selectable style={styles.detailSubtitle}>{agendaItem.locationDetails}</Text>
                   )}
                 </View>
               </View>
@@ -490,31 +579,62 @@ export const AgendaDetailScreen = () => {
             {/* Speakers Section - Only show if speakers exist */}
             {agendaItem.speakers && agendaItem.speakers.length > 0 && (
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Speakers</Text>
+                <Text selectable style={styles.sectionTitle}>Speakers</Text>
                 {agendaItem.speakers.map((speaker, index) => (
                   <SpeakerCard key={speaker.id} speaker={speaker} isLast={index === agendaItem.speakers.length - 1} />
                 ))}
               </View>
             )}
 
-            {/* Description Section - Only show if description exists */}
-            {agendaItem.description && agendaItem.description.trim() !== '' && (
+            {/* Description: optional speaker (API) + body text; speaker name links to profile */}
+            {(agendaItem.speaker?.name || (agendaItem.description && agendaItem.description.trim() !== '')) && (
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Description</Text>
-                <Text style={styles.descriptionText}>
-                  {isDescExpanded ? descriptionText : descriptionText.substring(0, 200) + (descriptionText.length > 200 ? '...' : '')}
-                </Text>
-
-                {isLongDescription ? (
-                  <TouchableOpacity
-                    style={{ marginTop: 12 }}
-                    activeOpacity={0.8}
-                    onPress={() => setIsDescExpanded((v) => !v)}
-                  >
-                    <Text style={styles.readMore}>
-                      {isDescExpanded ? 'Show Less' : 'Read More'}
+                <Text selectable style={styles.sectionTitle}>Description</Text>
+                {agendaItem.speaker?.name ? (
+                  <View style={styles.speakerHighlightBlock}>
+                    <View style={styles.speakerLabelRow}>
+                      <Text
+                        selectable
+                        accessibilityRole="text"
+                        accessibilityLabel={`Speaker: ${agendaItem.speaker.name}`}
+                      >
+                        <Text style={styles.descriptionText}>Speaker: </Text>
+                        <Text
+                          style={styles.speakerNameLink}
+                          onPress={openSpeakerProfile}
+                          accessibilityRole="link"
+                          accessibilityLabel={`Open profile for ${agendaItem.speaker.name}`}
+                        >
+                          {agendaItem.speaker.name}
+                        </Text>
+                      </Text>
+                    </View>
+                    {(agendaItem.speaker.job_title || agendaItem.speaker.company) ? (
+                      <Text selectable style={styles.speakerMetaLine}>
+                        {[agendaItem.speaker.job_title, agendaItem.speaker.company].filter(Boolean).join(' · ')}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : null}
+                {descriptionText.trim() !== '' ? (
+                  <>
+                    <Text selectable style={styles.descriptionText}>
+                      {isDescExpanded
+                        ? descriptionText
+                        : descriptionText.substring(0, DESCRIPTION_PREVIEW_LEN) +
+                          (descriptionText.length > DESCRIPTION_PREVIEW_LEN ? '...' : '')}
                     </Text>
-                  </TouchableOpacity>
+                    {isLongDescription ? (
+                      <Text
+                        style={[styles.readMore, { marginTop: 12 }]}
+                        onPress={() => setIsDescExpanded((v) => !v)}
+                        accessibilityRole="button"
+                        accessibilityLabel={isDescExpanded ? 'Show less description' : 'Read more description'}
+                      >
+                        {isDescExpanded ? 'Show Less' : 'Read More'}
+                      </Text>
+                    ) : null}
+                  </>
                 ) : null}
               </View>
             )}
@@ -545,8 +665,8 @@ export const AgendaDetailScreen = () => {
             onPress={() => setIsCheckInInfoModalVisible(false)}
           />
           <View style={styles.checkInModalCard}>
-            <Text style={styles.checkInModalTitle}>Check-in not available yet</Text>
-            <Text style={styles.checkInModalMessage}>{checkInBlockedMessage}</Text>
+            <Text selectable style={styles.checkInModalTitle}>Check-in not available yet</Text>
+            <Text selectable style={styles.checkInModalMessage}>{checkInBlockedMessage}</Text>
             <TouchableOpacity
               style={styles.checkInModalButton}
               onPress={() => setIsCheckInInfoModalVisible(false)}
@@ -805,6 +925,28 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   },
 
   // Description
+  speakerHighlightBlock: {
+    marginBottom: 12,
+  },
+  speakerLabelRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  speakerNameLink: {
+    fontSize: SIZES.body,
+    fontWeight: '700',
+    color: colors.primary,
+    lineHeight: 24,
+    textDecorationLine: 'underline',
+  },
+  speakerMetaLine: {
+    fontSize: SIZES.body - 1,
+    fontWeight: '400',
+    color: colors.textMuted,
+    lineHeight: 22,
+    marginTop: 4,
+  },
   descriptionText: {
     fontSize: SIZES.body,
     fontWeight: '400',
