@@ -1,11 +1,14 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image as ExpoImage } from 'expo-image';
 import { router } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  ImageBackground,
+  FlatList,
+  Image,
+  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -19,10 +22,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useGetDelegateEventsQuery, useGetSponsorEventsQuery } from '../../store/api';
+import {
+  useGetDelegateEventSponsorLogosQuery,
+  useGetDelegateEventsQuery,
+  useGetSponsorEventSponsorLogosQuery,
+  useGetSponsorEventsQuery,
+} from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
 import { setSelectedEvent } from '../../store/slices/eventSlice';
+import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
+import { normalizeWebcoverSlideUris } from '../../utils/eventWebcoverSlides';
+import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 // Icon Components
 const CalendarIcon = Icons.Calendar;
@@ -34,6 +45,15 @@ const UsersIcon = Icons.Users;
 const SponsorsIcon = Icons.Briefcase;
 
 /** Display string from API only — formatted on backend (`date_display`). */
+/** Unwrap RTK response for event-sponsor-logos list */
+function extractEventSponsorLogosList(response) {
+  if (response == null) return [];
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response.data)) return response.data;
+  if (Array.isArray(response?.data?.data)) return response.data.data;
+  return [];
+}
+
 const getEventDateDisplayFromApi = (event) => {
   const v = event?.date_display;
   if (v == null) return '';
@@ -81,33 +101,254 @@ const CurrentEventCard = ({ styles, SIZES, selectedEvent, selectedIndex, isOpen,
   );
 };
 
+/** Use DB `venu_details` (address) for maps; include `location` (venu_title) when both exist for better search results. */
+const getMapSearchQueryForEvent = (event) => {
+  const details = String(event?.venueDetails ?? '').trim();
+  const title = String(event?.location ?? '').trim();
+  if (details && title) return `${title}, ${details}`;
+  if (details) return details;
+  if (title) return title;
+  return '';
+};
+
+const LOCAL_BANNER_BG = require('../../assets/images/background.jpeg');
+
+/**
+ * Slides: `webcover_slides[]` from backend (config/event_webcover.php), then API banner + listing if unique.
+ */
+function buildEventBannerSlides(event) {
+  const localSlide = { kind: 'local', source: LOCAL_BANNER_BG };
+  const seen = new Set();
+  const remoteSlides = [];
+
+  const pushUri = (raw) => {
+    if (raw == null || raw === '') return;
+    const u = resolveMediaUrl(String(raw).trim());
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      remoteSlides.push({ kind: 'uri', uri: u });
+    }
+  };
+
+  for (const u of normalizeWebcoverSlideUris(event?.webcover_slides)) {
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      remoteSlides.push({ kind: 'uri', uri: u });
+    }
+  }
+  pushUri(event?.banner_image);
+  pushUri(event?.event_image);
+
+  if (remoteSlides.length === 0) return [localSlide, localSlide];
+  if (remoteSlides.length === 1) return [remoteSlides[0], localSlide];
+  return remoteSlides;
+}
+
+const BANNER_AUTO_MS = 5500;
+
 const MainEventBanner = ({ styles, SIZES, event }) => {
+  const { width: winW } = useWindowDimensions();
+  const h = SIZES.isTablet ? 288 : 236;
   const dynamicBannerTitleSize = getDynamicFontSize(event?.title, SIZES.mainEventTitleSize, 16);
-  
+  const mapQuery = getMapSearchQueryForEvent(event);
+  const canOpenMap = mapQuery.length > 0;
+  const listRef = useRef(null);
+  const slideIndexRef = useRef(0);
+  const estW = Math.max(1, winW - SIZES.paddingHorizontal * 3);
+  const [bannerW, setBannerW] = useState(estW);
+  const [slideIndex, setSlideIndex] = useState(0);
+
+  const slides = useMemo(
+    () => buildEventBannerSlides(event),
+    [event?.id, event?.webcover_slides, event?.banner_image, event?.event_image]
+  );
+
+  const openVenueInMaps = async () => {
+    if (!canOpenMap) return;
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapQuery)}`;
+    try {
+      await Linking.openURL(url);
+    } catch (e) {
+      console.warn('Open maps failed', e);
+    }
+  };
+
+  const goToSlide = React.useCallback(
+    (nextIdx, animated = true) => {
+      const n = slides.length ? ((nextIdx % slides.length) + slides.length) % slides.length : 0;
+      slideIndexRef.current = n;
+      setSlideIndex(n);
+      const w = Math.round(bannerW);
+      if (listRef.current && w > 0) {
+        try {
+          listRef.current.scrollToOffset({ offset: n * w, animated });
+        } catch (err) {
+          console.warn('banner scrollToOffset', err);
+        }
+      }
+    },
+    [slides.length, bannerW]
+  );
+
+  useEffect(() => {
+    slideIndexRef.current = 0;
+    setSlideIndex(0);
+    requestAnimationFrame(() => {
+      try {
+        listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      } catch (_) {}
+    });
+  }, [event?.id]);
+
+  useEffect(() => {
+    if (slides.length <= 1) return undefined;
+    const t = setInterval(() => {
+      goToSlide(slideIndexRef.current + 1, true);
+    }, BANNER_AUTO_MS);
+    return () => clearInterval(t);
+  }, [slides.length, bannerW, goToSlide]);
+
+  const onBannerLayout = (e) => {
+    const w = Math.round(e.nativeEvent.layout.width);
+    if (w > 0 && Math.abs(w - bannerW) > 1) setBannerW(w);
+  };
+
+  const onMomentumScrollEnd = (e) => {
+    const x = e.nativeEvent.contentOffset.x;
+    const w = Math.round(bannerW);
+    if (w <= 0) return;
+    const i = Math.min(slides.length - 1, Math.max(0, Math.round(x / w)));
+    slideIndexRef.current = i;
+    setSlideIndex(i);
+  };
+
+  useEffect(() => {
+    const w = Math.round(bannerW);
+    if (w <= 0 || !listRef.current) return;
+    const i = slideIndexRef.current;
+    try {
+      listRef.current.scrollToOffset({ offset: i * w, animated: false });
+    } catch (_) {}
+  }, [bannerW]);
+
+  const showArrows = slides.length > 1;
+  const itemW = Math.round(bannerW);
+
+  const renderSlide = React.useCallback(
+    ({ item: slide }) => (
+      <View style={[styles.mainEventBannerPage, { width: itemW || estW, height: h }]}>
+        {slide.kind === 'local' ? (
+          <ExpoImage
+            source={slide.source}
+            style={styles.mainEventBannerPageImage}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={150}
+          />
+        ) : (
+          <ExpoImage
+            source={{ uri: slide.uri }}
+            style={styles.mainEventBannerPageImage}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            priority="high"
+            transition={150}
+            allowDownscaling={false}
+          />
+        )}
+      </View>
+    ),
+    [itemW, estW, h, styles.mainEventBannerPage, styles.mainEventBannerPageImage]
+  );
+
   return (
-    <View style={styles.mainEventBannerContainer}>
-      <ImageBackground
-        source={require('../../assets/images/background.jpeg')}
-        style={styles.mainEventBannerImage}
-        imageStyle={styles.mainEventBannerImageStyle}
-        resizeMode="cover"
-      >
+    <View style={[styles.mainEventBannerContainer, { minHeight: h }]} onLayout={onBannerLayout}>
+      <FlatList
+        ref={listRef}
+        data={slides}
+        keyExtractor={(_, idx) => `banner-${event?.id ?? 'e'}-${idx}`}
+        horizontal
+        pagingEnabled
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        bounces={false}
+        decelerationRate="fast"
+        onMomentumScrollEnd={onMomentumScrollEnd}
+        getItemLayout={(_, index) => ({
+          length: itemW || estW,
+          offset: (itemW || estW) * index,
+          index,
+        })}
+        renderItem={renderSlide}
+        style={[styles.mainEventBannerScroll, { height: h }]}
+        extraData={itemW}
+        removeClippedSubviews={Platform.OS === 'android'}
+      />
+
+      {/* Hit-through overlay so horizontal swipe works on sides; arrows + text stay tappable */}
+      <View style={styles.mainEventBannerOverlayWrap} pointerEvents="box-none">
         <LinearGradient
-          colors={['rgba(138, 52, 144, 0.92)', 'rgba(107, 39, 112, 0.92)', 'rgba(88, 28, 135, 0.90)']}
-          style={styles.mainEventBanner}
+          colors={['rgba(60, 25, 85, 0.45)', 'rgba(88, 28, 120, 0.5)', 'rgba(30, 20, 55, 0.62)']}
+          style={[styles.mainEventBannerOverlayTint, { minHeight: h }]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-        >
-          <Text style={[styles.mainEventTitle, { fontSize: dynamicBannerTitleSize }]} numberOfLines={3} ellipsizeMode="tail">{event?.title}</Text>
+          pointerEvents="none"
+        />
+        {showArrows ? (
+          <>
+            <TouchableOpacity
+              style={[styles.bannerArrow, styles.bannerArrowLeft]}
+              onPress={() => goToSlide(slideIndexRef.current - 1)}
+              activeOpacity={0.85}
+              hitSlop={{ top: 16, bottom: 16, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Previous banner image"
+            >
+              <View style={styles.bannerArrowInner}>
+                <Icon name="chevron-left" size={22} color="#FFFFFF" />
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.bannerArrow, styles.bannerArrowRight]}
+              onPress={() => goToSlide(slideIndexRef.current + 1)}
+              activeOpacity={0.85}
+              hitSlop={{ top: 16, bottom: 16, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Next banner image"
+            >
+              <View style={styles.bannerArrowInner}>
+                <Icon name="chevron-right" size={22} color="#FFFFFF" />
+              </View>
+            </TouchableOpacity>
+          </>
+        ) : null}
+
+        <View style={styles.mainEventBannerTextBlock} pointerEvents="box-none">
+          <Text style={[styles.mainEventTitle, { fontSize: dynamicBannerTitleSize }]} numberOfLines={3} ellipsizeMode="tail">
+            {event?.title}
+          </Text>
           {event?.date ? <Text style={styles.mainEventDate}>{event.date}</Text> : null}
           {event?.location ? (
-            <View style={styles.mainEventLocation}>
-              <MapPinIcon size={SIZES.mapPinSize} />
-              <Text style={styles.mainEventLocationText}>{event.location}</Text>
-            </View>
+            canOpenMap ? (
+              <TouchableOpacity
+                style={styles.mainEventLocation}
+                onPress={openVenueInMaps}
+                activeOpacity={0.75}
+                accessibilityRole="link"
+                accessibilityLabel={`Open map for ${event.location}`}
+              >
+                <MapPinIcon size={SIZES.mapPinSize} />
+                <Text style={[styles.mainEventLocationText, styles.mainEventLocationTextLink]}>{event.location}</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.mainEventLocation}>
+                <MapPinIcon size={SIZES.mapPinSize} />
+                <Text style={styles.mainEventLocationText}>{event.location}</Text>
+              </View>
+            )
           ) : null}
-        </LinearGradient>
-      </ImageBackground>
+        </View>
+      </View>
     </View>
   );
 };
@@ -237,19 +478,51 @@ export const DashboardScreen = () => {
     });
 
     // Transform to display format
-    const transformed = uniqueEvents.map(event => ({
-      id: event.id,
-      title: event.title || 'Untitled Event',
-      date: getEventDateDisplayFromApi(event),
-      location: event.location || event.venue || '',
-      date_from: event.date_from,
-      date_to: event.date_to,
+    const transformed = uniqueEvents.map((ev) => ({
+      id: ev.id,
+      title: ev.title || 'Untitled Event',
+      date: getEventDateDisplayFromApi(ev),
+      location: ev.location || ev.venue || '',
+      venueDetails: ev.venue_details != null ? String(ev.venue_details).trim() : '',
+      date_from: ev.date_from,
+      date_to: ev.date_to,
+      banner_image: ev.banner_image ?? null,
+      event_image: ev.image ?? null,
+      category_id: ev.category_id,
+      webcover_slides: Array.isArray(ev.webcover_slides) ? ev.webcover_slides : [],
+      categoryId: ev.categoryId,
     }));
 
     return transformed;
   }, [eventsData, isDelegate]);
 
   const selectedEvent = EVENTS[selectedEventIndex] || null;
+
+  const [sponsorLogoModal, setSponsorLogoModal] = useState(null);
+
+  const eventIdForLogos = useMemo(() => {
+    if (!selectedEvent?.id) return null;
+    const raw = selectedEvent.id;
+    const n =
+      typeof raw === 'string' && raw.includes(',')
+        ? Number(String(raw).split(',')[0].trim())
+        : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [selectedEvent?.id]);
+
+  const logosQuerySkip = !isAuthenticated || !user || eventIdForLogos == null;
+
+  const { data: delegateLogoPayload } = useGetDelegateEventSponsorLogosQuery(eventIdForLogos, {
+    skip: logosQuerySkip || !isDelegate,
+  });
+  const { data: sponsorLogoPayload } = useGetSponsorEventSponsorLogosQuery(eventIdForLogos, {
+    skip: logosQuerySkip || isDelegate,
+  });
+
+  const sponsorLogosList = useMemo(() => {
+    const payload = isDelegate ? delegateLogoPayload : sponsorLogoPayload;
+    return extractEventSponsorLogosList(payload);
+  }, [isDelegate, delegateLogoPayload, sponsorLogoPayload]);
 
   const handleEventSelect = (index) => {
     setSelectedEventIndex(index);
@@ -336,6 +609,9 @@ export const DashboardScreen = () => {
     }
     
     switch(action) {
+      case 'Scan Attendees':
+        router.push({ pathname: '/profile', params: { openQrScan: '1' } });
+        break;
       case 'Event':
         router.push({ pathname: '/my-event', params });
         break;
@@ -350,12 +626,31 @@ export const DashboardScreen = () => {
       case 'Delegate':
         router.push({ pathname: '/sponsors', params: Object.keys(params).length > 0 ? params : undefined });
         break;
+      case 'Future Summits': {
+        const fsParams = { ...params };
+        const cid = selectedEvent?.category_id ?? selectedEvent?.categoryId;
+        if (cid != null && cid !== '') {
+          fsParams.categoryId = String(cid);
+        }
+        router.push({
+          pathname: '/future-summits',
+          params: Object.keys(fsParams).length > 0 ? fsParams : undefined,
+        });
+        break;
+      }
       default:
         break;
     }
   };
 
   const quickActions = useMemo(() => [
+    {
+      title: 'Scan Attendees',
+      subtitle: 'QR code → save contact',
+      icon: <Icon name="maximize" size={SIZES.quickActionIconInner} color={colors.primary} />,
+      iconColor: colors.primary,
+      backgroundColor: 'rgba(138, 52, 144, 0.08)',
+    },
     {
       title: 'Event',
       subtitle: 'Event details',
@@ -383,6 +678,13 @@ export const DashboardScreen = () => {
       icon: <SponsorsIcon size={SIZES.quickActionIconInner} />,
       iconColor: '#F97316',
       backgroundColor: '#FFF7ED',
+    },
+    {
+      title: 'Future Summits',
+      subtitle: 'Upcoming conference partners',
+      icon: <Icon name="layers" size={SIZES.quickActionIconInner} color={colors.primary} />,
+      iconColor: colors.primary,
+      backgroundColor: 'rgba(138, 52, 144, 0.07)',
     },
   ], [SIZES.quickActionIconInner, isDelegate]);
 
@@ -460,6 +762,7 @@ export const DashboardScreen = () => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={false}
+        nestedScrollEnabled
       >
         <View style={styles.content}>
           {/* Current Event Card */}
@@ -476,6 +779,37 @@ export const DashboardScreen = () => {
 
           {/* Main Event Banner */}
           <MainEventBanner styles={styles} SIZES={SIZES} event={selectedEvent} />
+
+          {sponsorLogosList.length > 0 ? (
+            <View style={styles.sponsorLogosSection}>
+              <Text style={styles.sponsorLogosTitle}>Event Sponsors</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.sponsorLogosScrollContent}
+                style={styles.sponsorLogosScroll}
+              >
+                {sponsorLogosList.map((item) => (
+                  <TouchableOpacity
+                    key={String(item.id ?? item.title)}
+                    style={styles.sponsorLogoChip}
+                    onPress={() => setSponsorLogoModal(item)}
+                    activeOpacity={0.85}
+                  >
+                    {item.image_url ? (
+                      <Image source={{ uri: item.image_url }} style={styles.sponsorLogoImage} resizeMode="contain" />
+                    ) : (
+                      <View style={styles.sponsorLogoPlaceholder}>
+                        <Text style={styles.sponsorLogoPlaceholderText} numberOfLines={3}>
+                          {item.title || '—'}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
 
           {/* Quick Actions Section */}
           <View style={styles.quickActionsSection}>
@@ -500,6 +834,52 @@ export const DashboardScreen = () => {
       </ScrollView>
 
       {/* Event selection modal */}
+      <Modal transparent animationType="fade" visible={sponsorLogoModal != null} onRequestClose={() => setSponsorLogoModal(null)}>
+        <View style={styles.modalBackdrop}>
+          <TouchableOpacity style={styles.modalBackdropPressable} activeOpacity={1} onPress={() => setSponsorLogoModal(null)} />
+          <View style={styles.modalCenterWrap}>
+            <View style={styles.sponsorLogoModalCard}>
+              <View style={styles.sponsorLogoModalAccent} />
+              <View style={styles.sponsorLogoModalHeader}>
+                {sponsorLogoModal?.image_url ? (
+                  <Image source={{ uri: sponsorLogoModal.image_url }} style={styles.sponsorLogoModalThumb} resizeMode="contain" />
+                ) : (
+                  <View style={[styles.sponsorLogoModalThumb, styles.sponsorLogoModalThumbPlaceholder]} />
+                )}
+                <Text style={styles.sponsorLogoModalName} numberOfLines={3}>
+                  {sponsorLogoModal?.title || '—'}
+                </Text>
+              </View>
+              <ScrollView style={styles.sponsorLogoModalBody} showsVerticalScrollIndicator={false}>
+                <Text style={styles.sponsorLogoModalLabel}>Company Description</Text>
+                <Text style={styles.sponsorLogoModalDesc}>
+                  {sponsorLogoModal?.company_description && String(sponsorLogoModal.company_description).trim()
+                    ? sponsorLogoModal.company_description
+                    : '—'}
+                </Text>
+                <Text style={styles.sponsorLogoModalLabel}>Company Website</Text>
+                {normalizeWebsiteUrl(sponsorLogoModal?.website_url) ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      const href = normalizeWebsiteUrl(sponsorLogoModal?.website_url);
+                      if (href) Linking.openURL(href).catch(() => {});
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.sponsorLogoModalLink}>{sponsorLogoModal?.website_url}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={styles.sponsorLogoModalDesc}>—</Text>
+                )}
+              </ScrollView>
+              <TouchableOpacity style={styles.sponsorLogoModalClose} onPress={() => setSponsorLogoModal(null)} activeOpacity={0.8}>
+                <Text style={styles.sponsorLogoModalCloseText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal transparent animationType="fade" visible={isEventDropdownOpen} onRequestClose={() => setIsEventDropdownOpen(false)}>
         <View style={styles.modalBackdrop}>
           <TouchableOpacity style={styles.modalBackdropPressable} activeOpacity={1} onPress={() => setIsEventDropdownOpen(false)} />
@@ -710,20 +1090,60 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     borderRadius: radius.lg,
     overflow: 'hidden',
     marginBottom: SIZES.sectionSpacing * 1.5,
+    position: 'relative',
   },
-  mainEventBannerImage: {
+  mainEventBannerScroll: {
     width: '100%',
   },
-  mainEventBannerImageStyle: {
+  mainEventBannerPage: {
+    overflow: 'hidden',
+  },
+  mainEventBannerPageImage: {
+    width: '100%',
+    height: '100%',
+  },
+  mainEventBannerOverlayWrap: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: radius.lg,
+    zIndex: 5,
+    elevation: 4,
+  },
+  mainEventBannerOverlayTint: {
+    ...StyleSheet.absoluteFillObject,
     borderRadius: radius.lg,
   },
-  mainEventBanner: {
-    borderRadius: radius.lg,
-    paddingHorizontal: SIZES.paddingHorizontal + 8,
-    paddingVertical: isTablet ? 70 : 60,
+  mainEventBannerTextBlock: {
+    position: 'absolute',
+    left: 52,
+    right: 52,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Math.min(12, SIZES.paddingHorizontal),
+  },
+  bannerArrow: {
+    position: 'absolute',
+    top: '50%',
+    marginTop: -24,
+    zIndex: 20,
+    elevation: 10,
+  },
+  bannerArrowInner: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: isTablet ? 280 : 220,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  bannerArrowLeft: {
+    left: 8,
+  },
+  bannerArrowRight: {
+    right: 8,
   },
   mainEventTitle: {
     fontSize: SIZES.mainEventTitleSize,
@@ -749,6 +1169,139 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     fontWeight: '400',
     color: colors.white,
     marginLeft: 6,
+    flexShrink: 1,
+  },
+  mainEventLocationTextLink: {
+    textDecorationLine: 'underline',
+  },
+  sponsorLogosSection: {
+    marginBottom: SIZES.sectionSpacing,
+  },
+  sponsorLogosTitle: {
+    fontSize: SIZES.quickActionTitleSize,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 10,
+  },
+  sponsorLogosScroll: {
+    marginHorizontal: -4,
+  },
+  sponsorLogosScrollContent: {
+    paddingVertical: 4,
+    paddingLeft: 4,
+    paddingRight: SIZES.paddingHorizontal,
+    alignItems: 'center',
+  },
+  sponsorLogoChip: {
+    width: 72,
+    height: 56,
+    marginRight: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    overflow: 'hidden',
+  },
+  sponsorLogoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  sponsorLogoPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  sponsorLogoPlaceholderText: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
+  sponsorLogoModalCard: {
+    alignSelf: 'center',
+    width: '100%',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    maxWidth: isTablet ? 560 : 420,
+    overflow: 'hidden',
+  },
+  sponsorLogoModalAccent: {
+    height: 4,
+    width: '100%',
+    backgroundColor: colors.primary,
+  },
+  sponsorLogoModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    backgroundColor: colors.gray50,
+    gap: 12,
+  },
+  sponsorLogoModalThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: radius.sm,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+  },
+  sponsorLogoModalThumbPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sponsorLogoModalName: {
+    flex: 1,
+    fontSize: SIZES.headerTitleSize,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  sponsorLogoModalBody: {
+    maxHeight: Math.min(SCREEN_HEIGHT * 0.42, 320),
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  sponsorLogoModalLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.primary,
+    marginBottom: 6,
+    marginTop: 10,
+  },
+  sponsorLogoModalDesc: {
+    fontSize: 14,
+    color: colors.text,
+    lineHeight: 21,
+  },
+  sponsorLogoModalLink: {
+    fontSize: 14,
+    color: colors.primary,
+    textDecorationLine: 'underline',
+    marginBottom: 8,
+  },
+  sponsorLogoModalClose: {
+    alignSelf: 'flex-end',
+    marginHorizontal: 16,
+    marginBottom: 14,
+    marginTop: 4,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.gray200,
+  },
+  sponsorLogoModalCloseText: {
+    color: colors.text,
+    fontWeight: '600',
+    fontSize: 15,
   },
   quickActionsSection: {
     marginBottom: SIZES.sectionSpacing,
@@ -767,7 +1320,7 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
   },
   quickActionCard: {
     width: typeof SIZES.quickActionCardSize === 'string' ? SIZES.quickActionCardSize : SIZES.quickActionCardSize,
-    height: isTablet ? SIZES.quickActionCardSize : 140,
+    minHeight: isTablet ? SIZES.quickActionCardSize : 140,
     backgroundColor: colors.white,
     borderRadius: radius.lg,
     borderWidth: 1,
@@ -783,10 +1336,10 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     elevation: 2,
   },
   quickActionContent: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: SIZES.paddingHorizontal,
+    paddingHorizontal: SIZES.paddingHorizontal,
+    paddingVertical: 12,
   },
   quickActionIcon: {
     width: SIZES.quickActionIconSize,
@@ -802,13 +1355,15 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
     marginBottom: 4,
+    width: '100%',
   },
   quickActionSubtitle: {
     fontSize: SIZES.headerTitleSize - 4,
     fontWeight: '400',
     color: colors.textMuted,
     textAlign: 'center',
-    lineHeight: (SIZES.headerTitleSize - 7) * 1.4,
+    lineHeight: Math.round((SIZES.headerTitleSize - 4) * 1.35),
+    width: '100%',
   },
   loadingContainer: {
     flex: 1,

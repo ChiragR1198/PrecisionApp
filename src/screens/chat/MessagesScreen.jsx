@@ -328,7 +328,8 @@ export const MessagesScreen = () => {
       const time = formatMessageTime(lastMessageDate);
       
       return {
-        id: userId,
+        // Ensure key is unique across numeric id collisions (delegate id == sponsor id possible)
+        id: `${userType}-${userId}`,
         user_id: userId, // Other user's id for API calls
         user_type: userType, // Other user's type for determining to_type
         name,

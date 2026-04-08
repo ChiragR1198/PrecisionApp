@@ -10,6 +10,7 @@ import {
   Animated,
   BackHandler,
   Image,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -40,6 +41,8 @@ import {
   useSendSponsorMeetingRequestMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
+import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 const UserIcon = ({ color = colors.white, size = 18 }) => (
   <Icon name="user" size={size} color={color} />
@@ -70,6 +73,82 @@ const ExternalLinkIcon = ({ color = colors.textMuted, size = 16 }) => (
 );
 
 const meetingRed = '#DC2626';
+
+const LOGO_COLORS = [
+  '#EEF2FF', '#E6FFFA', '#FFF7ED', '#F5F3FF', '#FDF2F8',
+  '#ECFEFF', '#F0FDFA', '#FEF3C7', '#E0E7FF', '#FCE7F3',
+  '#D1FAE5', '#DBEAFE', '#F3E8FF', '#FED7AA', '#FDE68A',
+];
+
+const getColorFromString = (str, colorArray) => {
+  if (!str) return colorArray[0];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colorArray[Math.abs(hash) % colorArray.length];
+};
+
+/** Two-letter initials from company name (same as Sponsor details). */
+function getCompanyInitials(company) {
+  const s = String(company || '').trim();
+  if (!s) return '·';
+  const parts = s.split(/[\s,&]+/).filter((p) => p.length > 0);
+  if (parts.length >= 2) {
+    const a = parts[0][0] || '';
+    const b = parts[1][0] || '';
+    return `${a}${b}`.toUpperCase();
+  }
+  if (s.length >= 2) return s.slice(0, 2).toUpperCase();
+  return `${s[0]}`.toUpperCase();
+}
+
+function pickCompanyLogoUrl(...sources) {
+  for (const src of sources) {
+    if (!src || typeof src !== 'object') continue;
+    for (const key of ['companyLogo', 'company_logo']) {
+      const v = src[key];
+      if (v != null && String(v).trim() !== '' && String(v).toLowerCase() !== 'null') {
+        return String(v).trim();
+      }
+    }
+  }
+  return null;
+}
+
+function profileFieldVisible(v) {
+  if (v == null) return false;
+  const s = String(v).trim();
+  if (!s) return false;
+  if (s.toLowerCase() === 'null') return false;
+  return true;
+}
+
+function profileDisplayOrDash(v) {
+  return profileFieldVisible(v) ? String(v).trim() : '—';
+}
+
+/** Same shape as AttendeesScreen: `attendeesData?.data || attendeesData || []` */
+function extractApiAttendeesList(source) {
+  if (source == null) return [];
+  if (Array.isArray(source)) return source;
+  const d = source.data;
+  if (Array.isArray(d)) return d;
+  if (d && typeof d === 'object' && Array.isArray(d.data)) return d.data;
+  return [];
+}
+
+function parseSponsorServicesFilterParam(raw) {
+  if (raw == null || raw === '') return undefined;
+  const s = Array.isArray(raw) ? raw[0] : String(raw);
+  if (!s) return undefined;
+  try {
+    const arr = JSON.parse(s);
+    return Array.isArray(arr) && arr.length > 0 ? arr : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function extractOutcomesList(response) {
   if (response == null) return [];
@@ -195,6 +274,7 @@ export const DelegateDetailsScreen = () => {
   const [isMeetingLocationDropdownOpen, setIsMeetingLocationDropdownOpen] = useState(false);
   const [isBioExpanded, setIsBioExpanded] = useState(false);
   const [isImagePreviewVisible, setIsImagePreviewVisible] = useState(false);
+  const [companyInlineLogoFailed, setCompanyInlineLogoFailed] = useState(false);
 
   // Determine user type
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -464,7 +544,12 @@ export const DelegateDetailsScreen = () => {
     skip: !user || !isDelegate, // sponsors list for delegate login
     refetchOnMountOrArgChange: true,
   });
-  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(undefined, {
+  // Match AttendeesScreen cache key when opening from list (same services filter → same payload as list).
+  const sponsorServicesQueryArg = useMemo(
+    () => parseSponsorServicesFilterParam(params?.sponsorServicesFilter),
+    [params?.sponsorServicesFilter]
+  );
+  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(sponsorServicesQueryArg, {
     skip: !user || isDelegate, // attendees list for sponsor login
     refetchOnMountOrArgChange: true,
   });
@@ -503,7 +588,7 @@ export const DelegateDetailsScreen = () => {
     if (isSponsorProfile) {
       if (!isDelegate) return null; // sponsor login shouldn't land here for sponsor profiles
       const source = delegateAttendeesData;
-      const list = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+      const list = extractApiAttendeesList(source);
       const match = list.find((row) => Number(row?.id ?? row?.user_id ?? row?.sponsor_id) === numericProfileId);
       if (!match) return null;
       return {
@@ -516,14 +601,37 @@ export const DelegateDetailsScreen = () => {
           delegate?.name ||
           '',
         company: match?.company || delegate?.company || '',
+        company_website_url:
+          match?.company_website_url ??
+          delegate?.company_website_url ??
+          delegate?.raw?.company_website_url ??
+          '',
         role: match?.job_title || match?.title || delegate?.role || '',
         email: match?.email || delegate?.email || '',
         // DelegateDetailsScreen hides phone numbers by design; keep but won't display
         phone: match?.mobile || match?.phone || delegate?.phone || '',
         linkedin: match?.linkedin_url || match?.linkedin || delegate?.linkedin || '',
         address: match?.address || match?.location || delegate?.address || '',
-        bio: match?.biography || match?.company_information || delegate?.bio || '',
+        bio: match?.bio || match?.biography || match?.company_information || delegate?.bio || '',
+        state: match?.state ?? delegate?.state ?? '',
+        country: match?.country ?? delegate?.country ?? '',
+        company_size: match?.company_size ?? delegate?.company_size ?? '',
+        budget: match?.budget ?? delegate?.budget ?? '',
+        key_priority1: match?.key_priority1 ?? '',
+        key_priority2: match?.key_priority2 ?? '',
+        key_priority3: match?.key_priority3 ?? '',
+        next_due_to_start: match?.next_due_to_start ?? delegate?.next_due_to_start ?? '',
+        purchasing_role: match?.purchasing_role ?? delegate?.purchasing_role ?? '',
+        purchasing_role_input: match?.purchasing_role_input ?? delegate?.purchasing_role_input ?? '',
+        products_services: match?.products_services ?? delegate?.products_services ?? '',
         image: match?.image || match?.user_image || match?.avatar || delegate?.image || null,
+        companyLogo:
+          match?.company_logo ??
+          match?.companyLogo ??
+          delegate?.company_logo ??
+          delegate?.companyLogo ??
+          delegate?.raw?.company_logo ??
+          null,
         raw: match,
       };
     }
@@ -532,7 +640,7 @@ export const DelegateDetailsScreen = () => {
     // - Sponsor login: sponsor/all-attendees contains delegates.
     // - Delegate login: all-delegates contains delegates.
     const source = isDelegate ? allDelegatesData : sponsorAllAttendeesData;
-    const list = Array.isArray(source?.data) ? source.data : Array.isArray(source) ? source : [];
+    const list = extractApiAttendeesList(source);
     const match = list.find((row) => Number(row?.id ?? row?.user_id ?? row?.delegate_id) === numericProfileId);
     if (!match) return null;
 
@@ -546,13 +654,36 @@ export const DelegateDetailsScreen = () => {
         delegate?.name ||
         '',
       company: match?.company || delegate?.company || '',
+      company_website_url:
+        match?.company_website_url ??
+        delegate?.company_website_url ??
+        delegate?.raw?.company_website_url ??
+        '',
       role: match?.job_title || match?.title || delegate?.role || '',
       email: match?.email || delegate?.email || '',
       phone: match?.mobile || match?.phone || delegate?.phone || '',
       linkedin: match?.linkedin_url || match?.linkedin || delegate?.linkedin || '',
       address: match?.address || match?.location || delegate?.address || '',
-      bio: match?.biography || match?.company_information || delegate?.bio || '',
+      bio: match?.bio || match?.biography || match?.company_information || delegate?.bio || '',
+      state: match?.state ?? delegate?.state ?? '',
+      country: match?.country ?? delegate?.country ?? '',
+      company_size: match?.company_size ?? delegate?.company_size ?? '',
+      budget: match?.budget ?? delegate?.budget ?? '',
+      key_priority1: match?.key_priority1 ?? '',
+      key_priority2: match?.key_priority2 ?? '',
+      key_priority3: match?.key_priority3 ?? '',
+      next_due_to_start: match?.next_due_to_start ?? delegate?.next_due_to_start ?? '',
+      purchasing_role: match?.purchasing_role ?? delegate?.purchasing_role ?? '',
+      purchasing_role_input: match?.purchasing_role_input ?? delegate?.purchasing_role_input ?? '',
+      products_services: match?.products_services ?? delegate?.products_services ?? '',
       image: match?.image || match?.user_image || match?.avatar || delegate?.image || null,
+      companyLogo:
+        match?.company_logo ??
+        match?.companyLogo ??
+        delegate?.company_logo ??
+        delegate?.companyLogo ??
+        delegate?.raw?.company_logo ??
+        null,
       raw: match,
     };
   }, [
@@ -564,6 +695,9 @@ export const DelegateDetailsScreen = () => {
     allDelegatesData,
     delegate?.name,
     delegate?.company,
+    delegate?.company_logo,
+    delegate?.company_website_url,
+    delegate?.raw,
     delegate?.role,
     delegate?.email,
     delegate?.phone,
@@ -574,8 +708,15 @@ export const DelegateDetailsScreen = () => {
   ]);
 
   const mergedDelegate = useMemo(() => {
-    if (!resolvedFromDirectory) return delegate;
-    return { ...delegate, ...resolvedFromDirectory, raw: resolvedFromDirectory.raw ?? delegate?.raw };
+    // Navigation often passes `{ ...apiRow, ...displayFields }`; keep `raw` from list for full API row (esp. sponsor → delegate).
+    const fromNavRaw = delegate?.raw && typeof delegate.raw === 'object' ? delegate.raw : {};
+    const base = { ...fromNavRaw, ...delegate };
+    if (!resolvedFromDirectory) return base;
+    return {
+      ...base,
+      ...resolvedFromDirectory,
+      raw: resolvedFromDirectory.raw ?? base.raw,
+    };
   }, [delegate, resolvedFromDirectory]);
 
   const cleanedBio = useMemo(() => {
@@ -598,6 +739,69 @@ export const DelegateDetailsScreen = () => {
     () => cleanedBio.length > 280,
     [cleanedBio]
   );
+
+  const purchasingRoleDisplay = useMemo(() => {
+    const pr = String(mergedDelegate?.purchasing_role || '').trim();
+    const pri = String(mergedDelegate?.purchasing_role_input || '').trim();
+    if (!pr) return '';
+    if (pr.toLowerCase() === 'other' && pri) return `Other (${pri})`;
+    return pr;
+  }, [mergedDelegate?.purchasing_role, mergedDelegate?.purchasing_role_input]);
+
+  const purchasingPlansDisplay = useMemo(() => {
+    return String(mergedDelegate?.products_services || '').trim();
+  }, [mergedDelegate?.products_services]);
+
+  const keyPrioritiesDisplay = useMemo(() => {
+    const parts = [mergedDelegate?.key_priority1, mergedDelegate?.key_priority2, mergedDelegate?.key_priority3]
+      .map((x) => String(x || '').trim())
+      .filter((x) => x && x.toLowerCase() !== 'null');
+    if (!parts.length) return '';
+    return parts.map((p) => `• ${p}`).join('\n');
+  }, [mergedDelegate?.key_priority1, mergedDelegate?.key_priority2, mergedDelegate?.key_priority3]);
+
+  const companyWebsiteHref = useMemo(
+    () => normalizeWebsiteUrl(mergedDelegate?.company_website_url),
+    [mergedDelegate?.company_website_url]
+  );
+
+  /** Sponsor profile: `company_logo` / `companyLogo` from API or navigation params, full URL for <Image>. */
+  const resolvedCompanyLogoUri = useMemo(() => {
+    if (!isSponsorProfile) return null;
+    const raw = pickCompanyLogoUrl(mergedDelegate, mergedDelegate?.raw);
+    return raw ? resolveMediaUrl(raw) : null;
+  }, [isSponsorProfile, mergedDelegate]);
+
+  useEffect(() => {
+    setCompanyInlineLogoFailed(false);
+  }, [mergedDelegate?.id, resolvedCompanyLogoUri]);
+
+  const openCompanyWebsite = useCallback(() => {
+    if (!companyWebsiteHref) return;
+    Linking.openURL(companyWebsiteHref).catch(() => {});
+  }, [companyWebsiteHref]);
+
+  const hasProfileDetails = useMemo(() => {
+    if (!mergedDelegate || mergedDelegate.name === 'No Data') return false;
+    // Delegate target (not sponsor profile): always show Profile so Budget & Purchasing plans are visible.
+    if (!isSponsorProfile) return true;
+    return (
+      profileFieldVisible(mergedDelegate.state) ||
+      profileFieldVisible(mergedDelegate.country) ||
+      profileFieldVisible(mergedDelegate.company_size) ||
+      profileFieldVisible(mergedDelegate.budget) ||
+      Boolean(keyPrioritiesDisplay) ||
+      profileFieldVisible(mergedDelegate.next_due_to_start) ||
+      profileFieldVisible(purchasingRoleDisplay) ||
+      profileFieldVisible(purchasingPlansDisplay)
+    );
+  }, [
+    mergedDelegate,
+    isSponsorProfile,
+    keyPrioritiesDisplay,
+    purchasingRoleDisplay,
+    purchasingPlansDisplay,
+  ]);
 
   const numericDelegateId = numericProfileId;
 
@@ -1084,10 +1288,37 @@ export const DelegateDetailsScreen = () => {
     </View>
   );
 
-  const DetailRow = ({ label, value }) => (
+  const DetailRow = ({ label, value, multiline }) => (
     <View style={styles.detailRow}>
       <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
+      <Text style={[styles.detailValue, multiline && styles.detailValueMultiline]}>{value}</Text>
+    </View>
+  );
+
+  const sponsorCompanyLogoMark = (
+    <View style={styles.companyInlineLogoOuter} pointerEvents="none">
+      {resolvedCompanyLogoUri && !companyInlineLogoFailed ? (
+        <Image
+          key={`${mergedDelegate.id}-${resolvedCompanyLogoUri}`}
+          source={{ uri: resolvedCompanyLogoUri }}
+          style={styles.companyInlineLogoImage}
+          resizeMode="cover"
+          onError={() => setCompanyInlineLogoFailed(true)}
+        />
+      ) : (
+        <View
+          style={[
+            styles.companyInlineLogoPlaceholder,
+            {
+              backgroundColor: getColorFromString(mergedDelegate.company, LOGO_COLORS),
+            },
+          ]}
+        >
+          <Text style={styles.companyInlineLogoInitials} numberOfLines={1}>
+            {getCompanyInitials(mergedDelegate.company)}
+          </Text>
+        </View>
+      )}
     </View>
   );
 
@@ -1124,7 +1355,37 @@ export const DelegateDetailsScreen = () => {
             </View>
             <Text style={styles.delegateName}>{mergedDelegate.name}</Text>
             <Text style={styles.delegateRole}>{mergedDelegate.role}</Text>
-            <Text style={styles.delegateCompany}>{mergedDelegate.company}</Text>
+            {String(mergedDelegate.company || '').trim() && isSponsorProfile ? (
+              companyWebsiteHref ? (
+                <TouchableOpacity
+                  style={styles.companyNameRow}
+                  onPress={openCompanyWebsite}
+                  activeOpacity={0.75}
+                  accessibilityRole="link"
+                >
+                  <Text
+                    style={[styles.delegateCompany, styles.delegateCompanyLink, styles.delegateCompanyInRow]}
+                    numberOfLines={2}
+                  >
+                    {mergedDelegate.company}
+                  </Text>
+                  {sponsorCompanyLogoMark}
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.companyNameRow}>
+                  <Text style={[styles.delegateCompany, styles.delegateCompanyInRow]} numberOfLines={2}>
+                    {mergedDelegate.company}
+                  </Text>
+                  {sponsorCompanyLogoMark}
+                </View>
+              )
+            ) : companyWebsiteHref && String(mergedDelegate.company || '').trim() ? (
+              <TouchableOpacity onPress={openCompanyWebsite} activeOpacity={0.75}>
+                <Text style={[styles.delegateCompany, styles.delegateCompanyLink]}>{mergedDelegate.company}</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.delegateCompany}>{mergedDelegate.company}</Text>
+            )}
 
             {/* Action row: Book a meeting (left) + Start chat icon (right) - synced with AttendeesScreen */}
             <View style={styles.actionRow}>
@@ -1195,6 +1456,46 @@ export const DelegateDetailsScreen = () => {
               )}
             </View>
           </View>
+
+          {hasProfileDetails ? (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Profile</Text>
+              <View style={styles.addressCard}>
+                {profileFieldVisible(mergedDelegate.state) ? (
+                  <DetailRow label="State" value={String(mergedDelegate.state).trim()} />
+                ) : null}
+                {profileFieldVisible(mergedDelegate.country) ? (
+                  <DetailRow label="Country" value={String(mergedDelegate.country).trim()} />
+                ) : null}
+                {profileFieldVisible(mergedDelegate.company_size) ? (
+                  <DetailRow label="Company size" value={String(mergedDelegate.company_size).trim()} />
+                ) : null}
+                {!isSponsorProfile ? (
+                  <DetailRow label="Budget" value={profileDisplayOrDash(mergedDelegate.budget)} />
+                ) : profileFieldVisible(mergedDelegate.budget) ? (
+                  <DetailRow label="Budget" value={String(mergedDelegate.budget).trim()} />
+                ) : null}
+                {keyPrioritiesDisplay ? (
+                  <DetailRow label="Key priorities" value={keyPrioritiesDisplay} multiline />
+                ) : null}
+                {profileFieldVisible(mergedDelegate.next_due_to_start) ? (
+                  <DetailRow label="Next project due" value={String(mergedDelegate.next_due_to_start).trim()} />
+                ) : null}
+                {profileFieldVisible(purchasingRoleDisplay) ? (
+                  <DetailRow label="Purchasing role" value={purchasingRoleDisplay} />
+                ) : null}
+                {!isSponsorProfile ? (
+                  <DetailRow
+                    label="Purchasing plans"
+                    value={profileFieldVisible(purchasingPlansDisplay) ? purchasingPlansDisplay : '—'}
+                    multiline
+                  />
+                ) : profileFieldVisible(purchasingPlansDisplay) ? (
+                  <DetailRow label="Purchasing plans" value={purchasingPlansDisplay} multiline />
+                ) : null}
+              </View>
+            </View>
+          ) : null}
 
           {/* Bio Section with inline Read More */}
           {cleanedBio ? (
@@ -1283,6 +1584,11 @@ export const DelegateDetailsScreen = () => {
         visible={isModalVisible}
         onRequestClose={closeModal}
       >
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}
+        >
         <SafeAreaView style={styles.modalBackdrop2} edges={['bottom']}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
           <Animated.View
@@ -1589,6 +1895,7 @@ export const DelegateDetailsScreen = () => {
             )}
           </Animated.View>
         </SafeAreaView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1641,6 +1948,49 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.primary,
     marginBottom: 10,
     textAlign: 'center',
+  },
+  delegateCompanyInRow: {
+    marginBottom: 0,
+    flexShrink: 1,
+  },
+  delegateCompanyLink: {
+    textDecorationLine: 'underline',
+  },
+  companyNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+    maxWidth: '100%',
+    paddingHorizontal: 4,
+  },
+  companyInlineLogoOuter: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: colors.white,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  companyInlineLogoImage: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+  },
+  companyInlineLogoPlaceholder: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  companyInlineLogoInitials: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.text,
   },
   actionRow: {
     width: '100%',
@@ -1788,6 +2138,10 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: SIZES.body,
     fontWeight: '600',
     color: colors.text,
+  },
+  detailValueMultiline: {
+    lineHeight: 22,
+    marginTop: 2,
   },
   // Meeting Request Modal styles
   modalBackdrop2: {

@@ -5,7 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Camera, CameraView } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -52,6 +52,67 @@ const stripHtmlTags = (value) => {
   // Collapse extra whitespace
   return text.replace(/\s+/g, ' ').trim();
 };
+
+/** Strip BOM and normalize newlines — Android scanners often prefix UTF-8 BOM so vCard detection breaks. */
+function normalizeScannedQrPayload(raw) {
+  let s = String(raw ?? '');
+  s = s.replace(/^\uFEFF/, '');
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return s.trim();
+}
+
+/**
+ * Android ML Kit passes shortened `displayValue` as `data` but full payload in `raw` (see expo BarcodeAnalyzer).
+ * iOS typically only has `data`. Prefer `raw` when it contains more of the vCard.
+ */
+function pickQrScanPayload(scanningResult) {
+  if (!scanningResult || typeof scanningResult !== 'object') return '';
+  const data = String(scanningResult.data ?? '');
+  const raw = String(scanningResult.raw ?? '');
+  if (!raw) return data;
+  if (!data) return raw;
+  if (raw.length > data.length) return raw;
+  if (raw.length === data.length && /BEGIN:VCARD/i.test(raw)) return raw;
+  return data;
+}
+
+/** Merge structured contact fields ML Kit exposes on Android when QR is TYPE_CONTACT_INFO. */
+function mergeAndroidContactExtra(plain, scanningResult) {
+  const out = { ...plain };
+  const extra = scanningResult?.extra;
+  if (!extra || extra.type !== 'contactInfo') return out;
+  const first = String(extra.firstName || '').trim();
+  const last = String(extra.lastName || '').trim();
+  const mid = String(extra.middleName || '').trim();
+  const nameFromExtra = [first, mid, last].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  if (!out.name?.trim() && nameFromExtra) out.name = nameFromExtra;
+  if (!String(out.email || '').trim() && extra.email) out.email = String(extra.email).trim();
+  if (!String(out.phone || '').trim() && extra.phone) out.phone = String(extra.phone).trim();
+  if (!String(out.company || '').trim() && extra.organization) out.company = String(extra.organization).trim();
+  if (!String(out.role || '').trim() && extra.title) out.role = String(extra.title).trim();
+  return out;
+}
+
+/** MECARD format (common on Android / older contact QRs): MECARD:N:Name;TEL:...;EMAIL:...;; */
+function parseMecardPayload(text) {
+  const t = String(text || '').trim();
+  if (!/^MECARD:/i.test(t)) return null;
+  const rest = t.replace(/^MECARD:/i, '').replace(/;+$/, '');
+  const segments = rest.split(';').filter(Boolean);
+  const out = { name: '', role: '', company: '', email: '', phone: '', image: '' };
+  for (const seg of segments) {
+    const idx = seg.indexOf(':');
+    if (idx < 0) continue;
+    const k = seg.slice(0, idx).toUpperCase();
+    const v = seg.slice(idx + 1).trim();
+    if (k === 'N') out.name = out.name || v;
+    else if (k === 'ORG') out.company = out.company || v;
+    else if (k === 'EMAIL') out.email = out.email || v;
+    else if (k === 'TEL' || /^TEL[-_]/i.test(k)) out.phone = out.phone || v;
+    else if (k === 'TITLE' || k === 'NOTE') out.role = out.role || v;
+  }
+  return out.name || out.email || out.phone ? out : null;
+}
 
 // Icon Components
 const UserIcon = Icons.User;
@@ -181,6 +242,7 @@ const NotificationCard = ({
 export const ProfileScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
+  const params = useLocalSearchParams();
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
@@ -402,9 +464,13 @@ export const ProfileScreen = () => {
   const [qrImageLoading, setQrImageLoading] = useState(false);
   const [qrImageUri, setQrImageUri] = useState(null);
   const qrImageTimeoutRef = React.useRef(null);
+  const openQrScanFromRouteHandledRef = React.useRef(false);
   const qrImageLoadStartRef = React.useRef(false);
   const qrImageLoadingRef = React.useRef(false);
   const qrImageRetryCountRef = React.useRef(0);
+  const qrScanDebounceRef = React.useRef(null);
+  /** Best { payload, scanningResult } in debounce window (Android needs full `raw` + optional `extra`). */
+  const qrScanBestRef = React.useRef(null);
   const [isContactSavedModalVisible, setIsContactSavedModalVisible] = useState(false);
   const [savedContactName, setSavedContactName] = useState('');
   const [isProfileUpdateSuccessModalVisible, setIsProfileUpdateSuccessModalVisible] = useState(false);
@@ -603,17 +669,21 @@ export const ProfileScreen = () => {
     }
   };
 
-  const handleOpenQRModal = async () => {
-    const emailForQr = profile?.email || user?.email || formData.email;
-    if (!emailForQr || !String(emailForQr).trim()) {
-      Alert.alert(
-        'Email required',
-        'Please add your email address to your profile so your QR code includes it.'
-      );
-      return;
+  const handleOpenQRModal = async (options = {}) => {
+    const initialMode = options.initialMode || 'code';
+
+    if (initialMode === 'code') {
+      const emailForQr = profile?.email || user?.email || formData.email;
+      if (!emailForQr || !String(emailForQr).trim()) {
+        Alert.alert(
+          'Email required',
+          'Please add your email address to your profile so your QR code includes it.'
+        );
+        return;
+      }
     }
-    
-    if (__DEV__) {
+
+    if (__DEV__ && initialMode === 'code') {
       console.log(
         '[ProfileScreen][QR] profile-for-display',
         JSON.stringify(displayProfile || null)
@@ -621,23 +691,28 @@ export const ProfileScreen = () => {
     }
 
     setIsQRModalVisible(true);
-    setQrMode('code');
+    setQrMode(initialMode);
     setScanResult(null);
     setLastScannedText('');
     setHasScanPermission(null);
     setIsScanning(false);
     setQrImageError(false); // Reset error state when opening modal
     setQrImageUri(null); // Reset image URI
-    
+
     // Clear any existing timeout
     if (qrImageTimeoutRef.current) {
       clearTimeout(qrImageTimeoutRef.current);
       qrImageTimeoutRef.current = null;
     }
-    
+
+    if (initialMode === 'scan') {
+      setQrImageLoading(false);
+      return;
+    }
+
     // Try to get QR image from multiple sources: profile, user (Redux), or AsyncStorage
     let imageUrl = profile?.qr_image || user?.qr_image;
-    
+
     // If not found in Redux, try loading from AsyncStorage (from login response)
     if (!imageUrl) {
       try {
@@ -650,7 +725,7 @@ export const ProfileScreen = () => {
         console.error('Error loading QR image from AsyncStorage:', error);
       }
     }
-    
+
     // Set image URI directly from URL
     if (imageUrl) {
       if (__DEV__) {
@@ -663,6 +738,25 @@ export const ProfileScreen = () => {
     }
   };
 
+  // Dashboard Quick Action: open Profile QR modal directly in scanner mode (same save-contact flow as Profile)
+  React.useEffect(() => {
+    const raw = params?.openQrScan;
+    const flag = Array.isArray(raw) ? raw[0] : raw;
+    if (flag !== '1' && flag !== 'true') {
+      openQrScanFromRouteHandledRef.current = false;
+      return;
+    }
+    if (!openQrScanFromRouteHandledRef.current) {
+      openQrScanFromRouteHandledRef.current = true;
+      handleOpenQRModal({ initialMode: 'scan' });
+    }
+    try {
+      router.setParams({ openQrScan: undefined });
+    } catch (_) {
+      /* ignore */
+    }
+  }, [params?.openQrScan]);
+
   const handleCloseQRModal = () => {
     setIsQRModalVisible(false);
     // Clear timeout when closing modal
@@ -670,6 +764,11 @@ export const ProfileScreen = () => {
       clearTimeout(qrImageTimeoutRef.current);
       qrImageTimeoutRef.current = null;
     }
+    if (qrScanDebounceRef.current) {
+      clearTimeout(qrScanDebounceRef.current);
+      qrScanDebounceRef.current = null;
+    }
+    qrScanBestRef.current = null;
   };
 
   const handleAddScannedContact = async () => {
@@ -777,16 +876,30 @@ export const ProfileScreen = () => {
     setScanResult(null);
   };
 
-  const handleBarCodeScanned = ({ data }) => {
-    setIsScanning(false);
-    
-    const normalized = String(data || '').trim();
-    setLastScannedText(normalized);
+  const handleBarCodeScanned = (scanningResult) => {
+    const picked = normalizeScannedQrPayload(pickQrScanPayload(scanningResult));
+    if (!picked) return;
+
+    const prev = qrScanBestRef.current;
+    if (!prev || picked.length >= prev.payload.length) {
+      qrScanBestRef.current = { payload: picked, scanningResult };
+    }
+
+    if (qrScanDebounceRef.current) clearTimeout(qrScanDebounceRef.current);
+    qrScanDebounceRef.current = setTimeout(() => {
+      qrScanDebounceRef.current = null;
+      const pair = qrScanBestRef.current;
+      qrScanBestRef.current = null;
+      const final = pair?.payload ?? picked;
+      const sr = pair?.scanningResult ?? scanningResult;
+
+      setIsScanning(false);
+      setLastScannedText(final);
 
     const maybeEnrichFromSelfProfile = (built) => {
       if (!built || !displayProfile) return built;
 
-      const raw = String(normalized || '').toLowerCase();
+      const raw = String(final || '').toLowerCase();
       const name = String(displayProfile?.name || '').trim();
       const email = String(displayProfile?.email || '').trim();
 
@@ -1006,27 +1119,55 @@ export const ProfileScreen = () => {
       return buildScanResult({ name: cleanedName || t });
     };
 
-    if (/^BEGIN:VCARD/i.test(normalized)) {
-      const parsed = parseVCard(normalized);
+    const finalizeBuilt = (built) =>
+      buildScanResult(
+        mergeAndroidContactExtra(
+          {
+            name: built.name,
+            email: built.email,
+            phone: built.phone,
+            company: built.company,
+            role: built.role,
+            image: built.image,
+          },
+          sr
+        )
+      );
+
+    if (/^MECARD:/i.test(final)) {
+      const me = parseMecardPayload(final);
+      const built = maybeEnrichFromSelfProfile(
+        me ? buildScanResult(me) : buildScanResult({ name: 'Scanned Contact' })
+      );
+      if (__DEV__) {
+        console.log(
+          '[ProfileScreen][SCAN] result',
+          JSON.stringify({ raw: final, parsed: built, format: 'MECARD' })
+        );
+      }
+      setScanResult(finalizeBuilt(built));
+    } else if (/^BEGIN:VCARD/i.test(final)) {
+      const parsed = parseVCard(final);
       const built = maybeEnrichFromSelfProfile(buildScanResult(parsed));
       if (__DEV__) {
         console.log(
           '[ProfileScreen][SCAN] result',
-          JSON.stringify({ raw: normalized, parsed: built })
+          JSON.stringify({ raw: final, parsed: built, format: 'VCARD' })
         );
       }
-      setScanResult(built);
+      setScanResult(finalizeBuilt(built));
     } else {
-      const parsed = parseStructuredText(normalized);
+      const parsed = parseStructuredText(final);
       const built = maybeEnrichFromSelfProfile(parsed || buildScanResult({ name: 'Scanned Contact' }));
       if (__DEV__) {
         console.log(
           '[ProfileScreen][SCAN] result',
-          JSON.stringify({ raw: normalized, parsed: built })
+          JSON.stringify({ raw: final, parsed: built, format: 'other' })
         );
       }
-      setScanResult(built);
+      setScanResult(finalizeBuilt(built));
     }
+    }, 120);
   };
 
   const parseVCard = (vcard) => {
@@ -1043,12 +1184,12 @@ export const ProfileScreen = () => {
       image: '',
     };
   
-    lines.forEach((line, index) => {
+    lines.forEach((line) => {
       if (!line) return;
-      const parts = line.split(':');
-      if (parts.length < 2) return;
-      const left = parts.shift() || '';
-      const value = parts.join(':').trim();
+      const colonIdx = line.indexOf(':');
+      if (colonIdx < 0) return;
+      const left = line.slice(0, colonIdx);
+      const value = line.slice(colonIdx + 1).trim();
 
       let key = left.split(';')[0].trim();
       key = key.replace(/^item\d+\./i, ''); // handle item1.EMAIL etc
@@ -1088,15 +1229,17 @@ export const ProfileScreen = () => {
       }
   
       if (key === 'TEL') {
-        const phoneValue = value;
-        // Use first phone number found, or if empty, assign the value
+        let phoneValue = String(value || '').replace(/^tel:/i, '').trim();
         if (!contact.phone || contact.phone === '') {
           contact.phone = phoneValue || '';
         }
       }
   
       if (key === 'EMAIL') {
-        const emailValue = value;
+        let emailValue = String(value || '').trim();
+        if (/^mailto:/i.test(emailValue)) {
+          emailValue = emailValue.replace(/^mailto:/i, '').trim();
+        }
         if (!contact.email) contact.email = emailValue;
       }
   

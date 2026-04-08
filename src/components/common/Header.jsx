@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../constants/theme';
+import { useAppSelector } from '../../store/hooks';
+import { HeaderNotificationBell } from './HeaderNotificationBell';
 
 // Ensure font scaling is disabled for Header text components
 const TextComponent = (props) => <Text {...props} allowFontScaling={false} maxFontSizeMultiplier={1} />;
@@ -32,6 +34,8 @@ export const Header = memo(({
   leftIcon = 'menu',
   onLeftPress,
   right,
+  /** When true (default), show notification bell for logged-in users (alongside optional `right`). */
+  showNotificationBell = true,
   showGradient = true,
   containerStyle,
   titleStyle,
@@ -40,6 +44,7 @@ export const Header = memo(({
 }) => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const isAuthenticated = useAppSelector((s) => s.auth?.isAuthenticated);
   
   const isTablet = SCREEN_WIDTH >= 768;
   const isAndroid = Platform.OS === 'android';
@@ -93,6 +98,9 @@ export const Header = memo(({
 
   const Right = () => (
     <View style={styles.right}>
+      {showNotificationBell && isAuthenticated ? (
+        <HeaderNotificationBell iconSize={SIZES.iconSize} />
+      ) : null}
       {right}
     </View>
   );
@@ -160,9 +168,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   right: {
-    width: 40,
+    minWidth: 40,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
   },
   title: {
     fontWeight: '700',

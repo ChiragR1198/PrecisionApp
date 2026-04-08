@@ -132,14 +132,17 @@ export const ContactsScreen = () => {
   const filteredContacts = useMemo(() => {
     if (!searchQuery.trim()) return contacts;
     const query = searchQuery.toLowerCase();
-    return contacts.filter(
-      (contact) => contact.name.toLowerCase().includes(query) || contact.phone.toLowerCase().includes(query)
-    );
+    return contacts.filter((contact) => {
+      const name = String(contact?.name || '').toLowerCase();
+      const phone = String(contact?.phone || '').toLowerCase();
+      const email = String(contact?.email || '').toLowerCase();
+      return name.includes(query) || phone.includes(query) || email.includes(query);
+    });
   }, [contacts, searchQuery]);
 
   const sections = useMemo(() => {
     const grouped = filteredContacts.reduce((acc, contact) => {
-      const letter = contact.name.charAt(0).toUpperCase();
+      const letter = String(contact?.name || '?').charAt(0).toUpperCase();
       if (!acc.has(letter)) acc.set(letter, []);
       acc.get(letter).push(contact);
       return acc;
@@ -173,19 +176,45 @@ export const ContactsScreen = () => {
 
     try {
       const contactId = selectedContact.id;
-      
+      const deletedEmail = String(selectedContact.email || '').toLowerCase().trim();
+
       if (isDelegate) {
         await deleteDelegateContact({ contact_id: contactId }).unwrap();
       } else {
         await deleteSponsorContact({ contact_id: contactId }).unwrap();
       }
-      
+
+      // Remove matching entry from scanned QR cache so the row disappears immediately (API + local merge)
+      try {
+        if (loginType && currentUserId) {
+          const cacheKey = `scanned_contacts_cache_${loginType}_${currentUserId}`;
+          const stored = await AsyncStorage.getItem(cacheKey);
+          const existing = stored ? JSON.parse(stored) : [];
+          if (Array.isArray(existing) && existing.length > 0) {
+            const idStr = String(contactId);
+            const next = existing.filter((c) => {
+              const sameId = c?.id != null && String(c.id) === idStr;
+              const sameEmail =
+                deletedEmail &&
+                String(c?.email || '')
+                  .toLowerCase()
+                  .trim() === deletedEmail;
+              return !sameId && !sameEmail;
+            });
+            await AsyncStorage.setItem(cacheKey, JSON.stringify(next));
+            setLocalContacts(next);
+          }
+        }
+      } catch (e) {
+        console.warn('Contacts: failed to update local scan cache after delete', e?.message || e);
+      }
+
+      // Refetch contacts to update the list
+      await refetch();
+
       // Show success modal
       setIsDeleteSuccessModalVisible(true);
-      
-      // Refetch contacts to update the list
-      refetch();
-      
+
       // Clear selected contact
       setSelectedContact(null);
     } catch (error) {

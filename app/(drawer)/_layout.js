@@ -41,6 +41,10 @@ export default function DrawerLayout() {
         options={{ drawerItemStyle: { display: 'none' } }}
       />
       <Drawer.Screen
+        name="future-summits"
+        options={{ drawerItemStyle: { display: 'none' } }}
+      />
+      <Drawer.Screen
         name="meeting-requests"
         options={{ drawerLabel: 'Meeting Requests' }}
       />

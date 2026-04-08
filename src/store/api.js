@@ -391,6 +391,7 @@ export const api = createApi({
     'MeetingRequestOutcomes',
     'Profile',
     'Contacts',
+    'NotificationInbox',
   ],
   endpoints: (builder) => ({
     // ============ AUTH ============
@@ -705,10 +706,55 @@ export const api = createApi({
       refetchOnMountOrArgChange: true,
     }),
 
-    // 3. All Delegates
+    /** Dashboard horizontal sponsor logos (`sponsor_logo` table) */
+    getDelegateEventSponsorLogos: builder.query({
+      query: (eventId) => {
+        if (eventId == null || eventId === '') return null;
+        const n = Number(eventId);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return {
+          url: API_ENDPOINTS.DELEGATE_EVENT_SPONSOR_LOGOS,
+          params: { event_id: n, _t: Date.now() },
+        };
+      },
+      providesTags: ['Events'],
+      refetchOnMountOrArgChange: true,
+    }),
+
+    // 3. All Delegates (optional: event_id, services[] — server filters by products_services)
     getAllDelegates: builder.query({
-      query: () => API_ENDPOINTS.DELEGATE_ALL_DELEGATES,
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const a = arg && typeof arg === 'object' ? arg : {};
+        if (a.event_id != null && a.event_id !== '') {
+          const n = Number(a.event_id);
+          if (Number.isFinite(n) && n > 0) params.event_id = n;
+        }
+        if (Array.isArray(a.services) && a.services.length > 0) {
+          params.services = a.services.join(',');
+        }
+        return {
+          url: API_ENDPOINTS.DELEGATE_ALL_DELEGATES,
+          params,
+        };
+      },
       providesTags: ['Attendees'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
+    // 3b. Delegate: event category services (for directory filter UI)
+    getDelegateEventServices: builder.query({
+      query: (eventId) => {
+        if (eventId == null || eventId === '') return null;
+        const n = Number(eventId);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return {
+          url: API_ENDPOINTS.DELEGATE_EVENT_SERVICES,
+          params: { event_id: n, _t: Date.now() },
+        };
+      },
+      providesTags: ['Attendees', 'Sponsors'],
       refetchOnMountOrArgChange: true,
       keepUnusedDataFor: 0,
     }),
@@ -952,6 +998,7 @@ export const api = createApi({
       }),
       providesTags: ['Attendees'],
       refetchOnMountOrArgChange: true, // Force refetch on mount
+      keepUnusedDataFor: 0,
     }),
 
     // 10. View Itinerary (Delegate)
@@ -967,6 +1014,42 @@ export const api = createApi({
         return { url: API_ENDPOINTS.DELEGATE_VIEW_ITINERARY, params };
       },
       providesTags: ['Agenda'],
+    }),
+
+    delegateDeleteItineraryMeeting: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.DELEGATE_DELETE_ITINERARY_MEETING,
+        method: 'POST',
+        body,
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['Agenda'],
+    }),
+
+    delegateModifyItineraryMeeting: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.DELEGATE_MODIFY_ITINERARY_MEETING,
+        method: 'POST',
+        body,
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['Agenda'],
     }),
 
     // 11. Delegate Profile
@@ -1008,24 +1091,33 @@ export const api = createApi({
       invalidatesTags: ['Profile'],
     }),
 
-    // 16. Send Message (Delegate)
+    // 16. Send Message (Delegate) — JSON body or FormData with `attachment` field
     sendDelegateMessage: builder.mutation({
-      query: ({ to_id, to_type, message }) => ({
-        url: API_ENDPOINTS.DELEGATE_CHAT_SEND_MESSAGE,
-        method: 'POST',
-        body: { to_id, to_type, message },
-        responseHandler: async (response) => {
-          const text = await response.text();
-          if (!text || !text.trim()) return { success: response.ok, message: 'Empty response' };
-          try {
-            return JSON.parse(text);
-          } catch {
-            return response.ok
-              ? { success: true, message: 'Message may have been saved', data: {} }
-              : { success: false, message: text };
-          }
-        },
-      }),
+      query: (arg) => {
+        const isForm = typeof FormData !== 'undefined' && arg instanceof FormData;
+        return {
+          url: API_ENDPOINTS.DELEGATE_CHAT_SEND_MESSAGE,
+          method: 'POST',
+          body: isForm
+            ? arg
+            : { to_id: arg.to_id, to_type: arg.to_type, message: arg.message },
+          prepareHeaders: (headers) => {
+            if (isForm) headers.delete('Content-Type');
+            return headers;
+          },
+          responseHandler: async (response) => {
+            const text = await response.text();
+            if (!text || !text.trim()) return { success: response.ok, message: 'Empty response' };
+            try {
+              return JSON.parse(text);
+            } catch {
+              return response.ok
+                ? { success: true, message: 'Message may have been saved', data: {} }
+                : { success: false, message: text };
+            }
+          },
+        };
+      },
       invalidatesTags: ['Messages'],
     }),
 
@@ -1098,18 +1190,25 @@ export const api = createApi({
 
     // 20. Get Messages with specific user (Delegate)
     getDelegateChatMessages: builder.query({
-      query: (toId) => {
-        if (!toId) {
+      query: ({ toId, toType }) => {
+        if (!toId || !toType) {
           return null;
         }
         return {
           url: API_ENDPOINTS.DELEGATE_CHAT_MESSAGES,
-          params: { 
+          params: {
             to_id: toId,
+            to_type: toType,
             // Add timestamp to force fresh request (bypass cache)
             _t: Date.now(),
           },
         };
+      },
+      // Stable key: same numeric id can mean delegate vs sponsor — include toType
+      serializeQueryArgs: ({ queryArgs }) => {
+        const a = queryArgs;
+        if (!a?.toId || !a?.toType) return 'delegateChat(skip)';
+        return `delegateChat(${Number(a.toId)}:${String(a.toType).toLowerCase()})`;
       },
       providesTags: ['Messages'],
       // Don't cache - always fetch fresh data
@@ -1126,6 +1225,21 @@ export const api = createApi({
       }),
       providesTags: ['Events'],
       // Force refetch on mount to get fresh data
+      refetchOnMountOrArgChange: true,
+    }),
+
+    /** Dashboard horizontal sponsor logos (`sponsor_logo` table) */
+    getSponsorEventSponsorLogos: builder.query({
+      query: (eventId) => {
+        if (eventId == null || eventId === '') return null;
+        const n = Number(eventId);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return {
+          url: API_ENDPOINTS.SPONSOR_EVENT_SPONSOR_LOGOS,
+          params: { event_id: n, _t: Date.now() },
+        };
+      },
+      providesTags: ['Events'],
       refetchOnMountOrArgChange: true,
     }),
 
@@ -1366,6 +1480,42 @@ export const api = createApi({
       providesTags: ['Agenda'],
     }),
 
+    sponsorDeleteItineraryMeeting: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.SPONSOR_DELETE_ITINERARY_MEETING,
+        method: 'POST',
+        body,
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['Agenda'],
+    }),
+
+    sponsorModifyItineraryMeeting: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.SPONSOR_MODIFY_ITINERARY_MEETING,
+        method: 'POST',
+        body,
+        responseHandler: async (response) => {
+          const text = await response.text();
+          if (!text || !text.trim()) return { success: response.ok };
+          try {
+            return JSON.parse(text);
+          } catch {
+            return response.ok ? { success: true } : { success: false, message: text };
+          }
+        },
+      }),
+      invalidatesTags: ['Agenda'],
+    }),
+
     // 9. Sponsor Profile
     getSponsorProfile: builder.query({
       query: () => ({
@@ -1405,24 +1555,33 @@ export const api = createApi({
       invalidatesTags: ['Profile'],
     }),
 
-    // 11. Send Message (Sponsor)
+    // 11. Send Message (Sponsor) — JSON body or FormData with `attachment` field
     sendSponsorMessage: builder.mutation({
-      query: ({ to_id, to_type, message }) => ({
-        url: API_ENDPOINTS.SPONSOR_CHAT_SEND_MESSAGE,
-        method: 'POST',
-        body: { to_id, to_type, message },
-        responseHandler: async (response) => {
-          const text = await response.text();
-          if (!text || !text.trim()) return { success: response.ok, message: 'Empty response' };
-          try {
-            return JSON.parse(text);
-          } catch {
-            return response.ok
-              ? { success: true, message: 'Message may have been saved', data: {} }
-              : { success: false, message: text };
-          }
-        },
-      }),
+      query: (arg) => {
+        const isForm = typeof FormData !== 'undefined' && arg instanceof FormData;
+        return {
+          url: API_ENDPOINTS.SPONSOR_CHAT_SEND_MESSAGE,
+          method: 'POST',
+          body: isForm
+            ? arg
+            : { to_id: arg.to_id, to_type: arg.to_type, message: arg.message },
+          prepareHeaders: (headers) => {
+            if (isForm) headers.delete('Content-Type');
+            return headers;
+          },
+          responseHandler: async (response) => {
+            const text = await response.text();
+            if (!text || !text.trim()) return { success: response.ok, message: 'Empty response' };
+            try {
+              return JSON.parse(text);
+            } catch {
+              return response.ok
+                ? { success: true, message: 'Message may have been saved', data: {} }
+                : { success: false, message: text };
+            }
+          },
+        };
+      },
       invalidatesTags: ['Messages'],
     }),
 
@@ -1440,18 +1599,24 @@ export const api = createApi({
 
     // 13. Get Messages with specific user (Sponsor)
     getSponsorChatMessages: builder.query({
-      query: (toId) => {
-        if (!toId) {
+      query: ({ toId, toType }) => {
+        if (!toId || !toType) {
           return null;
         }
         return {
           url: API_ENDPOINTS.SPONSOR_CHAT_MESSAGES,
-          params: { 
+          params: {
             to_id: toId,
+            to_type: toType,
             // Add timestamp to force fresh request (bypass cache)
             _t: Date.now(),
           },
         };
+      },
+      serializeQueryArgs: ({ queryArgs }) => {
+        const a = queryArgs;
+        if (!a?.toId || !a?.toType) return 'sponsorChat(skip)';
+        return `sponsorChat(${Number(a.toId)}:${String(a.toType).toLowerCase()})`;
       },
       providesTags: ['Messages'],
       // Don't cache - always fetch fresh data
@@ -1475,6 +1640,45 @@ export const api = createApi({
         method: 'POST',
         body: { token, platform },
       }),
+    }),
+
+    getNotificationInbox: builder.query({
+      query: (arg = {}) => {
+        const limit = Number(arg?.limit) > 0 ? Math.min(50, Number(arg.limit)) : 10;
+        return {
+          url: API_ENDPOINTS.NOTIFICATIONS_INBOX,
+          params: { limit, _t: Date.now() },
+        };
+      },
+      providesTags: ['NotificationInbox'],
+      keepUnusedDataFor: 0,
+    }),
+
+    getNotificationUnreadCount: builder.query({
+      query: () => ({
+        url: API_ENDPOINTS.NOTIFICATIONS_UNREAD_COUNT,
+        params: { _t: Date.now() },
+      }),
+      providesTags: ['NotificationInbox'],
+      keepUnusedDataFor: 0,
+    }),
+
+    markNotificationRead: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.NOTIFICATIONS_MARK_READ,
+        method: 'POST',
+        body: body || {},
+      }),
+      invalidatesTags: ['NotificationInbox'],
+    }),
+
+    deleteNotification: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.NOTIFICATIONS_DELETE,
+        method: 'POST',
+        body: body || {},
+      }),
+      invalidatesTags: ['NotificationInbox'],
     }),
 
     // Contact Us form (no auth required)
@@ -1528,13 +1732,19 @@ export const {
   useSponsorResetPasswordMutation,
   useSponsorChangePasswordMutation,
   useRegisterPushTokenMutation,
+  useGetNotificationInboxQuery,
+  useGetNotificationUnreadCountQuery,
+  useMarkNotificationReadMutation,
+  useDeleteNotificationMutation,
   useSubmitContactFormMutation,
   usePresencePingMutation,
   useGetPresenceOnlineQuery,
 
   // Delegate Endpoints
   useGetDelegateEventsQuery,
+  useGetDelegateEventSponsorLogosQuery,
   useGetAllDelegatesQuery,
+  useGetDelegateEventServicesQuery,
   useSendDelegateMeetingRequestMutation,
   useSendDelegateMeetingRequestToDelegateMutation,
   useGetDelegateMeetingRequestsQuery,
@@ -1548,6 +1758,8 @@ export const {
   useGetAgendaCheckInStatusQuery,
   useGetDelegateAttendeesQuery,
   useGetDelegateItineraryQuery,
+  useDelegateDeleteItineraryMeetingMutation,
+  useDelegateModifyItineraryMeetingMutation,
   useGetDelegateProfileQuery,
   useUpdateDelegateProfileMutation,
   useGetDelegateContactsQuery,
@@ -1559,6 +1771,7 @@ export const {
 
   // Sponsor Endpoints
   useGetSponsorEventsQuery,
+  useGetSponsorEventSponsorLogosQuery,
   useGetSponsorEventQuery,
   useGetEventSponsorQuery,
   useGetSponsorMeetingRequestsQuery,
@@ -1571,6 +1784,8 @@ export const {
   useGetSponsorMeetingTimesQuery,
   useGetSponsorMeetingLocationsQuery,
   useGetSponsorItineraryQuery,
+  useSponsorDeleteItineraryMeetingMutation,
+  useSponsorModifyItineraryMeetingMutation,
   useGetSponsorProfileQuery,
   useUpdateSponsorProfileMutation,
   useGetSponsorContactsQuery,

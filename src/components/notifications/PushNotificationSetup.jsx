@@ -2,7 +2,8 @@ import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
-import { useRegisterPushTokenMutation } from '../../store/api';
+import { api, useRegisterPushTokenMutation } from '../../store/api';
+import { store } from '../../store';
 import {
   getNotificationToken,
   requestNotificationPermissions,
@@ -60,6 +61,28 @@ export function PushNotificationSetup() {
     };
   }, [registerPushToken]);
 
+  // Foreground push: refresh inbox + itinerary when relevant
+  useEffect(() => {
+    const receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+      try {
+        const data = notification?.request?.content?.data || {};
+        const tags = ['NotificationInbox'];
+        if (
+          data.type === 'itinerary_meeting_deleted' ||
+          data.type === 'itinerary_meeting_updated'
+        ) {
+          tags.push('Agenda');
+        }
+        store.dispatch(api.util.invalidateTags(tags));
+      } catch (e) {
+        console.warn('invalidate notification tags', e);
+      }
+    });
+    return () => {
+      receivedSub.remove();
+    };
+  }, []);
+
   // Handle notification tap (user opened app from notification)
   useEffect(() => {
     listenerRef.current = Notifications.addNotificationResponseReceivedListener(
@@ -67,7 +90,15 @@ export function PushNotificationSetup() {
         const data = response?.notification?.request?.content?.data || {};
         const type = data.type;
         try {
-          if (type === 'meeting_request' || type === 'meeting_approved' || type === 'meeting_rejected') {
+          if (type === 'meeting_approved') {
+            router.push('/(drawer)/itinerary');
+            return;
+          }
+          if (type === 'itinerary_meeting_deleted' || type === 'itinerary_meeting_updated') {
+            router.push('/(drawer)/itinerary');
+            return;
+          }
+          if (type === 'meeting_request' || type === 'meeting_rejected') {
             router.push('/(drawer)/meeting-requests');
             return;
           }
@@ -94,6 +125,10 @@ export function PushNotificationSetup() {
             return;
           }
           if (type === 'exhibition_announcement' && data.event_id) {
+            router.push('/(drawer)/dashboard');
+            return;
+          }
+          if (type === 'admin_broadcast') {
             router.push('/(drawer)/dashboard');
             return;
           }

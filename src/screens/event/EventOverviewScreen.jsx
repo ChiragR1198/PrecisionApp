@@ -2,8 +2,21 @@ import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, ImageBackground, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  ImageBackground,
+  Linking,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
@@ -165,8 +178,99 @@ const splitIntoParagraphs = (text) => {
   if (!text) return [];
   return text
     .split(/\n\n+/)
-    .map(p => p.trim())
-    .filter(p => p.length > 0);
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+};
+
+/** Same as Dashboard — `venue_details` + `venue`/`location` for Google Maps search. */
+const getMapSearchQueryForEvent = (event) => {
+  const details = String(event?.venueDetails ?? '').trim();
+  const title = String(event?.location ?? '').trim();
+  if (details && title) return `${title}, ${details}`;
+  if (details) return details;
+  if (title) return title;
+  return '';
+};
+
+/**
+ * iOS: read-only multiline `TextInput` — native selection / copy handles work reliably.
+ * Android: `Text` + nested `ScrollView` when expanded — `TextInput` clips and won’t scroll inside parent `ScrollView`.
+ */
+const SelectableAboutBody = ({ text, textStyle, scrollable = false }) => {
+  const { height: winH } = useWindowDimensions();
+  const expandedMaxH = Math.min(520, Math.round(winH * 0.55));
+  const [inputHeight, setInputHeight] = useState(48);
+
+  useEffect(() => {
+    if (!scrollable) setInputHeight(48);
+  }, [text, scrollable]);
+
+  const baseInputStyle = [
+    textStyle,
+    {
+      padding: 0,
+      margin: 0,
+      width: '100%',
+      backgroundColor: 'transparent',
+    },
+  ];
+
+  if (Platform.OS === 'ios') {
+    if (scrollable) {
+      return (
+        <TextInput
+          value={text}
+          editable={false}
+          multiline
+          scrollEnabled
+          textAlignVertical="top"
+          showSoftInputOnFocus={false}
+          underlineColorAndroid="transparent"
+          selectionColor={colors.primary}
+          style={[...baseInputStyle, { maxHeight: expandedMaxH, minHeight: 120 }]}
+        />
+      );
+    }
+    return (
+      <TextInput
+        value={text}
+        editable={false}
+        multiline
+        scrollEnabled={false}
+        textAlignVertical="top"
+        showSoftInputOnFocus={false}
+        underlineColorAndroid="transparent"
+        selectionColor={colors.primary}
+        onContentSizeChange={(e) => {
+          const h = e.nativeEvent.contentSize.height;
+          setInputHeight(Math.max(48, Math.ceil(h)));
+        }}
+        style={[...baseInputStyle, { overflow: 'hidden', height: inputHeight }]}
+      />
+    );
+  }
+
+  if (scrollable) {
+    return (
+      <ScrollView
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        style={{ maxHeight: expandedMaxH }}
+        contentContainerStyle={{ paddingBottom: 4 }}
+      >
+        <Text selectable style={textStyle}>
+          {text}
+        </Text>
+      </ScrollView>
+    );
+  }
+
+  return (
+    <Text selectable style={textStyle}>
+      {text}
+    </Text>
+  );
 };
 
 export const EventOverviewScreen = () => {
@@ -276,11 +380,25 @@ export const EventOverviewScreen = () => {
       title: event.title || 'Untitled Event',
       date: dateText,
       location: locationText,
+      venueDetails: event.venue_details != null ? String(event.venue_details).trim() : '',
       date_from: event.date_from,
       date_to: event.date_to,
       description: event.description,
     };
   }, [events, selectedEventIndex]);
+
+  const mapSearchQuery = useMemo(() => getMapSearchQueryForEvent(selectedEvent), [selectedEvent]);
+  const canOpenVenueMap = mapSearchQuery.length > 0;
+
+  const openVenueInMaps = useCallback(async () => {
+    if (!canOpenVenueMap) return;
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapSearchQuery)}`;
+    try {
+      await Linking.openURL(url);
+    } catch (e) {
+      console.warn('Open maps failed', e);
+    }
+  }, [canOpenVenueMap, mapSearchQuery]);
   
   const isLoadingDetails = isLoading;
 
@@ -288,6 +406,10 @@ export const EventOverviewScreen = () => {
     setSelectedEventIndex(index);
     setIsEventDropdownOpen(false);
   };
+
+  useEffect(() => {
+    setIsAboutExpanded(false);
+  }, [selectedEventIndex]);
 
   // Get about paragraphs from event description
   const ABOUT_PARAGRAPHS = useMemo(() => {
@@ -391,7 +513,15 @@ export const EventOverviewScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       <Header title="Event Overview" leftIcon="menu" onLeftPress={() => navigation.openDrawer?.()} iconSize={SIZES.headerIconSize} />
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        removeClippedSubviews={Platform.OS === 'android' ? false : undefined}
+      >
         <View style={styles.content}>
           <TouchableOpacity style={[styles.currentEventCard, isEventDropdownOpen && styles.currentEventCardActive]} activeOpacity={0.9} onPress={() => setIsEventDropdownOpen(true)}>
             <View style={styles.currentEventContent}>
@@ -420,12 +550,24 @@ export const EventOverviewScreen = () => {
                       <View style={styles.badge}><Text style={styles.badgeText}>Current Event</Text></View>
                     </View>
                     <Text style={[styles.bannerTitle, { fontSize: getDynamicFontSize(selectedEvent?.title, isTablet ? 32 : 24, 16) }]} numberOfLines={3} ellipsizeMode="tail">{selectedEvent?.title || 'Loading...'}</Text>
-                    {!!selectedEvent?.location && (
-                      <View style={styles.bannerVenueRow}>
-                        <MapPinIcon size={14} />
-                        <Text style={styles.bannerVenueText}>{selectedEvent.location}</Text>
-                      </View>
-                    )}
+                    {!!selectedEvent?.location &&
+                      (canOpenVenueMap ? (
+                        <TouchableOpacity
+                          style={styles.bannerVenueRow}
+                          onPress={openVenueInMaps}
+                          activeOpacity={0.75}
+                          accessibilityRole="link"
+                          accessibilityLabel={`Open map for ${selectedEvent.location}`}
+                        >
+                          <MapPinIcon size={14} />
+                          <Text style={[styles.bannerVenueText, styles.bannerVenueTextLink]}>{selectedEvent.location}</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={styles.bannerVenueRow}>
+                          <MapPinIcon size={14} />
+                          <Text style={styles.bannerVenueText}>{selectedEvent.location}</Text>
+                        </View>
+                      ))}
                     {selectedEvent?.date ? (
                       <View style={styles.bannerMetaRow}>
                         <Icon name="calendar" size={14} color="#FFFFFF" />
@@ -455,13 +597,12 @@ export const EventOverviewScreen = () => {
                 <View style={styles.aboutCard}>
                   {ABOUT_PARAGRAPHS.length > 0 ? (
                     <>
-                      {isAboutExpanded ? (
-                        ABOUT_PARAGRAPHS.map((para, idx) => (
-                          <Text key={idx} style={[styles.aboutText, idx > 0 && { marginTop: 8 }]}>{para}</Text>
-                        ))
-                      ) : (
-                        <Text style={styles.aboutText}>{PREVIEW_TEXT}</Text>
-                      )}
+                      <SelectableAboutBody
+                        key={isAboutExpanded ? 'about-expanded' : 'about-preview'}
+                        text={isAboutExpanded ? ABOUT_PARAGRAPHS.join('\n\n') : PREVIEW_TEXT}
+                        textStyle={styles.aboutText}
+                        scrollable={isAboutExpanded}
+                      />
                       {shouldShowReadMore && (
                         <TouchableOpacity 
                           style={styles.readMoreButton} 
@@ -481,7 +622,11 @@ export const EventOverviewScreen = () => {
                       )}
                     </>
                   ) : (
-                    <Text style={styles.aboutText}>No description available for this event.</Text>
+                    <SelectableAboutBody
+                      text="No description available for this event."
+                      textStyle={styles.aboutText}
+                      scrollable={false}
+                    />
                   )}
                 </View>
               </View>
@@ -658,6 +803,10 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     marginLeft: 6,
+    flexShrink: 1,
+  },
+  bannerVenueTextLink: {
+    textDecorationLine: 'underline',
   },
   bannerMetaRow: {
     flexDirection: 'row',

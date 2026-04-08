@@ -1,12 +1,17 @@
+import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { EAS_PROJECT_ID } from '../constants/easProject';
 
-// Configure notification behavior
+// Foreground + background: show OS banner / list (Expo SDK 50+ requires banner + list, not only deprecated shouldShowAlert)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
+    priority: Notifications.AndroidNotificationPriority.HIGH,
   }),
 });
 
@@ -29,8 +34,17 @@ export const requestNotificationPermissions = async () => {
       return false;
     }
     
-    // For Android, create notification channel
+    // Android: channels must match backend Expo push `channelId` (see ExpoPush.php → default)
     if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'General',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#8A3490',
+        sound: 'default',
+        enableVibrate: true,
+        showBadge: true,
+      });
       await Notifications.setNotificationChannelAsync('messages', {
         name: 'Messages',
         importance: Notifications.AndroidImportance.HIGH,
@@ -54,9 +68,15 @@ export const requestNotificationPermissions = async () => {
  */
 export const getNotificationToken = async () => {
   try {
-    const token = await Notifications.getExpoPushTokenAsync({
-      projectId: '0439d5f9-4716-47e0-a8f3-07b17c27a43d',
-    });
+    const projectId =
+      Constants.expoConfig?.extra?.eas?.projectId ??
+      Constants.easConfig?.projectId ??
+      EAS_PROJECT_ID;
+    if (!projectId) {
+      console.error('❌ Push: Missing EAS projectId — check app.json extra.eas.projectId');
+      return null;
+    }
+    const token = await Notifications.getExpoPushTokenAsync({ projectId });
     console.log('📱 Notification token:', token.data);
     return token.data;
   } catch (error) {
