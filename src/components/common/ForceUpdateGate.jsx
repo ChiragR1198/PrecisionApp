@@ -62,10 +62,17 @@ export function ForceUpdateGate({ children }) {
     }
 
     try {
-      const url = `${API_BASE_URL.replace(/\/?$/, '/')}${API_ENDPOINTS.APP_VERSION}`;
+      const base = `${API_BASE_URL.replace(/\/?$/, '/')}${API_ENDPOINTS.APP_VERSION}`;
+      // Cache-buster: avoids CDN/proxy/device caching while testing force updates.
+      const url = `${base}?_t=${Date.now()}`;
       const res = await fetch(url, {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          // Hint to intermediaries/browsers: do not cache this endpoint.
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+        },
       });
       const raw = await res.text();
       let data = {};
@@ -83,6 +90,12 @@ export function ForceUpdateGate({ children }) {
       }
 
       if (!data?.success || !isForceUpdateEnabled(data)) {
+        // If we were previously blocked, allow unblocking when force_update is turned off.
+        if (blockedRef.current) {
+          setBlocked(false);
+          setMessage('');
+          setStoreUrl('');
+        }
         return;
       }
 
@@ -101,6 +114,12 @@ export function ForceUpdateGate({ children }) {
       }
 
       if (!isVersionBelow(installed, minStr)) {
+        // Backend lowered min_version (or installed updated) — unblock without reinstall.
+        if (blockedRef.current) {
+          setBlocked(false);
+          setMessage('');
+          setStoreUrl('');
+        }
         return;
       }
 
@@ -128,7 +147,8 @@ export function ForceUpdateGate({ children }) {
     runVersionCheck();
 
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && !blockedRef.current) {
+      // Always re-check on foreground so we can also auto-unblock.
+      if (state === 'active') {
         runVersionCheck();
       }
     });

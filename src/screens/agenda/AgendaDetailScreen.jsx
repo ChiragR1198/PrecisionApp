@@ -14,6 +14,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -395,6 +396,14 @@ export const AgendaDetailScreen = () => {
 
   const isLongDescription = (descriptionText?.length || 0) > DESCRIPTION_PREVIEW_LEN;
 
+  const displayedDescription = useMemo(() => {
+    if (!descriptionText.trim()) return '';
+    return isDescExpanded
+      ? descriptionText
+      : descriptionText.substring(0, DESCRIPTION_PREVIEW_LEN) +
+        (descriptionText.length > DESCRIPTION_PREVIEW_LEN ? '...' : '');
+  }, [descriptionText, isDescExpanded]);
+
   const { SIZES, isTablet } = useMemo(() => {
     const isAndroid = Platform.OS === 'android';
     const isIOS = Platform.OS === 'ios';
@@ -618,12 +627,21 @@ export const AgendaDetailScreen = () => {
                 ) : null}
                 {descriptionText.trim() !== '' ? (
                   <>
-                    <Text selectable style={styles.descriptionText}>
-                      {isDescExpanded
-                        ? descriptionText
-                        : descriptionText.substring(0, DESCRIPTION_PREVIEW_LEN) +
-                          (descriptionText.length > DESCRIPTION_PREVIEW_LEN ? '...' : '')}
-                    </Text>
+                    {/*
+                      Read-only TextInput (visually plain) so iOS/Android show selection handles.
+                      Plain Text+selectable often only offers a single “Copy” without drag handles.
+                    */}
+                    <TextInput
+                      style={[styles.descriptionText, styles.descriptionSelectField]}
+                      value={displayedDescription}
+                      editable={false}
+                      multiline
+                      scrollEnabled={false}
+                      textAlignVertical="top"
+                      underlineColorAndroid="transparent"
+                      selectTextOnFocus={false}
+                      caretHidden
+                    />
                     {isLongDescription ? (
                       <Text
                         style={[styles.readMore, { marginTop: 12 }]}
@@ -952,6 +970,27 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '400',
     color: colors.textMuted,
     lineHeight: 24,
+  },
+  /** No border/background — matches plain Text; enables native selection handles */
+  descriptionSelectField: {
+    width: '100%',
+    marginTop: 0,
+    marginBottom: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingHorizontal: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+    ...Platform.select({
+      ios: {
+        // Avoid extra inset that looks like a text field
+        paddingVertical: 0,
+      },
+      android: {
+        paddingVertical: 0,
+        includeFontPadding: false,
+      },
+    }),
   },
   readMore: {
     color: colors.primary,

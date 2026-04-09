@@ -3,10 +3,12 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useMemo, useState } from 'react';
+import { router } from 'expo-router';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
+  Platform,
   Pressable,
   SectionList,
   StyleSheet,
@@ -28,6 +30,26 @@ import {
 import { useAppSelector } from '../../store/hooks';
 
 const DeleteIcon = ({ size = 18, color = '#EF4444' }) => <FontAwesome name="trash" size={size} color={color} />;
+
+/** Backend / cache may use different keys; keep list + detail consistent. */
+function getContactDisplayName(item) {
+  const direct = String(item?.name ?? item?.full_name ?? item?.contact_name ?? '').trim();
+  if (direct) return direct;
+  const f = String(item?.fname ?? item?.first_name ?? '').trim();
+  const l = String(item?.lname ?? item?.last_name ?? '').trim();
+  const combined = [f, l].filter(Boolean).join(' ');
+  if (combined) return combined;
+  const e = String(item?.email ?? '').trim();
+  if (e) return e.split('@')[0] || 'Contact';
+  const ph = String(item?.phone ?? item?.mobile ?? item?.tel ?? '').replace(/\s/g, '');
+  if (ph) return ph;
+  return 'Contact';
+}
+
+function getContactPhoneDisplay(item) {
+  const p = String(item?.phone ?? item?.mobile ?? item?.tel ?? '').trim();
+  return p || '—';
+}
 
 export const ContactsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
@@ -102,12 +124,29 @@ export const ContactsScreen = () => {
     const apiList = Array.isArray(apiData) ? apiData : [];
     const localList = Array.isArray(localContacts) ? localContacts : [];
 
+    const mergeLinkedIn = (a, b) =>
+      String(a?.linkedin_url || a?.linkedinUrl || '').trim() ||
+      String(b?.linkedin_url || b?.linkedinUrl || '').trim() ||
+      '';
+
     const byEmail = new Map();
+    const rowKey = (c) => {
+      const e = String(c?.email || '').toLowerCase().trim();
+      if (e) return `e:${e}`;
+      const p = String(c?.phone || '').replace(/\D/g, '');
+      if (p) return `p:${p}`;
+      const id = c?.id != null ? String(c.id) : '';
+      if (id) return `id:${id}`;
+      return '';
+    };
     [...localList, ...apiList].forEach((c) => {
-      const key = String(c?.email || '').toLowerCase().trim();
+      const key = rowKey(c);
       if (!key) return;
-      // Prefer API version over local when both exist
-      if (!byEmail.has(key) || !c?._local) byEmail.set(key, c);
+      if (!byEmail.has(key) || !c?._local) {
+        const prev = byEmail.get(key);
+        const next = !prev ? { ...c } : { ...prev, ...c, linkedin_url: mergeLinkedIn(c, prev) };
+        byEmail.set(key, next);
+      }
     });
     return Array.from(byEmail.values());
   }, [contactsData, localContacts]);
@@ -133,16 +172,26 @@ export const ContactsScreen = () => {
     if (!searchQuery.trim()) return contacts;
     const query = searchQuery.toLowerCase();
     return contacts.filter((contact) => {
-      const name = String(contact?.name || '').toLowerCase();
-      const phone = String(contact?.phone || '').toLowerCase();
+      const name = String(getContactDisplayName(contact) || '').toLowerCase();
+      const phone = String(contact?.phone ?? contact?.mobile ?? contact?.tel ?? '')
+        .toLowerCase()
+        .trim();
       const email = String(contact?.email || '').toLowerCase();
-      return name.includes(query) || phone.includes(query) || email.includes(query);
+      const li = String(contact?.linkedin_url || contact?.linkedinUrl || '').toLowerCase();
+      return (
+        name.includes(query) ||
+        phone.includes(query) ||
+        email.includes(query) ||
+        li.includes(query)
+      );
     });
   }, [contacts, searchQuery]);
 
   const sections = useMemo(() => {
     const grouped = filteredContacts.reduce((acc, contact) => {
-      const letter = String(contact?.name || '?').charAt(0).toUpperCase();
+      const letter = String(getContactDisplayName(contact) || '?')
+        .charAt(0)
+        .toUpperCase();
       if (!acc.has(letter)) acc.set(letter, []);
       acc.get(letter).push(contact);
       return acc;
@@ -152,7 +201,9 @@ export const ContactsScreen = () => {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([title, data]) => ({
         title,
-        data: data.sort((lhs, rhs) => lhs.name.localeCompare(rhs.name)),
+        data: data.sort((lhs, rhs) =>
+          getContactDisplayName(lhs).localeCompare(getContactDisplayName(rhs))
+        ),
       }));
   }, [filteredContacts]);
 
@@ -226,24 +277,70 @@ export const ContactsScreen = () => {
     }
   };
 
-  const renderContact = ({ item }) => (
+  const openContactDetail = useCallback((item) => {
+    const phoneRaw = String(item?.phone ?? item?.mobile ?? item?.tel ?? '').trim();
+    router.push({
+      pathname: '/contact-detail',
+      params: {
+        name: getContactDisplayName(item),
+        email: String(item?.email ?? ''),
+        phone: phoneRaw,
+        company: String(item?.company ?? ''),
+        role: String(item?.role ?? item?.job_title ?? ''),
+        linkedin_url: String(item?.linkedin_url ?? item?.linkedinUrl ?? ''),
+      },
+    });
+  }, []);
+
+  const renderContact = ({ item }) => {
+    const displayName = getContactDisplayName(item);
+    const phoneLine = getContactPhoneDisplay(item);
+    const initials =
+      String(item?.initials || '')
+        .trim()
+        .slice(0, 2)
+        .toUpperCase() ||
+      displayName
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((w) => w[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase() ||
+      '?';
+
+    return (
     <View style={styles.contactRow}>
-      <View
-        style={[
-          styles.avatar,
-          {
-            width: SIZES.avatar,
-            height: SIZES.avatar,
-            borderRadius: SIZES.avatar / 2,
-            backgroundColor: item.color || colors.primary,
-          },
-        ]}
-      >
-        <Text style={styles.avatarText}>{item.initials || '?'}</Text>
-      </View>
-      <View style={styles.contactInfo}>
-        <Text style={styles.contactName}>{item.name}</Text>
-        <Text style={styles.contactPhone}>{item.phone}</Text>
+      <View style={styles.contactRowMain}>
+        <Pressable
+          style={({ pressed }) => [styles.contactRowPressable, pressed && styles.contactRowPressed]}
+          onPress={() => openContactDetail(item)}
+          android_ripple={Platform.OS === 'android' ? { color: 'rgba(0,0,0,0.1)' } : undefined}
+        >
+          <View
+            style={[
+              styles.avatar,
+              {
+                width: SIZES.avatar,
+                height: SIZES.avatar,
+                borderRadius: SIZES.avatar / 2,
+                backgroundColor: item.color || colors.primary,
+              },
+            ]}
+          >
+            <Text style={styles.avatarText} allowFontScaling={false} maxFontSizeMultiplier={1}>
+              {initials}
+            </Text>
+          </View>
+          <View style={styles.contactInfo}>
+            <Text style={styles.contactName} numberOfLines={1} allowFontScaling={false} maxFontSizeMultiplier={1.15}>
+              {displayName}
+            </Text>
+            <Text style={styles.contactPhone} numberOfLines={1} allowFontScaling={false} maxFontSizeMultiplier={1.15}>
+              {phoneLine}
+            </Text>
+          </View>
+        </Pressable>
       </View>
       <TouchableOpacity 
         style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]} 
@@ -254,7 +351,8 @@ export const ContactsScreen = () => {
         <DeleteIcon />
       </TouchableOpacity>
     </View>
-  );
+    );
+  };
 
   const renderSectionHeader = ({ section: { title } }) => (
     <Text style={styles.sectionHeader}>{title}</Text>
@@ -301,10 +399,14 @@ export const ContactsScreen = () => {
 
             <SectionList
               sections={sections}
-              keyExtractor={(item) => item.id?.toString() || `${item.name}-${item.phone}`}
+              keyExtractor={(item) =>
+                item.id?.toString() ||
+                `${getContactDisplayName(item)}-${getContactPhoneDisplay(item)}`
+              }
               renderItem={renderContact}
               renderSectionHeader={renderSectionHeader}
               stickySectionHeadersEnabled={false}
+              keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
               contentContainerStyle={[
                 styles.listContent,
@@ -496,6 +598,21 @@ const createStyles = (SIZES, isTablet) =>
       shadowRadius: 6,
       shadowOffset: { width: 0, height: 3 },
       elevation: 2,
+    },
+    contactRowMain: {
+      flex: 1,
+      minWidth: 0,
+    },
+    contactRowPressable: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      minWidth: 0,
+      borderRadius: radius.md,
+      overflow: 'hidden',
+    },
+    contactRowPressed: {
+      opacity: Platform.OS === 'ios' ? 0.85 : 1,
     },
     avatar: {
       alignItems: 'center',

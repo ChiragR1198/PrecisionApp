@@ -46,6 +46,7 @@ import {
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
 import { exportCsvNative } from '../../utils/exportCsvNative';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 
 const UserIcon = Icons.User;
 
@@ -348,7 +349,15 @@ export const AttendeesScreen = () => {
   const [selectedMeetingLocationId, setSelectedMeetingLocationId] = useState(null);
   const [meetingLocationOther, setMeetingLocationOther] = useState('');
   const [isMeetingLocationDropdownOpen, setIsMeetingLocationDropdownOpen] = useState(false);
-  
+
+  const rawEventId = selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id ?? 27;
+  const eventId = normalizeEventIdForApi(rawEventId) ?? 27;
+
+  const sponsorAttendeesQueryArg = useMemo(
+    () => ({ event_id: eventId, services: selectedServices }),
+    [eventId, selectedServices]
+  );
+
   // Conditionally fetch attendees based on user type
   const { 
     data: delegateAttendeesData, 
@@ -356,21 +365,21 @@ export const AttendeesScreen = () => {
     isFetching: delegateAttendeesFetching,
     error: delegateError, 
     refetch: delegateRefetch 
-  } = useGetDelegateAttendeesQuery(undefined, {
+  } = useGetDelegateAttendeesQuery(eventId, {
     skip: !isAuthenticated || !user || !isDelegate, // Skip for sponsors
     refetchOnMountOrArgChange: true,
     // Sponsor/web can delete meeting requests; refresh list while this screen is mounted
     pollingInterval: !isAuthenticated || !user || !isDelegate ? 0 : 30000,
   });
 
-  // For sponsors, pass selectedServices to filter attendees by service
+  // For sponsors, pass event_id + optional service filters (backend defaults to first event if omitted)
   const { 
     data: sponsorAttendeesData, 
     isLoading: sponsorLoading,
     isFetching: sponsorAttendeesFetching,
     error: sponsorError, 
     refetch: sponsorRefetch 
-  } = useGetSponsorAllAttendeesQuery(selectedServices.length > 0 ? selectedServices : undefined, {
+  } = useGetSponsorAllAttendeesQuery(sponsorAttendeesQueryArg, {
     skip: !isAuthenticated || !user || isDelegate, // Skip for delegates
     refetchOnMountOrArgChange: true,
   });
@@ -389,7 +398,7 @@ export const AttendeesScreen = () => {
   const { 
     data: delegateMeetingRequestsData,
     refetch: refetchDelegateMeetingRequests
-  } = useGetDelegateMeetingRequestsQuery(undefined, {
+  } = useGetDelegateMeetingRequestsQuery({ event_id: eventId }, {
     skip: !isAuthenticated || !user || !isDelegate,
     refetchOnMountOrArgChange: true,
   });
@@ -397,18 +406,13 @@ export const AttendeesScreen = () => {
   const { 
     data: sponsorMeetingRequestsData,
     refetch: refetchSponsorMeetingRequests
-  } = useGetSponsorMeetingRequestsQuery(undefined, {
+  } = useGetSponsorMeetingRequestsQuery({ event_id: eventId }, {
     skip: !isAuthenticated || !user || isDelegate,
     refetchOnMountOrArgChange: true,
   });
   
   const meetingRequestsData = isDelegate ? delegateMeetingRequestsData : sponsorMeetingRequestsData;
   const refetchMeetingRequests = isDelegate ? refetchDelegateMeetingRequests : refetchSponsorMeetingRequests;
-
-  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
-  const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
-    ? rawEventId
-    : (Number(rawEventId) || 27);
 
   const { data: presenceOnlineData } = useGetPresenceOnlineQuery(
     { event_id: eventId, window: 120 },

@@ -32,6 +32,8 @@ export const API_ENDPOINTS = {
   AUTH_SPONSOR_CHANGE_PASSWORD: '/auth/sponsor-change-password',
 
   // ============ DELEGATE ENDPOINTS ============
+  /** GET ?event_id= — same-category events as web category page (Future Summits). Delegate or sponsor JWT. */
+  UPCOMING_EVENTS: '/upcoming-events',
   DELEGATE_EVENTS: '/delegate/events',
   DELEGATE_ATTENDEES: '/delegate/attendees',
   DELEGATE_ALL_DELEGATES: '/delegate/all-delegates',

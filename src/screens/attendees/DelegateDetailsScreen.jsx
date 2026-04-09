@@ -42,6 +42,7 @@ import {
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 const UserIcon = ({ color = colors.white, size = 18 }) => (
@@ -285,10 +286,8 @@ export const DelegateDetailsScreen = () => {
   const [createDelegateMeetingRequestToDelegate] = useSendDelegateMeetingRequestToDelegateMutation();
   const [createSponsorMeetingRequest] = useSendSponsorMeetingRequestMutation();
 
-  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
-  const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
-    ? rawEventId
-    : (Number(rawEventId) || 27);
+  const rawEventId = selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id ?? 27;
+  const eventId = normalizeEventIdForApi(rawEventId) ?? 27;
 
   const {
     data: delegateOutcomesData,
@@ -535,21 +534,29 @@ export const DelegateDetailsScreen = () => {
   }, [params?.profileType]);
   const isSponsorProfile = profileType === 'sponsor';
 
-  // Directory sources for enriching profile fields when navigated from chat (params may only contain id/name/image)
-  const { data: allDelegatesData } = useGetAllDelegatesQuery(undefined, {
-    skip: !user || !isDelegate, // delegates list endpoint is only for delegate login
-    refetchOnMountOrArgChange: true,
-  });
-  const { data: delegateAttendeesData } = useGetDelegateAttendeesQuery(undefined, {
-    skip: !user || !isDelegate, // sponsors list for delegate login
-    refetchOnMountOrArgChange: true,
-  });
   // Match AttendeesScreen cache key when opening from list (same services filter → same payload as list).
   const sponsorServicesQueryArg = useMemo(
     () => parseSponsorServicesFilterParam(params?.sponsorServicesFilter),
     [params?.sponsorServicesFilter]
   );
-  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(sponsorServicesQueryArg, {
+  const sponsorAllAttendeesQueryArg = useMemo(
+    () => ({ event_id: eventId, services: sponsorServicesQueryArg ?? [] }),
+    [eventId, sponsorServicesQueryArg]
+  );
+
+  // Directory sources for enriching profile fields when navigated from chat (params may only contain id/name/image)
+  const { data: allDelegatesData } = useGetAllDelegatesQuery(
+    { event_id: eventId },
+    {
+      skip: !user || !isDelegate, // delegates list endpoint is only for delegate login
+      refetchOnMountOrArgChange: true,
+    }
+  );
+  const { data: delegateAttendeesData } = useGetDelegateAttendeesQuery(eventId, {
+    skip: !user || !isDelegate, // sponsors list for delegate login
+    refetchOnMountOrArgChange: true,
+  });
+  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(sponsorAllAttendeesQueryArg, {
     skip: !user || isDelegate, // attendees list for sponsor login
     refetchOnMountOrArgChange: true,
   });

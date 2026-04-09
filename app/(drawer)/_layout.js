@@ -55,6 +55,10 @@ export default function DrawerLayout() {
       />
       <Drawer.Screen name="itinerary" options={{ drawerLabel: 'Itinerary' }} />
       <Drawer.Screen name="contacts" options={{ drawerLabel: 'Contacts' }} />
+      <Drawer.Screen
+        name="contact-detail"
+        options={{ drawerItemStyle: { display: 'none' } }}
+      />
       <Drawer.Screen name="contact-us" options={{ drawerLabel: 'Contact Us' }} />
       <Drawer.Screen name="profile" options={{ drawerLabel: 'Profile' }} />
       <Drawer.Screen

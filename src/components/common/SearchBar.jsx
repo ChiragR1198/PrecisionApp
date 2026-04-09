@@ -53,12 +53,13 @@ export const SearchBar = ({
   };
   
   const SIZES = {
-    searchHeight: getValue({ android: 50, ios: 52, tablet: 56, default: 50 }),
+    // Slightly taller on iOS so placeholder/text is not vertically clipped
+    searchHeight: getValue({ android: 50, ios: 54, tablet: 56, default: 50 }),
     fontSize: getValue({ android: 13, ios: 14, tablet: 14, default: 13 }),
     iconSize: getValue({ android: 17, ios: 18, tablet: 18, default: 17 }),
   };
 
-  const styles = createStyles(SIZES);
+  const styles = createStyles(SIZES, Platform);
 
   useEffect(() => {
     const onHide = () => {
@@ -118,7 +119,8 @@ export const SearchBar = ({
   );
 };
 
-const createStyles = (SIZES) => StyleSheet.create({
+const createStyles = (SIZES, PlatformRef) =>
+  StyleSheet.create({
   searchContainer: {
     marginBottom: 24,
   },
@@ -128,7 +130,7 @@ const createStyles = (SIZES) => StyleSheet.create({
     backgroundColor: colors.white,
     borderRadius: 25,
     paddingHorizontal: 16,
-    height: SIZES.searchHeight,
+    minHeight: SIZES.searchHeight,
     borderWidth: 2,
     borderColor: colors.gray200,
     shadowColor: '#000',
@@ -148,9 +150,15 @@ const createStyles = (SIZES) => StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    alignSelf: 'stretch',
     fontSize: SIZES.fontSize,
+    // Explicit lineHeight prevents iOS placeholder clipping with allowFontScaling={false}
+    lineHeight: Math.round(SIZES.fontSize * 1.35),
     color: colors.text,
-    paddingVertical: 0,
+    paddingVertical: PlatformRef.OS === 'ios' ? 10 : 6,
+    margin: 0,
+    ...(PlatformRef.OS === 'android' ? { textAlignVertical: 'center' } : {}),
+    ...(PlatformRef.OS === 'android' ? { includeFontPadding: false } : {}),
   },
   clearButton: {
     padding: 4,
