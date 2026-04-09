@@ -1,9 +1,9 @@
 import Icon from '@expo/vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Image as ExpoImage } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -31,9 +31,10 @@ import {
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
 import { setSelectedEvent } from '../../store/slices/eventSlice';
-import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
 import { normalizeWebcoverSlideUris } from '../../utils/eventWebcoverSlides';
+import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
+import { stripHtml } from '../../utils/stripHtml';
 
 // Icon Components
 const CalendarIcon = Icons.Calendar;
@@ -43,6 +44,12 @@ const CalendarIconPrimary = Icons.CalendarPrimary;
 const ListIcon = Icons.List;
 const UsersIcon = Icons.Users;
 const SponsorsIcon = Icons.Briefcase;
+
+/** Match `sponsorLogoChip` width (72) + marginRight (10) for auto-scroll / getItemLayout */
+const SPONSOR_LOGO_STRIDE = 72 + 10;
+const SPONSOR_AUTO_SCROLL_INTERVAL_MS = 3200;
+const SPONSOR_RESUME_AFTER_MODAL_MS = 2800;
+const SPONSOR_RESUME_AFTER_DRAG_MS = 4500;
 
 /** Display string from API only — formatted on backend (`date_display`). */
 /** Unwrap RTK response for event-sponsor-logos list */
@@ -152,6 +159,9 @@ const MainEventBanner = ({ styles, SIZES, event }) => {
   const dynamicBannerTitleSize = getDynamicFontSize(event?.title, SIZES.mainEventTitleSize, 16);
   const mapQuery = getMapSearchQueryForEvent(event);
   const canOpenMap = mapQuery.length > 0;
+  const venueTitle = String(event?.location ?? '').trim();
+  const venueAddress = String(event?.venueDetails ?? '').trim();
+  const showVenueBlock = venueTitle.length > 0 || venueAddress.length > 0;
   const listRef = useRef(null);
   const slideIndexRef = useRef(0);
   const estW = Math.max(1, winW - SIZES.paddingHorizontal * 3);
@@ -328,22 +338,50 @@ const MainEventBanner = ({ styles, SIZES, event }) => {
             {event?.title}
           </Text>
           {event?.date ? <Text style={styles.mainEventDate}>{event.date}</Text> : null}
-          {event?.location ? (
+          {showVenueBlock ? (
             canOpenMap ? (
               <TouchableOpacity
                 style={styles.mainEventLocation}
                 onPress={openVenueInMaps}
                 activeOpacity={0.75}
                 accessibilityRole="link"
-                accessibilityLabel={`Open map for ${event.location}`}
+                accessibilityLabel={`Open map for ${mapQuery}`}
               >
-                <MapPinIcon size={SIZES.mapPinSize} />
-                <Text style={[styles.mainEventLocationText, styles.mainEventLocationTextLink]}>{event.location}</Text>
+                <View style={styles.mainEventMapPinWrap}>
+                  <MapPinIcon size={SIZES.mapPinSize} />
+                </View>
+                <View style={styles.mainEventLocationTextCol}>
+                  {venueTitle ? (
+                    <Text style={[styles.mainEventLocationText, styles.mainEventLocationTextLink]}>
+                      {venueTitle}
+                    </Text>
+                  ) : null}
+                  {venueAddress ? (
+                    <Text
+                      style={[styles.mainEventVenueAddress, venueTitle && styles.mainEventVenueAddressBelow]}
+                    >
+                      {venueAddress}
+                    </Text>
+                  ) : null}
+                </View>
               </TouchableOpacity>
             ) : (
               <View style={styles.mainEventLocation}>
-                <MapPinIcon size={SIZES.mapPinSize} />
-                <Text style={styles.mainEventLocationText}>{event.location}</Text>
+                <View style={styles.mainEventMapPinWrap}>
+                  <MapPinIcon size={SIZES.mapPinSize} />
+                </View>
+                <View style={styles.mainEventLocationTextCol}>
+                  {venueTitle ? (
+                    <Text style={styles.mainEventLocationText}>{venueTitle}</Text>
+                  ) : null}
+                  {venueAddress ? (
+                    <Text
+                      style={[styles.mainEventVenueAddress, venueTitle && styles.mainEventVenueAddressBelow]}
+                    >
+                      {venueAddress}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
             )
           ) : null}
@@ -483,7 +521,11 @@ export const DashboardScreen = () => {
       title: ev.title || 'Untitled Event',
       date: getEventDateDisplayFromApi(ev),
       location: ev.location || ev.venue || '',
-      venueDetails: ev.venue_details != null ? String(ev.venue_details).trim() : '',
+      venueDetails: (() => {
+        const raw = ev.venue_details ?? ev.venu_details;
+        if (raw == null || String(raw).trim() === '') return '';
+        return stripHtml(String(raw)).trim();
+      })(),
       date_from: ev.date_from,
       date_to: ev.date_to,
       banner_image: ev.banner_image ?? null,
@@ -523,6 +565,59 @@ export const DashboardScreen = () => {
     const payload = isDelegate ? delegateLogoPayload : sponsorLogoPayload;
     return extractEventSponsorLogosList(payload);
   }, [isDelegate, delegateLogoPayload, sponsorLogoPayload]);
+
+  const sponsorLogosFlatListRef = useRef(null);
+  const sponsorLogoScrollIndexRef = useRef(0);
+  const sponsorAutoScrollPausedRef = useRef(false);
+  const sponsorResumeTimerRef = useRef(null);
+
+  const clearSponsorResumeTimer = useCallback(() => {
+    if (sponsorResumeTimerRef.current) {
+      clearTimeout(sponsorResumeTimerRef.current);
+      sponsorResumeTimerRef.current = null;
+    }
+  }, []);
+
+  const pauseSponsorAutoScroll = useCallback(() => {
+    sponsorAutoScrollPausedRef.current = true;
+    clearSponsorResumeTimer();
+  }, [clearSponsorResumeTimer]);
+
+  const scheduleResumeSponsorAutoScroll = useCallback(
+    (ms) => {
+      clearSponsorResumeTimer();
+      sponsorResumeTimerRef.current = setTimeout(() => {
+        sponsorResumeTimerRef.current = null;
+        sponsorAutoScrollPausedRef.current = false;
+      }, ms);
+    },
+    [clearSponsorResumeTimer]
+  );
+
+  useEffect(() => {
+    if (sponsorLogoModal != null) {
+      pauseSponsorAutoScroll();
+      return () => clearSponsorResumeTimer();
+    }
+    scheduleResumeSponsorAutoScroll(SPONSOR_RESUME_AFTER_MODAL_MS);
+    return () => clearSponsorResumeTimer();
+  }, [sponsorLogoModal, pauseSponsorAutoScroll, scheduleResumeSponsorAutoScroll, clearSponsorResumeTimer]);
+
+  useEffect(() => {
+    if (sponsorLogosList.length <= 1) return undefined;
+    const id = setInterval(() => {
+      if (sponsorAutoScrollPausedRef.current) return;
+      const n = sponsorLogosList.length;
+      const next = (sponsorLogoScrollIndexRef.current + 1) % n;
+      sponsorLogoScrollIndexRef.current = next;
+      sponsorLogosFlatListRef.current?.scrollToIndex({
+        index: next,
+        animated: true,
+        viewPosition: 0,
+      });
+    }, SPONSOR_AUTO_SCROLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [sponsorLogosList.length]);
 
   const handleEventSelect = (index) => {
     setSelectedEventIndex(index);
@@ -628,9 +723,13 @@ export const DashboardScreen = () => {
         break;
       case 'Future Summits': {
         const fsParams = { ...params };
-        const cid = selectedEvent?.category_id ?? selectedEvent?.categoryId;
-        if (cid != null && cid !== '') {
-          fsParams.categoryId = String(cid);
+        const rawEid = selectedEvent?.id;
+        if (rawEid != null && rawEid !== '') {
+          const eid =
+            typeof rawEid === 'string' && rawEid.includes(',')
+              ? String(rawEid).split(',')[0].trim()
+              : rawEid;
+          fsParams.eventId = String(eid);
         }
         router.push({
           pathname: '/future-summits',
@@ -783,16 +882,42 @@ export const DashboardScreen = () => {
           {sponsorLogosList.length > 0 ? (
             <View style={styles.sponsorLogosSection}>
               <Text style={styles.sponsorLogosTitle}>Event Sponsors</Text>
-              <ScrollView
+              <FlatList
+                ref={sponsorLogosFlatListRef}
+                key={eventIdForLogos != null ? `sponsor-logos-${eventIdForLogos}` : 'sponsor-logos'}
                 horizontal
+                nestedScrollEnabled
                 showsHorizontalScrollIndicator={false}
+                data={sponsorLogosList}
+                keyExtractor={(item) => String(item.id ?? item.title)}
                 contentContainerStyle={styles.sponsorLogosScrollContent}
                 style={styles.sponsorLogosScroll}
-              >
-                {sponsorLogosList.map((item) => (
+                getItemLayout={(_, index) => ({
+                  length: SPONSOR_LOGO_STRIDE,
+                  offset: SPONSOR_LOGO_STRIDE * index,
+                  index,
+                })}
+                onScrollBeginDrag={pauseSponsorAutoScroll}
+                onMomentumScrollEnd={(e) => {
+                  const x = e.nativeEvent.contentOffset.x;
+                  const idx = Math.round(x / SPONSOR_LOGO_STRIDE);
+                  const max = sponsorLogosList.length - 1;
+                  sponsorLogoScrollIndexRef.current = Math.max(0, Math.min(max, idx));
+                  scheduleResumeSponsorAutoScroll(SPONSOR_RESUME_AFTER_DRAG_MS);
+                }}
+                onScrollToIndexFailed={(info) => {
+                  setTimeout(() => {
+                    sponsorLogosFlatListRef.current?.scrollToIndex({
+                      index: info.index,
+                      animated: true,
+                      viewPosition: 0,
+                    });
+                  }, 350);
+                }}
+                renderItem={({ item }) => (
                   <TouchableOpacity
-                    key={String(item.id ?? item.title)}
                     style={styles.sponsorLogoChip}
+                    onPressIn={pauseSponsorAutoScroll}
                     onPress={() => setSponsorLogoModal(item)}
                     activeOpacity={0.85}
                   >
@@ -806,8 +931,8 @@ export const DashboardScreen = () => {
                       </View>
                     )}
                   </TouchableOpacity>
-                ))}
-              </ScrollView>
+                )}
+              />
             </View>
           ) : null}
 
@@ -1114,13 +1239,13 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
   },
   mainEventBannerTextBlock: {
     position: 'absolute',
-    left: 52,
-    right: 52,
+    left: 50,
+    right: 50,
     top: 0,
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: Math.min(12, SIZES.paddingHorizontal),
+    paddingHorizontal: Math.min(8, SIZES.paddingHorizontal),
   },
   bannerArrow: {
     position: 'absolute',
@@ -1158,18 +1283,38 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     fontWeight: '500',
     color: colors.white,
     textAlign: 'center',
-    marginBottom: 35,
+    marginBottom: 24,
   },
   mainEventLocation: {
+    alignSelf: 'stretch',
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    maxWidth: '100%',
+  },
+  mainEventMapPinWrap: {
+    paddingTop: 3,
+  },
+  mainEventLocationTextCol: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 6,
   },
   mainEventLocationText: {
     fontSize: SIZES.mainEventDateSize - 2,
-    fontWeight: '400',
+    fontWeight: '500',
     color: colors.white,
-    marginLeft: 6,
-    flexShrink: 1,
+    textAlign: 'center',
+  },
+  mainEventVenueAddress: {
+    fontSize: SIZES.mainEventDateSize - 3,
+    fontWeight: '400',
+    color: 'rgba(255,255,255,0.92)',
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  mainEventVenueAddressBelow: {
+    marginTop: 4,
   },
   mainEventLocationTextLink: {
     textDecorationLine: 'underline',

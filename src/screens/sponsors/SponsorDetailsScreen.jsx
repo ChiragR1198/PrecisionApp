@@ -49,6 +49,7 @@ import {
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 const meetingRed = '#DC2626';
@@ -366,11 +367,8 @@ export const SponsorDetailsScreen = () => {
   // Actual mutation selection depends on whether we are viewing a sponsor or delegate profile.
   // We do that inside `handleSendMeetingRequest()` (after `isDelegateProfile` is computed).
 
-  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
-  const eventId =
-    typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0
-      ? rawEventId
-      : Number(rawEventId) || 27;
+  const rawEventId = selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id ?? 27;
+  const eventId = normalizeEventIdForApi(rawEventId) ?? 27;
 
   const {
     data: delegateOutcomesData,
@@ -469,28 +467,25 @@ export const SponsorDetailsScreen = () => {
     []
   );
 
+  const sponsorDirectoryAttendeesArg = useMemo(
+    () => ({ event_id: eventId, services: [] }),
+    [eventId]
+  );
+
   // Use attendees directory to resolve full contact information when navigated from chat
-  const { data: delegateAttendeesData } = useGetDelegateAttendeesQuery(undefined, {
+  const { data: delegateAttendeesData } = useGetDelegateAttendeesQuery(eventId, {
     skip: !user || !isDelegate,
     refetchOnMountOrArgChange: true,
   });
-  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(undefined, {
+  const { data: sponsorAllAttendeesData } = useGetSponsorAllAttendeesQuery(sponsorDirectoryAttendeesArg, {
     skip: !user || isDelegate,
     refetchOnMountOrArgChange: true,
   });
 
   // Delegate login: peer profiles come from /delegate/all-delegates (same as Sponsors list). NOT from delegate-attendees (sponsors).
-  const rawEventIdForDelegates = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
-  const eventIdForDelegatesList =
-    typeof rawEventIdForDelegates === 'number' &&
-    Number.isFinite(rawEventIdForDelegates) &&
-    rawEventIdForDelegates > 0
-      ? rawEventIdForDelegates
-      : Number(rawEventIdForDelegates) || 27;
-
   const allDelegatesQueryArg = useMemo(() => {
     if (!isDelegate) return undefined;
-    const o = { event_id: eventIdForDelegatesList };
+    const o = { event_id: eventId };
     const sf = params?.delegateServicesFilter;
     if (sf != null && sf !== '') {
       try {
@@ -502,7 +497,7 @@ export const SponsorDetailsScreen = () => {
       }
     }
     return o;
-  }, [isDelegate, eventIdForDelegatesList, params?.delegateServicesFilter]);
+  }, [isDelegate, eventId, params?.delegateServicesFilter]);
 
   const { data: allDelegatesData } = useGetAllDelegatesQuery(allDelegatesQueryArg, {
     skip: !user || !isDelegate || !allDelegatesQueryArg,

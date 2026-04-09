@@ -1,6 +1,7 @@
 import Icon from '@expo/vector-icons/Feather';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
+import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
@@ -38,7 +39,31 @@ import {
   useSendSponsorMessageMutation,
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { splitMessageByUrls } from '../../utils/splitMessageByUrls';
 import { websocketManager } from '../../utils/websocket';
+
+function ChatBubbleMessageText({ text, isMe, styles: styleSheet }) {
+  const segments = useMemo(() => splitMessageByUrls(text), [text]);
+  return (
+    <Text style={[styleSheet.bubbleText, isMe && styleSheet.bubbleTextMe]}>
+      {segments.map((seg, i) =>
+        seg.type === 'url' ? (
+          <Text
+            key={`chat-url-${i}`}
+            style={[styleSheet.bubbleLink, isMe && styleSheet.bubbleLinkMe]}
+            onPress={() => {
+              Linking.openURL(seg.href).catch(() => {});
+            }}
+          >
+            {seg.value}
+          </Text>
+        ) : (
+          seg.value
+        )
+      )}
+    </Text>
+  );
+}
 
 // Format date string to time (e.g., "2:30 PM")
 const parseBackendDate = (dateInput) => {
@@ -1001,11 +1026,19 @@ export const MessageDetailScreen = () => {
 
   const renderMessage = ({ item }) => {
     const isMe = item.sender === 'me';
-    const preview = String(item.text || '').substring(0, 20);
-    console.log(`💬 Rendering message: sender="${item.sender}", isMe=${isMe}, text="${preview}"`);
-
     const openPdfExternal = () => {
       if (item.attachmentUrl) Linking.openURL(item.attachmentUrl);
+    };
+    const handleCopyMessage = async () => {
+      const raw = (item.text || '').toString();
+      const text = raw.trim();
+      if (!text) return;
+      try {
+        await Clipboard.setStringAsync(text);
+        Alert.alert('Copied', 'Message copied to clipboard.');
+      } catch {
+        Alert.alert('Error', 'Could not copy message.');
+      }
     };
 
     return (
@@ -1039,7 +1072,9 @@ export const MessageDetailScreen = () => {
               </TouchableOpacity>
             ) : null}
             {(item.text || '').trim().length > 0 ? (
-              <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.text}</Text>
+              <Pressable onLongPress={handleCopyMessage} delayLongPress={250}>
+                <ChatBubbleMessageText text={item.text} isMe={isMe} styles={styles} />
+              </Pressable>
             ) : null}
           </View>
           <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>{item.time}</Text>
@@ -1541,6 +1576,18 @@ const createStyles = (SIZES) =>
     },
     bubbleTextMe: {
       color: colors.white,
+    },
+    bubbleLink: {
+      color: colors.primary,
+      textDecorationLine: 'underline',
+      fontSize: 15,
+      lineHeight: 22,
+    },
+    bubbleLinkMe: {
+      color: '#E9D5FF',
+      textDecorationLine: 'underline',
+      fontSize: 15,
+      lineHeight: 22,
     },
     bubbleImage: {
       width: 220,

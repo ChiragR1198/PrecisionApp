@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
+import { normalizeEventIdForApi } from '../utils/parseEventId';
 
 // Base query with token injection
 const baseQuery = fetchBaseQuery({
@@ -706,12 +707,25 @@ export const api = createApi({
       refetchOnMountOrArgChange: true,
     }),
 
+    /** Future Summits: events in same category as user’s `event_id` (delegate or sponsor token). */
+    getUpcomingEvents: builder.query({
+      query: (eventId) => {
+        const n = normalizeEventIdForApi(eventId);
+        if (n == null) return null;
+        return {
+          url: API_ENDPOINTS.UPCOMING_EVENTS,
+          params: { event_id: n, _t: Date.now() },
+        };
+      },
+      providesTags: ['Events'],
+      refetchOnMountOrArgChange: true,
+    }),
+
     /** Dashboard horizontal sponsor logos (`sponsor_logo` table) */
     getDelegateEventSponsorLogos: builder.query({
       query: (eventId) => {
-        if (eventId == null || eventId === '') return null;
-        const n = Number(eventId);
-        if (!Number.isFinite(n) || n <= 0) return null;
+        const n = normalizeEventIdForApi(eventId);
+        if (n == null) return null;
         return {
           url: API_ENDPOINTS.DELEGATE_EVENT_SPONSOR_LOGOS,
           params: { event_id: n, _t: Date.now() },
@@ -727,8 +741,8 @@ export const api = createApi({
         const params = { _t: Date.now() };
         const a = arg && typeof arg === 'object' ? arg : {};
         if (a.event_id != null && a.event_id !== '') {
-          const n = Number(a.event_id);
-          if (Number.isFinite(n) && n > 0) params.event_id = n;
+          const n = normalizeEventIdForApi(a.event_id);
+          if (n != null) params.event_id = n;
         }
         if (Array.isArray(a.services) && a.services.length > 0) {
           params.services = a.services.join(',');
@@ -746,9 +760,8 @@ export const api = createApi({
     // 3b. Delegate: event category services (for directory filter UI)
     getDelegateEventServices: builder.query({
       query: (eventId) => {
-        if (eventId == null || eventId === '') return null;
-        const n = Number(eventId);
-        if (!Number.isFinite(n) || n <= 0) return null;
+        const n = normalizeEventIdForApi(eventId);
+        if (n == null) return null;
         return {
           url: API_ENDPOINTS.DELEGATE_EVENT_SERVICES,
           params: { event_id: n, _t: Date.now() },
@@ -873,8 +886,8 @@ export const api = createApi({
         const params = { _t: Date.now() };
         const raw = arg?.event_id ?? arg;
         if (raw != null && raw !== '') {
-          const n = Number(raw);
-          if (Number.isFinite(n) && n > 0) params.event_id = n;
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
         }
         return {
           url: API_ENDPOINTS.DELEGATE_REVIEW_MEETING_REQUESTS,
@@ -990,12 +1003,17 @@ export const api = createApi({
       keepUnusedDataFor: 0,
     }),
 
-    // 9. Delegate Attendees
+    // 9. Delegate Attendees (sponsors for event — pass event_id so multi-event users get correct list)
     getDelegateAttendees: builder.query({
-      query: () => ({
-        url: API_ENDPOINTS.DELEGATE_ATTENDEES,
-        params: { _t: Date.now() }, // Add timestamp to force fresh request
-      }),
+      query: (eventId) => {
+        const params = { _t: Date.now() };
+        const n = normalizeEventIdForApi(eventId);
+        if (n != null) params.event_id = n;
+        return {
+          url: API_ENDPOINTS.DELEGATE_ATTENDEES,
+          params,
+        };
+      },
       providesTags: ['Attendees'],
       refetchOnMountOrArgChange: true, // Force refetch on mount
       keepUnusedDataFor: 0,
@@ -1007,8 +1025,8 @@ export const api = createApi({
         const params = { _t: Date.now() };
         const raw = arg?.event_id ?? arg;
         if (raw != null && raw !== '') {
-          const n = Number(raw);
-          if (Number.isFinite(n) && n > 0) params.event_id = n;
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
         }
         if (arg?.date) params.date = arg.date;
         return { url: API_ENDPOINTS.DELEGATE_VIEW_ITINERARY, params };
@@ -1231,9 +1249,8 @@ export const api = createApi({
     /** Dashboard horizontal sponsor logos (`sponsor_logo` table) */
     getSponsorEventSponsorLogos: builder.query({
       query: (eventId) => {
-        if (eventId == null || eventId === '') return null;
-        const n = Number(eventId);
-        if (!Number.isFinite(n) || n <= 0) return null;
+        const n = normalizeEventIdForApi(eventId);
+        if (n == null) return null;
         return {
           url: API_ENDPOINTS.SPONSOR_EVENT_SPONSOR_LOGOS,
           params: { event_id: n, _t: Date.now() },
@@ -1257,10 +1274,9 @@ export const api = createApi({
     // 4. Event Sponsor
     getEventSponsor: builder.query({
       query: (eventId) => {
-        if (!eventId) {
-          return null;
-        }
-        return API_ENDPOINTS.SPONSOR_EVENT_SPONSOR(eventId);
+        const n = normalizeEventIdForApi(eventId);
+        if (n == null) return null;
+        return API_ENDPOINTS.SPONSOR_EVENT_SPONSOR(n);
       },
       providesTags: ['Sponsors'],
       refetchOnMountOrArgChange: true,
@@ -1273,8 +1289,8 @@ export const api = createApi({
         const params = { _t: Date.now() };
         const raw = arg?.event_id ?? arg;
         if (raw != null && raw !== '') {
-          const n = Number(raw);
-          if (Number.isFinite(n) && n > 0) params.event_id = n;
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
         }
         return {
           url: API_ENDPOINTS.SPONSOR_MEETING_REQUEST_FROM_DELEGATE,
@@ -1337,19 +1353,26 @@ export const api = createApi({
       providesTags: ['Sponsors'],
     }),
 
-    // 6. Sponsor All Attendees
+    // 6. Sponsor All Attendees (delegates for event — pass event_id for multi-event sponsors)
     getSponsorAllAttendees: builder.query({
-      query: (selectedServices = []) => {
-        const params = { _t: Date.now() }; // Add timestamp to force fresh request
-        // Add services as query parameter if provided
-        if (selectedServices && selectedServices.length > 0) {
-          // Handle both array and comma-separated string
-          if (Array.isArray(selectedServices)) {
-            // Use comma-separated format for services
-            params.services = selectedServices.join(',');
-          } else {
-            params.services = selectedServices;
-          }
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        let eventId = null;
+        let selectedServices = [];
+        if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+          eventId = arg.event_id ?? arg.eventId;
+          const s = arg.services;
+          if (Array.isArray(s)) selectedServices = s;
+          else if (s != null && s !== '') selectedServices = [s];
+        } else if (Array.isArray(arg)) {
+          selectedServices = arg;
+        }
+        const n = normalizeEventIdForApi(eventId);
+        if (n != null) params.event_id = n;
+        if (selectedServices.length > 0) {
+          params.services = Array.isArray(selectedServices)
+            ? selectedServices.join(',')
+            : String(selectedServices);
         }
         return {
           url: API_ENDPOINTS.SPONSOR_ALL_ATTENDEES,
@@ -1471,8 +1494,8 @@ export const api = createApi({
         const params = { _t: Date.now() };
         const raw = arg?.event_id ?? arg;
         if (raw != null && raw !== '') {
-          const n = Number(raw);
-          if (Number.isFinite(n) && n > 0) params.event_id = n;
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
         }
         if (arg?.date) params.date = arg.date;
         return { url: API_ENDPOINTS.SPONSOR_VIEW_ITINERARY, params };
@@ -1742,6 +1765,7 @@ export const {
 
   // Delegate Endpoints
   useGetDelegateEventsQuery,
+  useGetUpcomingEventsQuery,
   useGetDelegateEventSponsorLogosQuery,
   useGetAllDelegatesQuery,
   useGetDelegateEventServicesQuery,

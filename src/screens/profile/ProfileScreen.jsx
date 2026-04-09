@@ -31,6 +31,7 @@ import { colors, radius } from '../../constants/theme';
 import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSaveSponsorContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { logout as logoutAction } from '../../store/slices/authSlice';
+import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
 
 // Utility to strip HTML tags and return plain text
 const stripHtmlTags = (value) => {
@@ -90,6 +91,10 @@ function mergeAndroidContactExtra(plain, scanningResult) {
   if (!String(out.phone || '').trim() && extra.phone) out.phone = String(extra.phone).trim();
   if (!String(out.company || '').trim() && extra.organization) out.company = String(extra.organization).trim();
   if (!String(out.role || '').trim() && extra.title) out.role = String(extra.title).trim();
+  if (!String(out.linkedinUrl || '').trim() && extra.urls?.length) {
+    const li = extra.urls.find((u) => String(u || '').toLowerCase().includes('linkedin.com'));
+    if (li) out.linkedinUrl = String(li).trim();
+  }
   return out;
 }
 
@@ -353,7 +358,9 @@ export const ProfileScreen = () => {
     const phone = src.mobile || src.phone || '';
     const image = src.image || null;
 
-    return { name, jobTitle, company, email, phone, image };
+    const linkedinUrl = src.linkedin_url || '';
+
+    return { name, jobTitle, company, email, phone, image, linkedinUrl };
   }, [profile, user, userId]);
   
   const [formData, setFormData] = useState({
@@ -785,6 +792,7 @@ export const ProfileScreen = () => {
         company: scanResult.company || '',
         role: scanResult.role || '',
         initials: scanResult.initials || '',
+        linkedin_url: scanResult.linkedinUrl || '',
       };
 
       if (!contactData.name.trim()) {
@@ -818,6 +826,7 @@ export const ProfileScreen = () => {
             company: contactData.company,
             role: contactData.role,
             initials: contactData.initials,
+            linkedin_url: contactData.linkedin_url || '',
             scanned_at: nowIso,
             _local: true,
           };
@@ -926,6 +935,7 @@ export const ProfileScreen = () => {
           email: displayProfile?.email || built.email,
           phone: displayProfile?.phone || built.phone,
           image: displayProfile?.image || built.image,
+          linkedinUrl: built.linkedinUrl || displayProfile?.linkedinUrl || '',
         };
       }
 
@@ -942,6 +952,7 @@ export const ProfileScreen = () => {
       const email = clean(safe.email);
       const phone = clean(safe.phone);
       const image = clean(safe.image || safe.photo || safe.avatar);
+      const linkedinUrl = clean(safe.linkedinUrl || safe.linkedin_url || safe.linkedin);
 
       if (!name) {
         // Derive a reasonable name fallback (never show "Unknown Contact")
@@ -961,7 +972,7 @@ export const ProfileScreen = () => {
           .toUpperCase()
           .slice(0, 2) || 'SC';
 
-      return { initials, name, role, company, email, phone, image };
+      return { initials, name, role, company, email, phone, image, linkedinUrl };
     };
 
     const parseStructuredText = (text) => {
@@ -984,6 +995,7 @@ export const ProfileScreen = () => {
             email: qp.get('email'),
             phone: qp.get('phone') || qp.get('mobile') || qp.get('tel'),
             image: qp.get('image') || qp.get('avatar') || qp.get('photo'),
+            linkedinUrl: qp.get('linkedin') || qp.get('linkedin_url'),
           });
         } catch {
           return null;
@@ -1068,6 +1080,7 @@ export const ProfileScreen = () => {
               email: o.email,
               phone: o.phone || o.mobile || o.tel,
               image: o.image || o.avatar || o.photo,
+              linkedinUrl: o.linkedin_url || o.linkedinUrl || o.linkedin,
             });
           }
         } catch {
@@ -1098,6 +1111,7 @@ export const ProfileScreen = () => {
           company: kv['company'] || kv['organisation'] || kv['organization'] || kv['org'],
           email: kv['email'],
           phone: kv['phone'] || kv['mobile'] || kv['tel'],
+          linkedinUrl: kv['linkedin'] || kv['linkedin url'] || kv['linkedin_url'],
         });
       }
 
@@ -1129,6 +1143,7 @@ export const ProfileScreen = () => {
             company: built.company,
             role: built.role,
             image: built.image,
+            linkedinUrl: built.linkedinUrl,
           },
           sr
         )
@@ -1182,6 +1197,7 @@ export const ProfileScreen = () => {
       company: '',
       role: '',
       image: '',
+      linkedin: '',
     };
   
     lines.forEach((line) => {
@@ -1257,6 +1273,17 @@ export const ProfileScreen = () => {
         const photoValue = value;
         if (!contact.image) contact.image = photoValue;
       }
+
+      if (key === 'URL') {
+        const u = String(value || '').trim();
+        if (!u) {
+          /* skip */
+        } else if (/linkedin\.com/i.test(u)) {
+          contact.linkedin = u;
+        } else if (/TYPE=URL/i.test(left) && !contact.linkedin) {
+          contact.linkedin = u;
+        }
+      }
     });
   
     const initials = contact.name
@@ -1271,6 +1298,7 @@ export const ProfileScreen = () => {
       email: contact.email || '',
       phone: contact.phone || '',
       image: contact.image || '',
+      linkedinUrl: contact.linkedin || '',
     };
     
     return result;
@@ -1952,6 +1980,21 @@ export const ProfileScreen = () => {
                           {scanResult.phone || '—'}
                         </Text>
                       </View>
+                      {!!scanResult.linkedinUrl?.trim() && (
+                        <TouchableOpacity
+                          style={styles.scanContactLine}
+                          activeOpacity={0.75}
+                          onPress={() => {
+                            const url = normalizeWebsiteUrl(scanResult.linkedinUrl);
+                            if (url) Linking.openURL(url);
+                          }}
+                        >
+                          <Icon name="link" size={14} color={colors.primary} />
+                          <Text style={[styles.scanContactLineText, styles.scanLinkedinText]} numberOfLines={2}>
+                            {String(scanResult.linkedinUrl).replace(/^https?:\/\//, '')}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                       <TouchableOpacity
                         style={[styles.addContactButton, isSavingContact && styles.addContactButtonDisabled]}
                         activeOpacity={0.85}
@@ -2544,6 +2587,10 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   scanContactLineText: {
     flex: 1,
     color: colors.text,
+  },
+  scanLinkedinText: {
+    color: colors.primary,
+    textDecorationLine: 'underline',
   },
   scanRawText: {
     marginTop: 10,

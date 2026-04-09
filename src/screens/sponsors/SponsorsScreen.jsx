@@ -38,6 +38,7 @@ import {
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 import { exportCsvNative } from '../../utils/exportCsvNative';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
 const UserIcon = Icons.User;
@@ -473,11 +474,8 @@ export const SponsorsScreen = () => {
   }, [searchQuery]);
   const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
 
-  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
-  const eventId =
-    typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0
-      ? rawEventId
-      : Number(rawEventId) || 27;
+  const rawEventId = selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id ?? 27;
+  const eventId = normalizeEventIdForApi(rawEventId) ?? 27;
 
   const { data: presenceOnlineData } = useGetPresenceOnlineQuery(
     { event_id: eventId, window: 120 },
@@ -904,7 +902,16 @@ export const SponsorsScreen = () => {
         : Array.isArray(sponsorsData)
           ? sponsorsData
           : [];
-    return list.map((s) => {
+    const filtered = currentUserNumericId != null
+      ? list.filter((s) => {
+          const id = Number(s?.id);
+          if (Number.isFinite(id) && id === currentUserNumericId) return false;
+          if (s?.is_current_user === true || s?.is_current_user === 1 || s?.is_current_user === '1') return false;
+          return true;
+        })
+      : list;
+
+    return filtered.map((s) => {
       const name = s.name || s.full_name || 'Unknown';
       const personInitials =
         name
@@ -941,7 +948,7 @@ export const SponsorsScreen = () => {
         raw: s,
       };
     });
-  }, [isSponsor, sponsorsData]);
+  }, [isSponsor, sponsorsData, currentUserNumericId]);
 
   const SORT_OPTIONS = useMemo(
     () => [

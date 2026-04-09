@@ -31,6 +31,7 @@ import {
   useSponsorMeetingRequestActionMutation
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 
 /** Normalize API shapes: { data: [] }, { data: { data: [] } }, { data: { records: [] } }, etc. */
 function extractMeetingRequestsList(response) {
@@ -109,10 +110,8 @@ export const MeetingRequestsScreen = () => {
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
 
-  const rawEventId = user?.event_id ?? user?.events?.[0]?.id ?? selectedEventId ?? 27;
-  const eventId = (typeof rawEventId === 'number' && Number.isFinite(rawEventId) && rawEventId > 0)
-    ? rawEventId
-    : (Number(rawEventId) || 27);
+  const rawEventId = selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id ?? 27;
+  const eventId = normalizeEventIdForApi(rawEventId) ?? 27;
 
   // Use appropriate hook based on user type
   const {
