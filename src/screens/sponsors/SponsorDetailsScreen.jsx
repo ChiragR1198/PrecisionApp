@@ -1762,11 +1762,11 @@ export const SponsorDetailsScreen = () => {
           {/* Contact Information Section */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <UserIcon />
-              <Text style={styles.sectionTitle}>Contact Information</Text>
+            {!isDelegate && <><UserIcon />
+              <Text style={styles.sectionTitle}>Contact Information</Text></>}
             </View>
             <View style={styles.contactCard}>
-              {sponsor.email && (
+              {!isDelegate && sponsor.email && (
                 <ContactItem
                   icon={MailIcon}
                   label="Email"
@@ -1784,7 +1784,7 @@ export const SponsorDetailsScreen = () => {
                   onAction={handleOpenLinkedIn}
                 />
               ) : null}
-              {sponsor.phone && !isDelegateProfile && (
+              {/* {sponsor.phone && !isDelegateProfile && (
                 <ContactItem
                   icon={PhoneIcon}
                   label="Phone"
@@ -1792,7 +1792,7 @@ export const SponsorDetailsScreen = () => {
                   actionIcon={PhoneIcon2}
                   onAction={handleCall}
                 />
-              )}
+              )} */}
               {sponsor.website && (
                 <ContactItem
                   icon={GlobeIcon}

@@ -45,6 +45,7 @@ import {
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
+import { csvLocationFromRow } from '../../utils/csvLocationFromRow';
 import { exportCsvNative } from '../../utils/exportCsvNative';
 import { normalizeEventIdForApi } from '../../utils/parseEventId';
 
@@ -97,46 +98,35 @@ function escapeCsvField(value) {
   return s;
 }
 
-/** Same columns as delegate list export on Delegates screen (SponsorsScreen). */
-function buildDelegatesCsv(rows) {
-  const headers = [
-    'ID',
-    'Name',
-    'Company',
-    'Job Title',
-    'Email',
-    'Phone',
-    'Website',
-    'Location',
-    'Online',
-    'Meeting request',
-  ];
+/**
+ * @param {boolean} isSponsorsListForDelegate - true when delegate exports sponsor list; false when sponsor exports delegate list
+ * Both use the same public columns: no phone / online / meeting request; sponsor→delegate export also omits email.
+ */
+function buildDelegatesCsv(rows, isSponsorsListForDelegate = false) {
+  const headers = isSponsorsListForDelegate
+    ? ['ID', 'Name', 'Company', 'Job Title', 'Email', 'Website', 'Location']
+    : ['ID', 'Name', 'Company', 'Job Title', 'Website', 'Location'];
   const lines = [headers.map(escapeCsvField).join(',')];
   for (const item of rows) {
-    const meeting =
-      item.requestOutcome === 'accepted'
-        ? 'Accepted'
-        : item.requestOutcome === 'declined'
-          ? 'Declined'
-          : item.hasRequest
-            ? 'Pending'
-            : '';
-    lines.push(
-      [
-        item.id,
-        item.name,
-        item.company ?? '',
-        item.partnerType ?? '',
-        item.email ?? '',
-        item.phone ?? '',
-        item.website ?? '',
-        item.location ?? '',
-        item.isOnline ? 'Yes' : 'No',
-        meeting,
-      ]
-        .map(escapeCsvField)
-        .join(',')
-    );
+    const values = isSponsorsListForDelegate
+      ? [
+          item.id,
+          item.name,
+          item.company ?? '',
+          item.partnerType ?? '',
+          item.email ?? '',
+          item.website ?? '',
+          item.location ?? '',
+        ]
+      : [
+          item.id,
+          item.name,
+          item.company ?? '',
+          item.partnerType ?? '',
+          item.website ?? '',
+          item.location ?? '',
+        ];
+    lines.push(values.map(escapeCsvField).join(','));
   }
   return lines.join('\r\n');
 }
@@ -150,8 +140,14 @@ function mapAttendeeRowToCsvShape(item) {
     partnerType: item.role ?? '',
     email: item.email ?? '',
     phone: item.phone ?? '',
-    website: raw.website ?? raw.linkedin_url ?? item.linkedin ?? '',
-    location: item.address ?? raw.address ?? '',
+    website:
+      raw.website ??
+      raw.linkedin_url ??
+      raw.company_website_url ??
+      raw.companyWebsiteUrl ??
+      item.linkedin ??
+      '',
+    location: csvLocationFromRow(item),
     isOnline: item.isOnline,
     requestOutcome: item.requestOutcome,
     hasRequest: item.hasRequest,
@@ -975,6 +971,8 @@ export const AttendeesScreen = () => {
         phone: attendee?.mobile || '',
         image: attendee?.image || null,
         address: attendee?.address || attendee?.Address || '',
+        state: attendee?.state || '',
+        country: attendee?.country || '',
         bio: attendee?.bio || '',
         linkedin: attendee?.linkedin_url || attendee?.linkedin || '',
         status: attendee?.status,
@@ -1079,7 +1077,7 @@ export const AttendeesScreen = () => {
     try {
       setListCsvExporting(true);
       const csvRows = rows.map(mapAttendeeRowToCsvShape);
-      const csvBody = buildDelegatesCsv(csvRows);
+      const csvBody = buildDelegatesCsv(csvRows, isDelegate);
       await exportCsvNative({
         csvBody,
         fileName: safeName,
