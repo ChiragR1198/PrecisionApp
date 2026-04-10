@@ -1442,9 +1442,9 @@ export const DelegateDetailsScreen = () => {
             <>
               {/* Contact Information Section */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Contact Information</Text>
+            {isDelegate && <Text style={styles.sectionTitle}>Contact Information</Text>}
             <View style={styles.contactCard}>
-              {mergedDelegate.email && (
+              {isDelegate && mergedDelegate.email && (
                 <ContactItem
                   icon={MailIcon}
                   value={mergedDelegate.email}

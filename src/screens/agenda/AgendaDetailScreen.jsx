@@ -24,6 +24,12 @@ import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
 import {
+  AGENDA_CARD_SURFACE_COLORS,
+  agendaCardBorderStyle,
+  agendaSectionAccentFromTime,
+  agendaSurfaceIndexForId,
+} from '../../utils/agendaCardSurface';
+import {
   useCheckInAgendaSessionMutation,
   useGetAgendaCheckInStatusQuery,
   useGetAgendaItemQuery,
@@ -434,6 +440,20 @@ export const AgendaDetailScreen = () => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
+  const detailCardColors = useMemo(() => {
+    const id = agendaItem.id ?? params?.agendaId;
+    const rawTime =
+      selectedAgendaItem?.time != null && String(selectedAgendaItem.time).trim() !== ''
+        ? String(selectedAgendaItem.time)
+        : params?.initialTime
+          ? String(params.initialTime)
+          : '';
+    return {
+      surface: AGENDA_CARD_SURFACE_COLORS[agendaSurfaceIndexForId(id)],
+      accent: agendaSectionAccentFromTime(rawTime),
+    };
+  }, [agendaItem.id, params?.agendaId, params?.initialTime, selectedAgendaItem?.time]);
+
   // Update SpeakerCard to match image
   const SpeakerCard = ({ speaker, isLast }) => (
     <View style={[ styles.speakerCard, isLast && { borderBottomWidth: 0, paddingBottom: 0, marginBottom: 0 } ]}>
@@ -554,8 +574,14 @@ export const AgendaDetailScreen = () => {
         </LinearGradient>
 
         <View style={styles.content}>
-          {/* Details Card */}
-          <View style={styles.detailsCard}>
+          {/* Details Card — same surface + left accent as list cards */}
+          <View
+            style={[
+              styles.detailsCard,
+              { backgroundColor: detailCardColors.surface },
+              agendaCardBorderStyle(detailCardColors.accent),
+            ]}
+          >
             {/* Date and Location */}
             {agendaItem.date && (
               <View style={styles.detailRow}>
@@ -846,7 +872,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '800',
   },
   detailsCard: {
-    backgroundColor: colors.white,
     borderRadius: 16,
     padding: SIZES.paddingHorizontal * 1.5,
     paddingHorizontal: SIZES.paddingHorizontal * 2,

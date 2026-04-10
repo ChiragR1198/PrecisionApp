@@ -16,6 +16,11 @@ import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { Icons } from '../../constants/icons';
 import { colors } from '../../constants/theme';
+import {
+  AGENDA_CARD_SURFACE_COLORS,
+  agendaCardBorderStyle,
+  agendaSurfaceIndexForId,
+} from '../../utils/agendaCardSurface';
 import { api, useGetAgendaQuery } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 
@@ -246,9 +251,16 @@ const hasAnyResults = useMemo(() => {
 
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
-  const AgendaCard = ({ item, sectionColor }) => (
+  const AgendaCard = ({ item, sectionColor }) => {
+    const surfaceColor =
+      AGENDA_CARD_SURFACE_COLORS[agendaSurfaceIndexForId(item.id)];
+    return (
     <TouchableOpacity 
-      style={styles.agendaCard} 
+      style={[
+        styles.agendaCard,
+        { backgroundColor: surfaceColor },
+        agendaCardBorderStyle(sectionColor),
+      ]} 
       onPress={() => {
         // Pre-fetch the agenda item data for instant loading
         dispatch(api.util.prefetch('getAgendaItem', item.id.toString(), { force: true }));
@@ -290,7 +302,8 @@ const hasAnyResults = useMemo(() => {
         ) : null}
       </View>
     </TouchableOpacity>
-  );
+    );
+  };
 
   const AgendaSection = ({ title, items, sectionColor }) => (
     <View style={styles.agendaSection}>
@@ -513,19 +526,16 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     lineHeight: 26,
   },
 
-  // Agenda Cards
+  // Agenda Cards (per-session tint + accent applied inline)
   agendaCard: {
-    backgroundColor: colors.white,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.gray100,
     padding: 17,
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
   },
   agendaCardHeader: {
     flexDirection: 'row',

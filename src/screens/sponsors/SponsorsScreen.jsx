@@ -37,6 +37,7 @@ import {
   useSendSponsorMeetingRequestMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { csvLocationFromRow } from '../../utils/csvLocationFromRow';
 import { exportCsvNative } from '../../utils/exportCsvNative';
 import { normalizeEventIdForApi } from '../../utils/parseEventId';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
@@ -54,30 +55,27 @@ function escapeCsvField(value) {
   return s;
 }
 
-/** Build CSV for delegate rows currently shown (filters / sort / online apply). */
+/** Align with AttendeesScreen mapAttendeeRowToCsvShape — sponsor event-sponsor rows may carry address on raw only. */
+function sponsorCsvWebsiteField(item) {
+  const raw = item?.raw && typeof item.raw === 'object' ? item.raw : {};
+  const companyUrl = raw.company_website_url ?? raw.companyWebsiteUrl ?? item?.company_website_url ?? '';
+  const v =
+    item?.website ??
+    raw.website ??
+    raw.web ??
+    raw.linkedin_url ??
+    raw.linkedin ??
+    item?.linkedin ??
+    companyUrl ??
+    '';
+  return String(v ?? '').trim();
+}
+
+/** Sponsor list CSV: ID, name, company, role, email, website, location (no phone / online / meeting request). */
 function buildDelegatesCsv(rows) {
-  const headers = [
-    'ID',
-    'Name',
-    'Company',
-    'Job Title',
-    'Email',
-    'Phone',
-    'Website',
-    'Location',
-    'Online',
-    'Meeting request',
-  ];
+  const headers = ['ID', 'Name', 'Company', 'Job Title', 'Email', 'Website', 'Location'];
   const lines = [headers.map(escapeCsvField).join(',')];
   for (const item of rows) {
-    const meeting =
-      item.requestOutcome === 'accepted'
-        ? 'Accepted'
-        : item.requestOutcome === 'declined'
-          ? 'Declined'
-          : item.hasRequest
-            ? 'Pending'
-            : '';
     lines.push(
       [
         item.id,
@@ -85,11 +83,8 @@ function buildDelegatesCsv(rows) {
         item.company ?? '',
         item.partnerType ?? '',
         item.email ?? '',
-        item.phone ?? '',
-        item.website ?? '',
-        item.location ?? '',
-        item.isOnline ? 'Yes' : 'No',
-        meeting,
+        sponsorCsvWebsiteField(item),
+        csvLocationFromRow(item),
       ]
         .map(escapeCsvField)
         .join(',')
@@ -882,8 +877,12 @@ export const SponsorsScreen = () => {
         partnerType: d.job_title || '',
         email: d.email || '',
         phone: d.mobile || '',
-        website: d.linkedin_url || '',
-        location: d.address || '',
+        website:
+          d.linkedin_url ||
+          d.company_website_url ||
+          d.companyWebsiteUrl ||
+          '',
+        location: csvLocationFromRow({ raw: d, address: d.address, state: d.state, country: d.country }),
         about: d.bio || '',
         company: d.company || '',
         badgeColor,
@@ -927,7 +926,12 @@ export const SponsorsScreen = () => {
       
       // Determine tier based on company or use default
       const tier = s.company ? 'Sponsor' : 'Event Sponsor';
-      
+      const companyWebsiteUrl = s.company_website_url || s.companyWebsiteUrl || '';
+      // Match AttendeesScreen CSV / delegate list: website column uses personal site or LinkedIn; location from address.
+      const website =
+        (s.website || s.web || s.linkedin_url || s.linkedin || companyWebsiteUrl || '').trim() || '';
+      const address = (s.address || s.location || s.Address || '').trim() || '';
+
       return {
         id: sponsorId,
         name,
@@ -939,11 +943,19 @@ export const SponsorsScreen = () => {
         partnerType: s.job_title || '',
         email: s.email || '',
         phone: s.mobile || s.tel || '',
-        website: '',
-        location: '',
+        address,
+        state: s.state || '',
+        country: s.country || '',
+        website,
+        location: csvLocationFromRow({
+          address,
+          state: s.state,
+          country: s.country,
+          raw: s,
+        }),
         about: s.biography || s.company_information || '',
         company: s.company || '',
-        company_website_url: s.company_website_url || s.companyWebsiteUrl || '',
+        company_website_url: companyWebsiteUrl,
         badgeColor,
         raw: s,
       };
@@ -1159,17 +1171,15 @@ export const SponsorsScreen = () => {
 
   const handleDownloadListCsv = useCallback(async () => {
     if (!isDelegate && !isSponsor) return;
+    if (isDelegate) return;
     const rows = listWithMeetingState;
     if (!rows.length) {
-      Alert.alert(
-        'No data',
-        isDelegate ? 'There are no delegates to export.' : 'There are no sponsors to export.'
-      );
+      Alert.alert('No data', 'There are no sponsors to export.');
       return;
     }
-    const prefix = isDelegate ? 'delegates' : 'sponsors';
+    const prefix = 'sponsors';
     const safeName = `${prefix}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
-    const dialogTitle = isDelegate ? 'Export delegates' : 'Export sponsors';
+    const dialogTitle = 'Export sponsors';
     try {
       setListCsvExporting(true);
       const csvBody = buildDelegatesCsv(rows);
@@ -1396,7 +1406,7 @@ export const SponsorsScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
-        title={isDelegate ? 'Delegate' : 'Event Sponsors'}
+        title={isDelegate ? 'Delegates' : 'Event Sponsors'}
         leftIcon="menu"
         onLeftPress={() => navigation.openDrawer?.()}
         iconSize={SIZES.headerIconSize}
@@ -1469,26 +1479,6 @@ export const SponsorsScreen = () => {
                     {`${String(listWithMeetingState.length)} DELEGATES`}
                   </Text>
                 </View>
-                <TouchableOpacity
-                  style={[
-                    styles.downloadCsvBtn,
-                    (listCsvExporting || listWithMeetingState.length === 0) && styles.downloadCsvBtnDisabled,
-                  ]}
-                  onPress={handleDownloadListCsv}
-                  disabled={listCsvExporting || listWithMeetingState.length === 0}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                  accessibilityLabel="Download delegates as CSV"
-                >
-                  {listCsvExporting ? (
-                    <ActivityIndicator size="small" color={colors.primary} />
-                  ) : (
-                    <>
-                      <Icon name="download" size={16} color={colors.primary} />
-                      <Text style={styles.downloadCsvText}>CSV</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
               </View>
             </View>
             {isLoading ? (
