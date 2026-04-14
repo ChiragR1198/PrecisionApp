@@ -343,6 +343,8 @@ export const SponsorDetailsScreen = () => {
   const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+  /** Agenda speaker link sets `returnTo: agenda-detail`; show sponsor-speaker email for delegates too. */
+  const openedFromAgendaSpeaker = params?.returnTo === 'agenda-detail';
   const [priority, setPriority] = useState('1st');
   const [hasRequested, setHasRequested] = useState(false);
   const [requestedPriorityText, setRequestedPriorityText] = useState(null);
@@ -708,21 +710,35 @@ export const SponsorDetailsScreen = () => {
     }
 
     if (eventSponsorEnrichment) {
-      const evLogo = pickCompanyLogoUrl(eventSponsorEnrichment);
+      const ev = eventSponsorEnrichment;
+      const evLogo = pickCompanyLogoUrl(ev);
       if (evLogo) {
         enriched.companyLogo = evLogo;
       }
       if (!enriched.image) {
-        enriched.image =
-          eventSponsorEnrichment.image ||
-          eventSponsorEnrichment.user_image ||
-          eventSponsorEnrichment.avatar ||
-          null;
+        enriched.image = ev.image || ev.user_image || ev.avatar || null;
       }
-      const evUrl =
-        eventSponsorEnrichment.company_website_url ?? eventSponsorEnrichment.companyWebsiteUrl;
+      const evUrl = ev.company_website_url ?? ev.companyWebsiteUrl;
       if (evUrl != null && String(evUrl).trim() !== '') {
         enriched.company_website_url = String(evUrl).trim();
+      }
+      // List navigation passes full sponsor rows; agenda only passes id/name/company — merge contact fields from event API.
+      const evEmail = String(ev.email || '').trim();
+      if (evEmail) enriched.email = evEmail;
+      const evAddr = String(ev.address || ev.location || '').trim();
+      if (evAddr) enriched.location = evAddr;
+      const companyWu = String(ev.company_website_url ?? ev.companyWebsiteUrl ?? '').trim();
+      const websiteDisplay = String(
+        ev.website || ev.web || ev.linkedin_url || ev.linkedin || companyWu || ''
+      ).trim();
+      if (websiteDisplay) enriched.website = websiteDisplay;
+      const evPhone = String(ev.mobile || ev.tel || ev.phone || '').trim();
+      if (evPhone) enriched.phone = evPhone;
+      enriched.raw =
+        enriched.raw && typeof enriched.raw === 'object' ? { ...enriched.raw, ...ev } : { ...ev };
+      const bio = String(ev.biography || ev.company_information || '').trim();
+      if (bio && (!enriched.about || !String(enriched.about).trim())) {
+        enriched.about = bio;
       }
     }
 
@@ -800,6 +816,10 @@ export const SponsorDetailsScreen = () => {
     numericTargetId,
   ]);
 
+  const showAgendaSponsorEmail = openedFromAgendaSpeaker && !!sponsor.email;
+  const showSponsorEmailRow = !!sponsor.email && (!isDelegate || openedFromAgendaSpeaker);
+  const showSponsorContactInfoHeader = !isDelegate || showAgendaSponsorEmail;
+
   // Company badge: only `company_website_url` from sponsor row / API (no `website` or email-derived fallbacks).
   const companyWebsiteHref = useMemo(() => {
     const fromDbOrApi = pickCompanyWebsiteUrl(
@@ -836,12 +856,19 @@ export const SponsorDetailsScreen = () => {
   );
 
   const isDelegateProfile = useMemo(() => {
+    // Agenda passes explicit type so sponsor speakers are not misclassified via fname/lname heuristics.
+    if (
+      openedFromAgendaSpeaker &&
+      String(params?.agendaSpeakerType || '').toLowerCase() === 'sponsor'
+    ) {
+      return false;
+    }
     const tier = String(sponsor?.tier || '').toLowerCase();
     if (tier === 'delegate') return true;
     // Fallback heuristics when tier isn't present
     const raw = sponsor?.raw || {};
     return Boolean(raw?.linkedin_url || raw?.fname || raw?.lname);
-  }, [sponsor]);
+  }, [sponsor, openedFromAgendaSpeaker, params?.agendaSpeakerType]);
 
   useEffect(() => {
     setAvatarStage(0);
@@ -1762,11 +1789,11 @@ export const SponsorDetailsScreen = () => {
           {/* Contact Information Section */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-            {!isDelegate && <><UserIcon />
+            {showSponsorContactInfoHeader && <><UserIcon />
               <Text style={styles.sectionTitle}>Contact Information</Text></>}
             </View>
             <View style={styles.contactCard}>
-              {!isDelegate && sponsor.email && (
+              {showSponsorEmailRow && (
                 <ContactItem
                   icon={MailIcon}
                   label="Email"

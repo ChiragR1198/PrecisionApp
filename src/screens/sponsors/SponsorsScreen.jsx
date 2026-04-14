@@ -220,6 +220,8 @@ const SponsorListRow = React.memo(function SponsorListRow({
   const avatarUri =
     avatarStage === 0 ? firstAvatarUri : avatarStage === 1 ? secondAvatarUri : null;
 
+  const showOnline = Boolean(item.isOnline);
+
   return (
     <TouchableOpacity
       style={[styles.card, rowHighlight]}
@@ -247,6 +249,7 @@ const SponsorListRow = React.memo(function SponsorListRow({
             <Text style={styles.logoText}>{item.logoText}</Text>
           )}
         </View>
+        {showOnline ? <View style={styles.avatarOnlineDot} /> : null}
       </View>
       <View style={styles.cardInfo}>
         <Text style={styles.cardTitle} numberOfLines={1}>
@@ -2186,7 +2189,19 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     height: 12,
   },
   logoWrapper: {
+    position: 'relative',
     marginRight: 12,
+  },
+  avatarOnlineDot: {
+    position: 'absolute',
+    right: 1,
+    bottom: 1,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#16A34A',
+    borderWidth: 2,
+    borderColor: colors.white,
   },
   logo: {
     alignItems: 'center',

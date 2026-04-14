@@ -197,7 +197,6 @@ const AttendeeRow = React.memo(function AttendeeRow({
   onOpenRequest,
 }) {
   const showOnline = Boolean(item.isOnline);
-  const availabilityLabel = showOnline ? 'Online' : '';
 
   const requestLabel =
     item.requestOutcome === 'accepted'
@@ -242,29 +241,32 @@ const AttendeeRow = React.memo(function AttendeeRow({
       activeOpacity={0.8}
       onPress={() => onOpenDetails(item)}
     >
-      <View
-        style={[
-          styles.avatar,
-          {
-            width: SIZES.avatarSize,
-            height: SIZES.avatarSize,
-            borderRadius: SIZES.avatarSize / 2,
-          },
-        ]}
-      >
-        {item.image ? (
-          <Image
-            source={{ uri: item.image }}
-            style={{
+      <View style={styles.avatarWrap}>
+        <View
+          style={[
+            styles.avatar,
+            {
               width: SIZES.avatarSize,
               height: SIZES.avatarSize,
               borderRadius: SIZES.avatarSize / 2,
-            }}
-            resizeMode="cover"
-          />
-        ) : (
-          <UserIcon size={SIZES.avatarSize * 0.5} />
-        )}
+            },
+          ]}
+        >
+          {item.image ? (
+            <Image
+              source={{ uri: item.image }}
+              style={{
+                width: SIZES.avatarSize,
+                height: SIZES.avatarSize,
+                borderRadius: SIZES.avatarSize / 2,
+              }}
+              resizeMode="cover"
+            />
+          ) : (
+            <UserIcon size={SIZES.avatarSize * 0.5} />
+          )}
+        </View>
+        {showOnline ? <View style={styles.avatarOnlineDot} /> : null}
       </View>
       <View style={styles.rowInfo}>
         <Text style={styles.rowName} numberOfLines={1}>
@@ -277,12 +279,6 @@ const AttendeeRow = React.memo(function AttendeeRow({
           <Text style={styles.rowMeta1} numberOfLines={1}>
             {item.company}
           </Text>
-          {availabilityLabel ? (
-            <View style={[styles.availabilityPill, styles.availabilityPillAvailable]}>
-              <View style={[styles.availabilityDot, styles.availabilityDotAvailable]} />
-              <Text style={styles.availabilityText}>{availabilityLabel}</Text>
-            </View>
-          ) : null}
         </View>
       </View>
       <View style={styles.requestColumn}>
@@ -1469,7 +1465,7 @@ export const AttendeesScreen = () => {
             </TouchableOpacity>
           </View>
 
-          {/* Advanced Filters: All | Online (logged-in user always shows as Online with green dot) */}
+          {/* Advanced Filters: All | Online (logged-in user counts as online; list shows green dot on avatar) */}
           <View style={styles.advancedFiltersRow}>
             <Text style={styles.advancedFiltersLabel}>Status</Text>
             <View style={styles.advancedFiltersChips}>
@@ -2135,11 +2131,26 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(239, 68, 68, 0.4)',
   },
+  avatarWrap: {
+    position: 'relative',
+    marginRight: 12,
+  },
   avatar: {
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    overflow: 'hidden',
+  },
+  avatarOnlineDot: {
+    position: 'absolute',
+    right: 1,
+    bottom: 1,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#16A34A',
+    borderWidth: 2,
+    borderColor: colors.white,
   },
   rowInfo: {
     flex: 1,
@@ -2163,8 +2174,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
   rowMetaBottom: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
   },
   requestButton: {
     alignSelf: 'flex-end',
@@ -2216,38 +2225,6 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.textMuted,
     textAlign: 'right',
     lineHeight: 13,
-  },
-  availabilityPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 9999,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    backgroundColor: colors.gray100,
-  },
-  availabilityPillAvailable: {
-    backgroundColor: '#DCFCE7',
-  },
-  availabilityPillUnavailable: {
-    backgroundColor: '#FEE2E2',
-  },
-  availabilityDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.gray400 || '#9CA3AF',
-    marginRight: 4,
-  },
-  availabilityDotAvailable: {
-    backgroundColor: '#16A34A',
-  },
-  availabilityDotUnavailable: {
-    backgroundColor: '#DC2626',
-  },
-  availabilityText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.text,
   },
   separator: {
     height: 1,

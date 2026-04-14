@@ -3,6 +3,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -17,9 +18,28 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { PUBLIC_EVENT_SINGLE_PAGE_BASE } from '../../config/api';
 import { colors, radius } from '../../constants/theme';
 import { useGetUpcomingEventsQuery } from '../../store/api';
 import { stripHtml } from '../../utils/stripHtml';
+
+/** Full public event page URL — prefers explicit API fields, else `/single-event/{slug}`. */
+function resolvePublicEventPageUrl(item) {
+  if (!item || typeof item !== 'object') return null;
+  const direct =
+    item.event_page_url ||
+    item.event_url ||
+    item.public_url ||
+    item.single_event_url;
+  if (direct != null && String(direct).trim() !== '') {
+    const u = String(direct).trim();
+    if (/^https?:\/\//i.test(u)) return u;
+  }
+  const slug = String(item.slug ?? '').trim();
+  if (!slug) return null;
+  const path = slug.replace(/^\/+/, '');
+  return `${PUBLIC_EVENT_SINGLE_PAGE_BASE}${path}`;
+}
 
 export const FutureSummitsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
@@ -52,6 +72,13 @@ export const FutureSummitsScreen = () => {
   const styles = useMemo(() => createStyles(padding), [padding]);
 
   const descriptionPlain = useMemo(() => stripHtml(selected?.description ?? ''), [selected]);
+
+  const publicEventPageUrl = useMemo(() => resolvePublicEventPageUrl(selected), [selected]);
+
+  const openPublicEventPage = () => {
+    if (!publicEventPageUrl) return;
+    Linking.openURL(publicEventPageUrl).catch(() => {});
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -142,6 +169,20 @@ export const FutureSummitsScreen = () => {
               <Text style={styles.modalDate} selectable>
                 {selected.date_display_long || selected.date_display}
               </Text>
+            ) : null}
+            {publicEventPageUrl ? (
+              <TouchableOpacity
+                style={styles.modalEventLinkWrap}
+                onPress={openPublicEventPage}
+                activeOpacity={0.75}
+                accessibilityRole="link"
+                accessibilityLabel="Open event page in browser"
+              >
+                <Text style={styles.modalEventLinkLabel}>Event page</Text>
+                <Text style={styles.modalEventLinkUrl} numberOfLines={3}>
+                  {publicEventPageUrl}
+                </Text>
+              </TouchableOpacity>
             ) : null}
             <Text style={styles.modalDescLabel}>Description</Text>
             <TextInput
@@ -318,6 +359,30 @@ function createStyles(padding) {
       color: colors.textSecondary,
       marginTop: 8,
       lineHeight: 20,
+    },
+    modalEventLinkWrap: {
+      marginTop: 14,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: radius.md,
+      borderWidth: 1,
+      borderColor: colors.borderLight,
+      backgroundColor: colors.background,
+    },
+    modalEventLinkLabel: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.textMuted,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+      marginBottom: 6,
+    },
+    modalEventLinkUrl: {
+      fontSize: 14,
+      color: colors.primary,
+      fontWeight: '600',
+      lineHeight: 20,
+      textDecorationLine: 'underline',
     },
     modalDescLabel: {
       fontSize: 12,

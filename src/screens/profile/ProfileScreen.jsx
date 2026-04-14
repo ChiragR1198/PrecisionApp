@@ -745,6 +745,27 @@ export const ProfileScreen = () => {
     }
   };
 
+  const openMyQrFromRouteHandledRef = React.useRef(false);
+
+  // Dashboard / Event Overview: show user's badge QR (share) in code mode
+  React.useEffect(() => {
+    const raw = params?.openMyQr;
+    const flag = Array.isArray(raw) ? raw[0] : raw;
+    if (flag !== '1' && flag !== 'true') {
+      openMyQrFromRouteHandledRef.current = false;
+      return;
+    }
+    if (!openMyQrFromRouteHandledRef.current) {
+      openMyQrFromRouteHandledRef.current = true;
+      handleOpenQRModal({ initialMode: 'code' });
+    }
+    try {
+      router.setParams({ openMyQr: undefined });
+    } catch (_) {
+      /* ignore */
+    }
+  }, [params?.openMyQr]);
+
   // Dashboard Quick Action: open Profile QR modal directly in scanner mode (same save-contact flow as Profile)
   React.useEffect(() => {
     const raw = params?.openQrScan;

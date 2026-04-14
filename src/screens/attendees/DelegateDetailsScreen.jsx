@@ -1302,6 +1302,13 @@ export const DelegateDetailsScreen = () => {
     </View>
   );
 
+  /** Agenda speaker link sets `returnTo: agenda-detail`; hide delegate-speaker email there for all login types. */
+  const openedFromAgendaSpeaker = params?.returnTo === 'agenda-detail';
+  const showDelegateEmailInContact =
+    isDelegate && !!mergedDelegate.email && !openedFromAgendaSpeaker;
+  const showDelegateContactSectionTitle =
+    isDelegate && (showDelegateEmailInContact || !!mergedDelegate.linkedin);
+
   const sponsorCompanyLogoMark = (
     <View style={styles.companyInlineLogoOuter} pointerEvents="none">
       {resolvedCompanyLogoUri && !companyInlineLogoFailed ? (
@@ -1442,9 +1449,11 @@ export const DelegateDetailsScreen = () => {
             <>
               {/* Contact Information Section */}
           <View style={styles.section}>
-            {isDelegate && <Text style={styles.sectionTitle}>Contact Information</Text>}
+            {showDelegateContactSectionTitle && (
+              <Text style={styles.sectionTitle}>Contact Information</Text>
+            )}
             <View style={styles.contactCard}>
-              {isDelegate && mergedDelegate.email && (
+              {showDelegateEmailInContact && (
                 <ContactItem
                   icon={MailIcon}
                   value={mergedDelegate.email}
