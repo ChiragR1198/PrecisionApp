@@ -331,6 +331,7 @@ export const AgendaDetailScreen = () => {
             image: sp.image,
           }),
           returnTo: 'agenda-detail',
+          agendaSpeakerType: 'sponsor',
           eventDateFrom,
         },
       });
@@ -348,6 +349,7 @@ export const AgendaDetailScreen = () => {
           image: sp.image,
         }),
         returnTo: 'agenda-detail',
+        agendaSpeakerType: 'delegate',
         eventDateFrom,
       },
     });

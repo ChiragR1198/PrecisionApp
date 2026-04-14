@@ -118,7 +118,7 @@ const getMapSearchQueryForEvent = (event) => {
   return '';
 };
 
-const LOCAL_BANNER_BG = require('../../assets/images/background.jpeg');
+const LOCAL_BANNER_BG = require('../../assets/images/dashboard-banner.jpg');
 
 /**
  * Slides: `webcover_slides[]` from backend (config/event_webcover.php), then API banner + listing if unique.
@@ -298,10 +298,11 @@ const MainEventBanner = ({ styles, SIZES, event }) => {
       {/* Hit-through overlay so horizontal swipe works on sides; arrows + text stay tappable */}
       <View style={styles.mainEventBannerOverlayWrap} pointerEvents="box-none">
         <LinearGradient
-          colors={['rgba(60, 25, 85, 0.45)', 'rgba(88, 28, 120, 0.5)', 'rgba(30, 20, 55, 0.62)']}
+          colors={['rgba(25, 10, 45, 0.06)', 'rgba(40, 16, 62, 0.16)', 'rgba(28, 10, 48, 0.38)']}
+          locations={[0, 0.42, 1]}
           style={[styles.mainEventBannerOverlayTint, { minHeight: h }]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
           pointerEvents="none"
         />
         {showArrows ? (
@@ -1277,6 +1278,9 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     textAlign: 'center',
     marginBottom: 8,
     paddingHorizontal: SIZES.paddingHorizontal,
+    textShadowColor: 'rgba(0, 0, 0, 0.55)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 8,
   },
   mainEventDate: {
     fontSize: SIZES.mainEventDateSize,
@@ -1284,6 +1288,9 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     color: colors.white,
     textAlign: 'center',
     marginBottom: 24,
+    textShadowColor: 'rgba(0, 0, 0, 0.55)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   mainEventLocation: {
     alignSelf: 'stretch',
@@ -1305,6 +1312,9 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     fontWeight: '500',
     color: colors.white,
     textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.55)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   mainEventVenueAddress: {
     fontSize: SIZES.mainEventDateSize - 3,
@@ -1312,6 +1322,9 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     color: 'rgba(255,255,255,0.92)',
     lineHeight: 22,
     textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.55)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   mainEventVenueAddressBelow: {
     marginTop: 4,

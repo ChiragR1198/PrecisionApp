@@ -11,6 +11,9 @@ export const API_BASE_URL = 'https://events.precision-globe.com/mobile/';
 // Local testing (MAMP): tokens localhost DB (mobile_device_tokens) mein save honge
 // export const API_BASE_URL = 'http://localhost:8888/precision-backend/mobile/';
 
+/** Public marketing site — `/single-event/{slug}` (Future Summits modal; `slug` from upcoming-events API). */
+export const PUBLIC_EVENT_SINGLE_PAGE_BASE = 'https://events.precision-globe.com/single-event/';
+
 // API Endpoints - Only endpoints from Postman Collection
 export const API_ENDPOINTS = {
   // ============ AUTH ============

@@ -273,6 +273,36 @@ const SelectableAboutBody = ({ text, textStyle, scrollable = false }) => {
   );
 };
 
+/** Control center: compact row (icon + text), smaller padding than earlier stacked tiles. */
+function ControlActionCard({ icon, title, subtitle, onPress }) {
+  return (
+    <TouchableOpacity
+      style={statStyles.controlGridCell}
+      onPress={onPress}
+      activeOpacity={0.88}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. ${subtitle || ''}`}
+    >
+      <View style={statStyles.controlAccentBar} />
+      <View style={statStyles.controlInner}>
+        <View style={statStyles.controlIconCircle}>
+          <Icon name={icon} size={14} color={colors.white} />
+        </View>
+        <View style={statStyles.controlTextCol}>
+          <Text style={statStyles.controlTitleText} numberOfLines={2}>
+            {title}
+          </Text>
+          {subtitle ? (
+            <Text style={statStyles.controlSubtitleText} numberOfLines={2}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 export const EventOverviewScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
@@ -406,6 +436,39 @@ export const EventOverviewScreen = () => {
     setSelectedEventIndex(index);
     setIsEventDropdownOpen(false);
   };
+
+  const eventRouteParams = useMemo(() => {
+    const p = {};
+    if (selectedEvent?.id != null && selectedEvent.id !== '') {
+      p.eventId = String(selectedEvent.id);
+    }
+    p.selectedEventIndex = String(selectedEventIndex);
+    return p;
+  }, [selectedEvent?.id, selectedEventIndex]);
+
+  const handleQuickNavigate = useCallback(
+    (target) => {
+      if (target === 'myQr') {
+        router.push({ pathname: '/profile', params: { openMyQr: '1' } });
+        return;
+      }
+      // Book meetings: same screen as drawer — delegates see Event Sponsors, sponsors see Attendees (`AttendeesScreen`).
+      const path =
+        target === 'agenda'
+          ? '/agenda'
+          : target === 'meetings'
+            ? '/attendees'
+            : target === 'messages'
+              ? '/messages'
+              : null;
+      if (!path) return;
+      router.push({
+        pathname: path,
+        params: Object.keys(eventRouteParams).length ? eventRouteParams : undefined,
+      });
+    },
+    [eventRouteParams]
+  );
 
   useEffect(() => {
     setIsAboutExpanded(false);
@@ -544,8 +607,18 @@ export const EventOverviewScreen = () => {
           ) : (
             <>
               <View style={styles.bannerContainer}>
-                <ImageBackground source={require('../../assets/images/background.jpeg')} style={styles.bannerImage} imageStyle={styles.bannerImageStyle}>
-                  <LinearGradient colors={['rgba(138, 52, 144, 0.92)', 'rgba(107, 39, 112, 0.92)', 'rgba(88, 28, 135, 0.90)']} style={styles.banner} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
+                <ImageBackground
+                  source={require('../../assets/images/dashboard-banner.jpg')}
+                  style={styles.bannerImage}
+                  imageStyle={styles.bannerImageStyle}
+                  resizeMode="cover"
+                >
+                  <LinearGradient
+                    colors={['rgba(45, 15, 65, 0.22)', 'rgba(55, 22, 78, 0.38)', 'rgba(38, 12, 56, 0.62)']}
+                    style={styles.banner}
+                    start={{ x: 0.5, y: 0 }}
+                    end={{ x: 0.5, y: 1 }}
+                  >
                     <View style={styles.bannerHeaderRow}>
                       <View style={styles.badge}><Text style={styles.badgeText}>Current Event</Text></View>
                     </View>
@@ -577,6 +650,38 @@ export const EventOverviewScreen = () => {
                   </LinearGradient>
                 </ImageBackground>
               </View>
+
+              <View style={styles.statsSection}>
+            <Text style={styles.sectionTitle}>Quick Actions</Text>
+            <View style={styles.statsGrid}>
+              <ControlActionCard
+                icon="calendar"
+                title="View Agenda"
+                subtitle="Schedule & sessions"
+                onPress={() => handleQuickNavigate('agenda')}
+              />
+              <ControlActionCard
+                icon="users"
+                title="Book Meetings"
+                subtitle={isDelegate ? 'Event sponsors' : 'Attendees'}
+                onPress={() => handleQuickNavigate('meetings')}
+              />
+            </View>
+            <View style={[styles.statsGrid, { marginTop: SIZES.cardSpacing }]}>
+              <ControlActionCard
+                icon="message-circle"
+                title="Messages"
+                subtitle="Event chats"
+                onPress={() => handleQuickNavigate('messages')}
+              />
+              <ControlActionCard
+                icon="smartphone"
+                title="My QR Code"
+                subtitle="Badge scanning"
+                onPress={() => handleQuickNavigate('myQr')}
+              />
+            </View>
+          </View>
 
           <View style={styles.statsSection}>
             <Text style={styles.sectionTitle}>Event Statistics</Text>
@@ -785,6 +890,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.white,
     fontSize: 12,
     fontWeight: '500',
+    textShadowColor: 'rgba(0, 0, 0, 0.4)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   bannerTitle: {
     color: colors.white,
@@ -792,6 +900,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '700',
     marginBottom: 10,
     paddingTop: isTablet ? 80 : 40,
+    textShadowColor: 'rgba(0, 0, 0, 0.45)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   bannerVenueRow: {
     flexDirection: 'row',
@@ -804,6 +915,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '600',
     marginLeft: 6,
     flexShrink: 1,
+    textShadowColor: 'rgba(0, 0, 0, 0.45)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   bannerVenueTextLink: {
     textDecorationLine: 'underline',
@@ -822,6 +936,9 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.white,
     fontSize: 13,
     marginLeft: 6,
+    textShadowColor: 'rgba(0, 0, 0, 0.45)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   bannerVenue: {
     color: colors.white,
@@ -1021,6 +1138,68 @@ const statStyles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 10,
+  },
+  /** Control center: compact white tiles (shorter than stacked layout). */
+  controlGridCell: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#1a0a24',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 5,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  controlAccentBar: {
+    width: 3,
+    backgroundColor: colors.primary,
+  },
+  controlInner: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    paddingRight: 6,
+    minHeight: 0,
+  },
+  controlIconCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    flexShrink: 0,
+  },
+  controlTextCol: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+  },
+  controlTitleText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    lineHeight: 17,
+    letterSpacing: -0.15,
+  },
+  controlSubtitleText: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+    lineHeight: 14,
   },
   valueText: {
     fontSize: 20,
