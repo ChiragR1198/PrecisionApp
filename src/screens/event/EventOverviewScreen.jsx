@@ -452,6 +452,13 @@ export const EventOverviewScreen = () => {
         router.push({ pathname: '/profile', params: { openMyQr: '1' } });
         return;
       }
+      if (target === 'raffle') {
+        router.push({
+          pathname: '/raffle-giveaway',
+          params: Object.keys(eventRouteParams).length ? eventRouteParams : undefined,
+        });
+        return;
+      }
       // Book meetings: same screen as drawer — delegates see Event Sponsors, sponsors see Attendees (`AttendeesScreen`).
       const path =
         target === 'agenda'
@@ -681,6 +688,14 @@ export const EventOverviewScreen = () => {
                 onPress={() => handleQuickNavigate('myQr')}
               />
             </View>
+            {/* <View style={[styles.statsGrid, { marginTop: SIZES.cardSpacing }]}>
+              <ControlActionCard
+                icon="gift"
+                title="Raffle Giveaway"
+                subtitle="Scan booth QR to enter"
+                onPress={() => handleQuickNavigate('raffle')}
+              />
+            </View> */}
           </View>
 
           <View style={styles.statsSection}>
