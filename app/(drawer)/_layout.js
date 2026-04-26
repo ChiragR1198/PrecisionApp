@@ -60,6 +60,10 @@ export default function DrawerLayout() {
         options={{ drawerItemStyle: { display: 'none' } }}
       />
       <Drawer.Screen name="contact-us" options={{ drawerLabel: 'Contact Us' }} />
+      <Drawer.Screen
+        name="raffle-giveaway"
+        options={{ drawerItemStyle: { display: 'none' } }}
+      />
       <Drawer.Screen name="profile" options={{ drawerLabel: 'Profile' }} />
       <Drawer.Screen
         name="change-password"

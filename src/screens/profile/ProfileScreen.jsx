@@ -25,6 +25,7 @@ import {
   View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ContactSavedSuccessModal } from '../../components/common/ContactSavedSuccessModal';
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
@@ -472,6 +473,10 @@ export const ProfileScreen = () => {
   const [qrImageUri, setQrImageUri] = useState(null);
   const qrImageTimeoutRef = React.useRef(null);
   const openQrScanFromRouteHandledRef = React.useRef(false);
+  /** After closing attendee QR scan modal: go back to dashboard when opened from Dashboard quick action. */
+  const qrModalCloseReturnToRef = React.useRef(/** @type {null | 'dashboard' | 'profile'} */ (null));
+  /** After "Contact saved" modal OK when contact was saved from Dashboard scan — then return to Dashboard. */
+  const returnToDashboardAfterContactSavedRef = React.useRef(false);
   const qrImageLoadStartRef = React.useRef(false);
   const qrImageLoadingRef = React.useRef(false);
   const qrImageRetryCountRef = React.useRef(0);
@@ -697,6 +702,13 @@ export const ProfileScreen = () => {
       );
     }
 
+    if (initialMode === 'scan') {
+      qrModalCloseReturnToRef.current =
+        options.scanReturnTo === 'dashboard' ? 'dashboard' : 'profile';
+    } else {
+      qrModalCloseReturnToRef.current = null;
+    }
+
     setIsQRModalVisible(true);
     setQrMode(initialMode);
     setScanResult(null);
@@ -776,14 +788,37 @@ export const ProfileScreen = () => {
     }
     if (!openQrScanFromRouteHandledRef.current) {
       openQrScanFromRouteHandledRef.current = true;
-      handleOpenQRModal({ initialMode: 'scan' });
+      const retRaw = params?.scanReturnTo;
+      const ret = Array.isArray(retRaw) ? retRaw[0] : retRaw;
+      handleOpenQRModal({
+        initialMode: 'scan',
+        scanReturnTo: ret === 'dashboard' ? 'dashboard' : 'profile',
+      });
     }
     try {
-      router.setParams({ openQrScan: undefined });
+      router.setParams({ openQrScan: undefined, scanReturnTo: undefined });
     } catch (_) {
       /* ignore */
     }
-  }, [params?.openQrScan]);
+  }, [params?.openQrScan, params?.scanReturnTo]);
+
+  const maybeNavigateAfterClosingAttendeeScan = () => {
+    const dest = qrModalCloseReturnToRef.current;
+    qrModalCloseReturnToRef.current = null;
+    if (dest === 'dashboard') {
+      requestAnimationFrame(() => {
+        try {
+          router.replace('/(drawer)/dashboard');
+        } catch {
+          try {
+            router.back();
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+    }
+  };
 
   const handleCloseQRModal = () => {
     setIsQRModalVisible(false);
@@ -797,6 +832,7 @@ export const ProfileScreen = () => {
       qrScanDebounceRef.current = null;
     }
     qrScanBestRef.current = null;
+    maybeNavigateAfterClosingAttendeeScan();
   };
 
   const handleAddScannedContact = async () => {
@@ -860,9 +896,19 @@ export const ProfileScreen = () => {
       
       setIsScanning(false);
       setIsQRModalVisible(false);
-      
-      // Show custom success modal
-      setSavedContactName(scanResult.name);
+
+      const returnAfterScan = qrModalCloseReturnToRef.current;
+      const savedName = scanResult.name || 'Contact';
+      qrModalCloseReturnToRef.current = null;
+      if (returnAfterScan === 'dashboard') {
+        returnToDashboardAfterContactSavedRef.current = true;
+        setSavedContactName(savedName);
+        setIsContactSavedModalVisible(true);
+        return;
+      }
+
+      returnToDashboardAfterContactSavedRef.current = false;
+      setSavedContactName(savedName);
       setIsContactSavedModalVisible(true);
     } catch (error) {
       // Handle 404 errors specifically
@@ -2083,52 +2129,34 @@ export const ProfileScreen = () => {
         </Pressable>
       </Modal>
 
-      {/* Contact Saved Success Modal */}
-      <Modal
-        transparent
-        animationType="fade"
+      <ContactSavedSuccessModal
         visible={isContactSavedModalVisible}
-        onRequestClose={() => setIsContactSavedModalVisible(false)}
-      >
-        <View style={styles.contactSavedModalBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsContactSavedModalVisible(false)} />
-          <View style={styles.contactSavedModalCard}>
-            <View style={styles.contactSavedIconContainer}>
-              <Icon name="check-circle" size={64} color={colors.primary} />
-            </View>
-            <Text style={styles.contactSavedTitle}>Contact Saved</Text>
-            <Text style={styles.contactSavedMessage}>
-              {savedContactName} was added to Contacts.
-            </Text>
-            <View style={styles.contactSavedButtonRow}>
-              <TouchableOpacity
-                style={styles.contactSavedButtonSecondary}
-                onPress={() => setIsContactSavedModalVisible(false)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.contactSavedButtonSecondaryText}>OK</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.contactSavedButtonPrimary}
-                onPress={() => {
-                  setIsContactSavedModalVisible(false);
-                  router.push('/contacts');
-                }}
-                activeOpacity={0.8}
-              >
-                <LinearGradient
-                  colors={colors.gradient}
-                  style={styles.contactSavedButtonGradient}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                >
-                  <Text style={styles.contactSavedButtonPrimaryText}>View Contacts</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        title="Contact Saved"
+        message={`${savedContactName} was added to Contacts.`}
+        onClose={() => {
+          setIsContactSavedModalVisible(false);
+          if (returnToDashboardAfterContactSavedRef.current) {
+            returnToDashboardAfterContactSavedRef.current = false;
+            requestAnimationFrame(() => {
+              try {
+                router.replace('/(drawer)/dashboard');
+              } catch {
+                try {
+                  router.back();
+                } catch {
+                  /* ignore */
+                }
+              }
+            });
+          }
+        }}
+        onViewContacts={() => {
+          returnToDashboardAfterContactSavedRef.current = false;
+          setIsContactSavedModalVisible(false);
+          router.push('/contacts');
+        }}
+        showViewContactsButton
+      />
 
       {/* Profile Update Success Modal */}
       <Modal

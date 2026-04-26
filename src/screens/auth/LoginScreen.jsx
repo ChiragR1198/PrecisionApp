@@ -272,7 +272,13 @@ export const LoginScreen = () => {
       // Navigation will be handled by Redux auth state and _layout.js
       router.replace('/(drawer)/dashboard');
     } catch (err) {
-      setError(err?.data?.message || err?.message || 'Login failed. Please try again.');
+      const data = err?.data ?? err?.error?.data;
+      const fromApi = data && typeof data === 'object' ? data.message : null;
+      setError(
+        (typeof fromApi === 'string' && fromApi.trim() ? fromApi : null) ||
+          (typeof err?.message === 'string' ? err.message : null) ||
+          'Login failed. Please try again.'
+      );
     }
   };
 

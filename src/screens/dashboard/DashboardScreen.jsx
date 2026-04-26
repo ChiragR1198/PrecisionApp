@@ -706,7 +706,10 @@ export const DashboardScreen = () => {
     
     switch(action) {
       case 'Scan Attendees':
-        router.push({ pathname: '/profile', params: { openQrScan: '1' } });
+        router.push({
+          pathname: '/profile',
+          params: { openQrScan: '1', scanReturnTo: 'dashboard' },
+        });
         break;
       case 'Event':
         router.push({ pathname: '/my-event', params });

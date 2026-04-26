@@ -735,6 +735,23 @@ export const api = createApi({
       refetchOnMountOrArgChange: true,
     }),
 
+    /** Raffle Giveaway: resolve booth from scanned QR (POST body: event_id, raw | booth_id | booth_no) */
+    boothRaffleBoothDetails: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.BOOTH_RAFFLE_BOOTH_DETAILS,
+        method: 'POST',
+        body,
+      }),
+    }),
+
+    boothRaffleSubmit: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.BOOTH_RAFFLE_SUBMIT,
+        method: 'POST',
+        body,
+      }),
+    }),
+
     // 3. All Delegates (optional: event_id, services[] — server filters by products_services)
     getAllDelegates: builder.query({
       query: (arg) => {
@@ -1767,6 +1784,8 @@ export const {
   useGetDelegateEventsQuery,
   useGetUpcomingEventsQuery,
   useGetDelegateEventSponsorLogosQuery,
+  useBoothRaffleBoothDetailsMutation,
+  useBoothRaffleSubmitMutation,
   useGetAllDelegatesQuery,
   useGetDelegateEventServicesQuery,
   useSendDelegateMeetingRequestMutation,

@@ -102,6 +102,10 @@ export const API_ENDPOINTS = {
   SPONSOR_SAVE_CONTACT: '/sponsor/save-contact',
   SPONSOR_DELETE_CONTACT: '/sponsor/delete-contact',
 
+  /** Raffle Giveaway — booth QR scan + submit (`precision-backend` mobile/BoothRaffleController) */
+  BOOTH_RAFFLE_BOOTH_DETAILS: '/booth-raffle/booth-details',
+  BOOTH_RAFFLE_SUBMIT: '/booth-raffle/submit',
+
   // ============ AGENDA ============
   AGENDA_BY_ID: (id) => `/agenda/${id}`,
   AGENDA_ITEM_BY_ID: (id) => `/agenda/item/${id}`,

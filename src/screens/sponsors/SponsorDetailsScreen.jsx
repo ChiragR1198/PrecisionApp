@@ -865,10 +865,12 @@ export const SponsorDetailsScreen = () => {
     }
     const tier = String(sponsor?.tier || '').toLowerCase();
     if (tier === 'delegate') return true;
-    // Fallback heuristics when tier isn't present
+    // Sponsor login → Event Sponsors details must stay "Sponsor Details". Many sponsor rows have
+    // fname/lname/linkedin_url; those heuristics must not flip the screen into delegate mode.
+    if (!isDelegate) return false;
     const raw = sponsor?.raw || {};
     return Boolean(raw?.linkedin_url || raw?.fname || raw?.lname);
-  }, [sponsor, openedFromAgendaSpeaker, params?.agendaSpeakerType]);
+  }, [sponsor, openedFromAgendaSpeaker, params?.agendaSpeakerType, isDelegate]);
 
   useEffect(() => {
     setAvatarStage(0);
