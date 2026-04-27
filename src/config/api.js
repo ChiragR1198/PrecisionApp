@@ -60,6 +60,8 @@ export const API_ENDPOINTS = {
   DELEGATE_MEETING_REQUEST_ACTION: '/delegate/meeting-request-action',
   /** Delegate's sent requests: sponsor accepted/declined (shows Accepted/Declined on Event Sponsors) */
   DELEGATE_MEETING_REQUEST_ACCEPTED_BY_SPONSOR: '/delegate/meeting-request-accepted-by-sponsor',
+  /** Pending requests this delegate sent to sponsors (not in review inbox) */
+  DELEGATE_PENDING_SENT_MEETING_REQUESTS: '/delegate/pending-sent-meeting-requests',
 
   // Delegate Messages
   DELEGATE_CHAT_SEND_MESSAGE: '/delegate/chat/send-message',
@@ -81,6 +83,8 @@ export const API_ENDPOINTS = {
   SPONSOR_MEETING_REQUEST_ACTION: '/sponsor/meeting-request-action',
   /** Sponsor's sent requests: delegate accepted/declined (shows Accepted/Declined on Event Delegates) */
   SPONSOR_MEETING_REQUEST_ACCEPTED_BY_DELEGATE: '/sponsor/meeting-request-accepted-by-delegate',
+  /** Pending requests this sponsor sent to delegates (not in meeting-request-from-delegate inbox) */
+  SPONSOR_PENDING_SENT_MEETING_REQUESTS: '/sponsor/pending-sent-meeting-requests',
   SPONSOR_SERVICES: '/sponsor/services', // Query param: event_id
   SPONSOR_ALL_ATTENDEES: '/sponsor/all-attendees',
   SPONSOR_VIEW_ITINERARY: '/sponsor/view-itinerary',

@@ -1,13 +1,15 @@
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
-  FlatList,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,22 +19,30 @@ import {
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import UserAvatar from '../../assets/images/user.png';
 import { Header } from '../../components/common/Header';
 import { SearchBar } from '../../components/common/SearchBar';
 import { colors, radius } from '../../constants/theme';
 import {
   useDelegateDeleteItineraryMeetingMutation,
+  useDelegateMeetingRequestActionMutation,
   useDelegateModifyItineraryMeetingMutation,
   useGetDelegateItineraryQuery,
   useGetDelegateMeetingLocationsQuery,
+  useGetDelegateMeetingRequestsQuery,
+  useGetDelegatePendingSentMeetingRequestsQuery,
   useGetDelegateMeetingTimesQuery,
   useGetSponsorItineraryQuery,
   useGetSponsorMeetingLocationsQuery,
+  useGetSponsorMeetingRequestsQuery,
+  useGetSponsorPendingSentMeetingRequestsQuery,
   useGetSponsorMeetingTimesQuery,
   useSponsorDeleteItineraryMeetingMutation,
+  useSponsorMeetingRequestActionMutation,
   useSponsorModifyItineraryMeetingMutation
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 
 const FILTERS = ['All Days', 'Today', 'Tomorrow'];
 
@@ -245,6 +255,138 @@ const getEventIcon = (priority) => {
   return icons[(priorityNum - 1) % icons.length];
 };
 
+/** Same list extraction as MeetingRequestsScreen. */
+function extractMeetingRequestsList(response) {
+  if (response == null) return [];
+  if (Array.isArray(response)) return response;
+  const candidates = [
+    response.data,
+    response?.data?.data,
+    response?.data?.records,
+    response?.data?.items,
+    response?.data?.meetings,
+    response?.data?.list,
+    response?.records,
+    response?.items
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+  return [];
+}
+
+function formatMeetingTimeShort(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${min} ${ampm}`;
+}
+
+function formatMeetingDateDisplay(raw) {
+  if (!raw) return '';
+  const s = String(raw).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, mo, d] = s.split('-');
+    return `${d}/${mo}/${y}`;
+  }
+  return String(raw);
+}
+
+function buildMeetingWhenLabelFromRaw(raw) {
+  if (!raw || typeof raw !== 'object') return '';
+  const d = raw.date ?? raw.meeting_date;
+  const t = raw.time ?? raw.meeting_time_from ?? raw.meeting_time_to ?? raw.meeting_time;
+  if (!d && !t) return '';
+  return [d ? formatMeetingDateDisplay(d) : null, t ? formatMeetingTimeShort(t) : null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/** Inbox for current user: delegate receives from sponsor; sponsor receives from delegate. */
+function classifyRequestDirection(isDelegate, raw) {
+  const from = String(raw?.from || '').toLowerCase();
+  if (isDelegate) {
+    if (from === 'delegate') return 'sent';
+    return 'received';
+  }
+  if (from === 'sponsor') return 'sent';
+  return 'received';
+}
+
+function isPendingRequestAction(actionVal) {
+  if (actionVal == null) return true;
+  const n = Number(actionVal);
+  return !Number.isFinite(n) || n === 0;
+}
+
+/** API may return snake_case or camelCase (PHP/JSON) */
+function pickSponsorNameFromRequest(item) {
+  const s = item?.sponsor_name || item?.sponsorName || item?.name;
+  if (s != null && String(s).trim() !== '') return String(s).trim();
+  return 'Sponsor';
+}
+
+function pickSponsorCompanyFromRequest(item) {
+  const s = item?.sponsor_company || item?.sponsorCompany || item?.company;
+  return s != null ? String(s).trim() : '';
+}
+
+function pickSponsorImageFromRequest(item) {
+  return item?.sponsor_image || item?.sponsorImage;
+}
+
+/**
+ * Other party for *Sent* rows: from DB `to_type` (sponsor vs delegate you asked for).
+ * D→Sponsor: to_type=sponsor; D→Delegate: to_type=delegate; S→Delegate: to_type=delegate; S→Sponsor: to_type=sponsor.
+ * Legacy rows without to_type: assume delegate→sponsor and sponsor→delegate.
+ */
+function counterpartTypeForSentItem(isDelegateUser, item) {
+  const t = String(item?.to_type || item?.toType || '')
+    .toLowerCase()
+    .trim();
+  if (t === 'delegate') return 'Delegate';
+  if (t === 'sponsor') return 'Sponsor';
+  if (isDelegateUser) return 'Sponsor';
+  return 'Delegate';
+}
+
+/** Received: badge = *sender* role. Sent: badge = *counterpart* (uses item.to_type). */
+function typeBadgeForPending({ isDelegateUser, fromField, isSentRow, item }) {
+  if (isSentRow) {
+    return counterpartTypeForSentItem(isDelegateUser, item);
+  }
+  const f = String(fromField || '').toLowerCase();
+  if (isDelegateUser) {
+    return f === 'delegate' ? 'Delegate' : 'Sponsor';
+  }
+  return f === 'sponsor' ? 'Sponsor' : 'Delegate';
+}
+
+function pendingMatchesDayFilter(itemRaw, filterName) {
+  if (filterName === 'All Days') return true;
+  const d = String(itemRaw?.date ?? itemRaw?.meeting_date ?? '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    if (filterName === 'Today' || filterName === 'Tomorrow') return false;
+    return true;
+  }
+  const dayDate = parseApiDate(d);
+  if (!dayDate) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dayOnly = new Date(dayDate);
+  dayOnly.setHours(0, 0, 0, 0);
+  if (filterName === 'Today') return dayOnly.getTime() === today.getTime();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (filterName === 'Tomorrow') return dayOnly.getTime() === tomorrow.getTime();
+  return true;
+}
+
 export const ItineraryScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
@@ -263,6 +405,9 @@ export const ItineraryScreen = () => {
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
   const isSponsor = loginType === 'sponsor';
+
+  const rawEventId = selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id ?? 27;
+  const eventId = normalizeEventIdForApi(rawEventId) ?? 27;
 
   const {
     data: delegateItineraryData,
@@ -284,28 +429,63 @@ export const ItineraryScreen = () => {
     refetchOnMountOrArgChange: true
   });
 
+  const {
+    data: delegateMrData,
+    isLoading: delegateMrLoading,
+    isFetching: delegateMrFetching,
+    refetch: refetchDelegateMr
+  } = useGetDelegateMeetingRequestsQuery({ event_id: eventId }, { skip: !isDelegate, refetchOnMountOrArgChange: true });
+  const {
+    data: sponsorMrData,
+    isLoading: sponsorMrLoading,
+    isFetching: sponsorMrFetching,
+    refetch: refetchSponsorMr
+  } = useGetSponsorMeetingRequestsQuery({ event_id: eventId }, { skip: !isSponsor, refetchOnMountOrArgChange: true });
+
+  const { data: delegatePendingSentData, isLoading: delegatePendSentLoading, refetch: refetchDelegatePendingSent } =
+    useGetDelegatePendingSentMeetingRequestsQuery({ event_id: eventId }, { skip: !isDelegate, refetchOnMountOrArgChange: true });
+  const { data: sponsorPendingSentData, isLoading: sponsorPendSentLoading, refetch: refetchSponsorPendingSent } =
+    useGetSponsorPendingSentMeetingRequestsQuery({ event_id: eventId }, { skip: !isSponsor, refetchOnMountOrArgChange: true });
+
+  const [mrActionUpdates, setMrActionUpdates] = useState({});
+
   /** Sponsor/other party changes are not pushed to this device — refetch when screen is focused or app resumes. */
   const refetchItinerary = useCallback(() => {
     if (isDelegate) refetchDelegateItinerary();
     else if (isSponsor) refetchSponsorItinerary();
   }, [isDelegate, isSponsor, refetchDelegateItinerary, refetchSponsorItinerary]);
 
+  const refetchMeetingRequests = useCallback(() => {
+    if (isDelegate) {
+      refetchDelegateMr();
+      refetchDelegatePendingSent();
+    } else if (isSponsor) {
+      refetchSponsorMr();
+      refetchSponsorPendingSent();
+    }
+  }, [isDelegate, isSponsor, refetchDelegateMr, refetchSponsorMr, refetchDelegatePendingSent, refetchSponsorPendingSent]);
+
+  const refetchAll = useCallback(() => {
+    refetchItinerary();
+    refetchMeetingRequests();
+  }, [refetchItinerary, refetchMeetingRequests]);
+
   useFocusEffect(
     useCallback(() => {
-      refetchItinerary();
-    }, [refetchItinerary])
+      refetchAll();
+    }, [refetchAll])
   );
 
   const appStateRef = useRef(AppState.currentState);
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (appStateRef.current.match(/inactive|background/) && next === 'active') {
-        refetchItinerary();
+        refetchAll();
       }
       appStateRef.current = next;
     });
     return () => sub.remove();
-  }, [refetchItinerary]);
+  }, [refetchAll]);
 
   const { data: delegateMeetingLocationsData } = useGetDelegateMeetingLocationsQuery(undefined, {
     skip: !isDelegate,
@@ -377,9 +557,12 @@ export const ItineraryScreen = () => {
   const [delegateModifyItinerary, { isLoading: delegateModifying }] = useDelegateModifyItineraryMeetingMutation();
   const [sponsorDeleteItinerary, { isLoading: sponsorDeleting }] = useSponsorDeleteItineraryMeetingMutation();
   const [sponsorModifyItinerary, { isLoading: sponsorModifying }] = useSponsorModifyItineraryMeetingMutation();
+  const [updateDelegateMr] = useDelegateMeetingRequestActionMutation();
+  const [updateSponsorMr] = useSponsorMeetingRequestActionMutation();
 
   const deleteItinerary = isDelegate ? delegateDeleteItinerary : sponsorDeleteItinerary;
   const modifyItinerary = isDelegate ? delegateModifyItinerary : sponsorModifyItinerary;
+  const updateMeetingRequest = isDelegate ? updateDelegateMr : updateSponsorMr;
   const actionBusy = isDelegate ? delegateDeleting || delegateModifying : sponsorDeleting || sponsorModifying;
 
   useEffect(() => {
@@ -571,7 +754,7 @@ export const ItineraryScreen = () => {
       .map((date) => {
         const isNoDate = date === '__no_date__';
         const dateObj = isNoDate ? null : parseApiDate(date);
-        const formattedDate = isNoDate ? 'Itinerary' : formatDate(date);
+        const formattedDate = isNoDate ? 'Unscheduled' : formatDate(date);
         return {
           id: `day-${date}`,
           day: formattedDate,
@@ -613,6 +796,306 @@ export const ItineraryScreen = () => {
     });
   }, [activeFilter, searchQuery, itinerary]);
 
+  const meetingRequestsData = isDelegate ? delegateMrData : sponsorMrData;
+  const mrIsFetching = isDelegate ? delegateMrFetching : sponsorMrFetching;
+
+  const { pendingReceived, pendingSent } = useMemo(() => {
+    const list = extractMeetingRequestsList(meetingRequestsData);
+    const extraFromSentEndpoint = extractMeetingRequestsList(
+      isDelegate ? delegatePendingSentData : sponsorPendingSentData
+    );
+    const q = searchQuery.trim().toLowerCase();
+    const rec = [];
+    const sent = [];
+    const sentIds = new Set();
+
+    const trackSent = (idKey) => {
+      if (idKey) sentIds.add(String(idKey));
+    };
+
+    list.forEach((item) => {
+      const itemId = String(item.id ?? item.meeting_request_id ?? '');
+      const local = mrActionUpdates[itemId];
+      const api = item.is_accepted != null && item.is_accepted !== undefined ? Number(item.is_accepted) : null;
+      const current = local !== undefined ? local : api;
+      if (!isPendingRequestAction(current)) return;
+
+      const fromDir = classifyRequestDirection(isDelegate, item);
+      if (isDelegate) {
+        const name = pickSponsorNameFromRequest(item);
+        const company = pickSponsorCompanyFromRequest(item);
+        const type = typeBadgeForPending({
+          isDelegateUser: true,
+          fromField: item.from,
+          isSentRow: fromDir === 'sent',
+          item
+        });
+        const img = pickSponsorImageFromRequest(item);
+        const row = {
+          id: itemId,
+          name,
+          company,
+          type,
+          avatar: img ? { uri: img } : UserAvatar,
+          meetingWhenLabel: buildMeetingWhenLabelFromRaw(item),
+          direction: fromDir,
+          currentAction: current,
+          raw: item
+        };
+        if (fromDir === 'received') rec.push(row);
+        else {
+          sent.push(row);
+          trackSent(itemId);
+        }
+      } else {
+        const delegateName =
+          item.delegate_full_name ||
+          (item.delegate_fname && item.delegate_lname ? `${item.delegate_fname} ${item.delegate_lname}`.trim() : null) ||
+          item.delegate_name ||
+          item.name ||
+          'Unknown';
+        const company = item.delegate_company || item.company || '';
+        const type = typeBadgeForPending({
+          isDelegateUser: false,
+          fromField: item.from,
+          isSentRow: fromDir === 'sent',
+          item
+        });
+        const row = {
+          id: itemId,
+          name: delegateName,
+          company,
+          type,
+          avatar:
+            item.delegate_image || item.delegate_avatar || item.image
+              ? { uri: item.delegate_image || item.delegate_avatar || item.image }
+              : UserAvatar,
+          meetingWhenLabel: buildMeetingWhenLabelFromRaw(item),
+          direction: fromDir,
+          currentAction: current,
+          raw: item
+        };
+        if (fromDir === 'received') rec.push(row);
+        else {
+          sent.push(row);
+          trackSent(itemId);
+        }
+      }
+    });
+
+    // Inbox API omits pending delegate→sponsor and sponsor→delegate; dedicated endpoint returns those
+    extraFromSentEndpoint.forEach((item) => {
+      const itemId = String(item.id ?? item.meeting_request_id ?? '');
+      if (itemId && sentIds.has(itemId)) return;
+      const local = mrActionUpdates[itemId];
+      const api = item.is_accepted != null && item.is_accepted !== undefined ? Number(item.is_accepted) : null;
+      const current = local !== undefined ? local : api;
+      if (!isPendingRequestAction(current)) return;
+      if (isDelegate) {
+        const name = pickSponsorNameFromRequest(item);
+        const company = pickSponsorCompanyFromRequest(item);
+        const type = counterpartTypeForSentItem(true, item);
+        const img = pickSponsorImageFromRequest(item);
+        const row = {
+          id: itemId,
+          name,
+          company,
+          type,
+          avatar: img ? { uri: img } : UserAvatar,
+          meetingWhenLabel: buildMeetingWhenLabelFromRaw(item),
+          direction: 'sent',
+          currentAction: current,
+          raw: item
+        };
+        sent.push(row);
+        trackSent(itemId);
+      } else {
+        const delegateName =
+          item.delegate_full_name ||
+          (item.delegate_fname && item.delegate_lname ? `${item.delegate_fname} ${item.delegate_lname}`.trim() : null) ||
+          item.delegate_name ||
+          item.name ||
+          'Unknown';
+        const company = item.delegate_company || item.company || '';
+        const type = counterpartTypeForSentItem(false, item);
+        const row = {
+          id: itemId,
+          name: delegateName,
+          company,
+          type,
+          avatar:
+            item.delegate_image || item.delegate_avatar || item.image
+              ? { uri: item.delegate_image || item.delegate_avatar || item.image }
+              : UserAvatar,
+          meetingWhenLabel: buildMeetingWhenLabelFromRaw(item),
+          direction: 'sent',
+          currentAction: current,
+          raw: item
+        };
+        sent.push(row);
+        trackSent(itemId);
+      }
+    });
+
+    const passSearch = (row) => {
+      if (!q) return true;
+      return (
+        row.name.toLowerCase().includes(q) ||
+        (row.company && String(row.company).toLowerCase().includes(q))
+      );
+    };
+    const passDay = (row) => pendingMatchesDayFilter(row.raw, activeFilter);
+
+    return {
+      pendingReceived: rec.filter((row) => passSearch(row) && passDay(row)),
+      pendingSent: sent.filter((row) => passSearch(row) && passDay(row))
+    };
+  }, [
+    meetingRequestsData,
+    delegatePendingSentData,
+    sponsorPendingSentData,
+    isDelegate,
+    searchQuery,
+    activeFilter,
+    mrActionUpdates
+  ]);
+
+  const hasAnyContent =
+    filteredItinerary.length > 0 || pendingReceived.length > 0 || pendingSent.length > 0;
+  const mrIsLoading = isDelegate
+    ? delegateMrLoading || delegatePendSentLoading
+    : sponsorMrLoading || sponsorPendSentLoading;
+
+  const openDelegateDetailsFromRequest = useCallback(
+    (contact) => {
+      const raw = contact?.raw || {};
+      const delegateId = raw.delegate_id ?? raw.delegateId;
+      if (delegateId == null || delegateId === '') {
+        Alert.alert('Error', 'Could not open delegate details (missing delegate id).');
+        return;
+      }
+      const imageUri =
+        raw.delegate_image ||
+        raw.delegate_avatar ||
+        raw.image ||
+        (typeof contact.avatar === 'object' && contact.avatar?.uri
+          ? contact.avatar.uri
+          : null);
+      const actionNum =
+        contact.currentAction !== undefined && contact.currentAction != null
+          ? Number(contact.currentAction)
+          : null;
+
+      const payload = {
+        id: delegateId != null ? String(delegateId) : '',
+        name: contact.name || raw.delegate_full_name || 'Unknown',
+        role: raw.delegate_job_title || raw.job_title || '',
+        company: contact.company || raw.delegate_company || '',
+        email: raw.delegate_email || raw.email || '',
+        phone: raw.delegate_mobile || raw.mobile || '',
+        linkedin: raw.delegate_linkedin_url || raw.linkedin_url || raw.linkedin || '',
+        address: raw.delegate_address || raw.address || '',
+        bio: raw.bio || '',
+        image: imageUri || raw.delegate_image || null,
+        meetingDate: raw.date || null,
+        meetingTime: raw.time || null,
+        hasRequest: actionNum !== 1 && actionNum !== 2,
+        meetingRequestActionFlag: Number.isFinite(actionNum) ? actionNum : null
+      };
+      router.push({
+        pathname: '/delegate-details',
+        params: {
+          delegate: JSON.stringify(payload),
+          returnTo: 'itinerary',
+          eventDateFrom: selectedEventDateFrom ? String(selectedEventDateFrom) : ''
+        }
+      });
+    },
+    [selectedEventDateFrom]
+  );
+
+  const openSponsorDetailsFromRequest = useCallback(
+    (contact) => {
+      const raw = contact?.raw || {};
+      const sponsorId = raw.sponsor_id ?? raw.sponsor ?? raw.sponsorId;
+      if (sponsorId == null || sponsorId === '') {
+        Alert.alert('Error', 'Could not open sponsor details (missing sponsor id).');
+        return;
+      }
+      const imageUri =
+        raw.sponsor_image ||
+        (typeof contact.avatar === 'object' && contact.avatar?.uri
+          ? contact.avatar.uri
+          : null);
+      const actionNum =
+        contact.currentAction !== undefined && contact.currentAction != null
+          ? Number(contact.currentAction)
+          : null;
+
+      const payload = {
+        id: String(sponsorId),
+        name: contact.name || raw.sponsor_name || 'Unknown',
+        role: raw.sponsor_job_title || '',
+        company: contact.company || raw.sponsor_company || '',
+        email: raw.sponsor_email || '',
+        phone: raw.sponsor_mobile || '',
+        linkedin: raw.sponsor_linkedin_url || raw.linkedin_url || '',
+        address: raw.sponsor_address || '',
+        bio: raw.biography || raw.company_information || raw.bio || '',
+        image: imageUri,
+        meetingDate: raw.date || null,
+        meetingTime: raw.time || null,
+        hasRequest: actionNum !== 1 && actionNum !== 2,
+        meetingRequestActionFlag: Number.isFinite(actionNum) ? actionNum : null
+      };
+
+      router.push({
+        pathname: '/delegate-details',
+        params: {
+          delegate: JSON.stringify(payload),
+          profileType: 'sponsor',
+          returnTo: 'itinerary',
+          eventDateFrom: selectedEventDateFrom ? String(selectedEventDateFrom) : ''
+        }
+      });
+    },
+    [selectedEventDateFrom]
+  );
+
+  const handleMrAction = useCallback(
+    async (item, action) => {
+      try {
+        const meetingRequestId = Number(item?.raw?.id || item.id);
+        if (!meetingRequestId) {
+          Alert.alert('Error', 'Invalid meeting request');
+          return;
+        }
+        const itemId = String(item.id || meetingRequestId);
+        const actionValue = action === 1 ? 1 : 2;
+        setMrActionUpdates((prev) => ({ ...prev, [itemId]: actionValue }));
+        await updateMeetingRequest({
+          meeting_request_id: meetingRequestId,
+          action: actionValue
+        }).unwrap();
+        refetchAll();
+        setMrActionUpdates((prev) => {
+          const n = { ...prev };
+          delete n[itemId];
+          return n;
+        });
+      } catch (e) {
+        const itemId = String(item.id || item?.raw?.id);
+        setMrActionUpdates((prev) => {
+          const n = { ...prev };
+          delete n[itemId];
+          return n;
+        });
+        Alert.alert('Error', e?.data?.message || e?.message || 'Could not update request');
+      }
+    },
+    [updateMeetingRequest, refetchAll]
+  );
+
   const openModify = useCallback((ev) => {
     slotUserPickedRef.current = false;
     setEditMeeting(ev);
@@ -645,6 +1128,8 @@ export const ItineraryScreen = () => {
                 const res = await deleteItinerary({ meeting_request_id: Number(ev.id) }).unwrap();
                 if (res?.success === false) {
                   Alert.alert('Could not delete', res?.message || 'Please try again.');
+                } else {
+                  refetchMeetingRequests();
                 }
               } catch (e) {
                 const msg = e?.data?.message || e?.message || 'Please try again.';
@@ -655,7 +1140,7 @@ export const ItineraryScreen = () => {
         ]
       );
     },
-    [deleteItinerary]
+    [deleteItinerary, refetchMeetingRequests]
   );
 
   const onSaveModify = useCallback(async () => {
@@ -695,6 +1180,7 @@ export const ItineraryScreen = () => {
         return;
       }
       closeModify();
+      refetchMeetingRequests();
     } catch (e) {
       const msg = e?.data?.message || e?.message || 'Please try again.';
       Alert.alert('Could not update', msg);
@@ -707,7 +1193,8 @@ export const ItineraryScreen = () => {
     locationOther,
     requiresLocationOther,
     modifyItinerary,
-    closeModify
+    closeModify,
+    refetchMeetingRequests
   ]);
 
   const renderEvent = (event) => (
@@ -741,18 +1228,102 @@ export const ItineraryScreen = () => {
     </View>
   );
 
+  const renderPendingRow = (row, { showActions, onOpenDetails }) => {
+    const isAccepted = row.currentAction === 1;
+    const isDeclined = row.currentAction === 2;
+    const mainBlock = (
+      <TouchableOpacity
+        style={[styles.pendingMainTap, !showActions && styles.pendingMainTapFullWidth]}
+        activeOpacity={0.86}
+        onPress={onOpenDetails}
+        disabled={!onOpenDetails}
+      >
+        <View style={styles.pendingAvatarWrap}>
+          <Image source={row.avatar || UserAvatar} style={styles.pendingAvatar} />
+        </View>
+        <View style={styles.eventInfo}>
+          <View style={styles.pendingTitleRow}>
+            <Text style={styles.eventTitle} numberOfLines={2}>
+              {row.name}
+            </Text>
+            <View style={styles.pendingBadge}>
+              <Text style={styles.pendingBadgeText}>Pending</Text>
+            </View>
+          </View>
+          {row.company ? <Text style={styles.eventSubtitle}>{row.company}</Text> : null}
+          <View style={styles.typeMiniBadgeRow}>
+            <View
+              style={[
+                styles.typeMiniBadge,
+                row.type === 'Sponsor' ? styles.sponsorMiniBadge : styles.delegateMiniBadge
+              ]}
+            >
+              <Text
+                style={[
+                  styles.typeMiniBadgeText,
+                  row.type === 'Sponsor' ? styles.sponsorMiniBadgeText : styles.delegateMiniBadgeText
+                ]}
+              >
+                {row.type}
+              </Text>
+            </View>
+          </View>
+          {row.meetingWhenLabel ? <Text style={styles.eventTime}>{row.meetingWhenLabel}</Text> : null}
+          {showActions ? null : <Text style={styles.waitingOnOtherParty}>Waiting for a response</Text>}
+        </View>
+      </TouchableOpacity>
+    );
+
+    if (showActions) {
+      return (
+        <View style={styles.pendingRowLayout}>
+          <View style={styles.pendingRowMain}>{mainBlock}</View>
+          <View style={styles.pendingInboxActions}>
+            <TouchableOpacity
+              style={[styles.actionBtn, isDeclined && styles.actionBtnDanger]}
+              onPress={() => handleMrAction(row, 2)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.actionBtnText, isDeclined && styles.actionBtnDangerText]}>
+                {isDeclined ? 'Declined' : 'Decline'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionBtn, isAccepted && styles.actionBtnAcceptSolid]}
+              onPress={() => handleMrAction(row, 1)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.actionBtnText, isAccepted && styles.actionBtnAcceptText]}>
+                {isAccepted ? 'Accepted' : 'Accept'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+
+    // Same as Received: a flex parent must give width, or `eventInfo` (flex:1) collapses to 0
+    return (
+      <View style={styles.eventCard}>
+        <View style={styles.pendingSentContentWrap}>
+          {mainBlock}
+        </View>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header
-        title='Itinerary'
-        leftIcon='menu'
+        title="My Meetings"
+        leftIcon="menu"
         onLeftPress={() => navigation.openDrawer?.()}
         iconSize={SIZES.headerIconSize}
       />
 
       <View style={styles.content}>
         <SearchBar
-          placeholder='Search events'
+          placeholder="Search meetings"
           value={searchQuery}
           onChangeText={setSearchQuery}
           style={styles.searchBar}
@@ -776,40 +1347,109 @@ export const ItineraryScreen = () => {
 
         {isLoading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size='large' color={colors.primary} />
-            <Text style={styles.loadingText}>Loading itinerary...</Text>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading meetings…</Text>
           </View>
         ) : error ? (
           <View style={styles.errorContainer}>
             <Text style={styles.errorText}>
-              {error?.data?.message || error?.message || 'Failed to load itinerary'}
+              {error?.data?.message || error?.message || 'Failed to load meetings'}
             </Text>
           </View>
-        ) : filteredItinerary.length > 0 ? (
-          <FlatList
-            data={filteredItinerary}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <View style={styles.daySection}>
-                <View style={styles.dayHeader}>
-                  <Text style={styles.dayTitle}>{item.day}</Text>
-                  <View style={styles.dayDivider} />
+        ) : hasAnyContent || mrIsLoading ? (
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={mrIsFetching && !isLoading}
+                onRefresh={refetchAll}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+              />
+            }
+            keyboardShouldPersistTaps="handled"
+          >
+            {mrIsLoading ? (
+              <View style={styles.mrLoadingBanner}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={styles.mrLoadingText}>Loading meeting requests…</Text>
+              </View>
+            ) : null}
+
+            {filteredItinerary.length > 0 ? (
+              <View style={styles.sectionBlock}>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionTitle}>Confirmed meetings</Text>
                 </View>
-                {item.events.map((event) => (
-                  <View key={event.id} style={styles.eventWrapper}>
-                    {renderEvent(event)}
+                {filteredItinerary.map((day) => (
+                  <View key={day.id} style={styles.daySection}>
+                    <View style={styles.dayHeader}>
+                      <Text style={styles.dayTitle}>{day.day}</Text>
+                      <View style={styles.dayDivider} />
+                    </View>
+                    {day.events.map((event) => (
+                      <View key={event.id} style={styles.eventWrapper}>
+                        {renderEvent(event)}
+                      </View>
+                    ))}
                   </View>
                 ))}
               </View>
-            )}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-          />
+            ) : null}
+
+            <View style={styles.sectionBlock}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Pending requests</Text>
+                <Text style={styles.sectionSubHint}>Sent and received</Text>
+              </View>
+
+              {pendingReceived.length > 0 ? (
+                <View style={styles.subSection}>
+                  <Text style={styles.subSectionTitle}>Received</Text>
+                  {pendingReceived.map((row) => (
+                    <View key={row.id} style={styles.eventWrapper}>
+                      {renderPendingRow(row, {
+                        showActions: true,
+                        onOpenDetails: () =>
+                          isDelegate
+                            ? openSponsorDetailsFromRequest(row)
+                            : openDelegateDetailsFromRequest(row)
+                      })}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
+              {pendingSent.length > 0 ? (
+                <View style={styles.subSection}>
+                  <Text style={styles.subSectionTitle}>Sent</Text>
+                  {pendingSent.map((row) => (
+                    <View key={row.id} style={styles.eventWrapper}>
+                      {renderPendingRow(row, {
+                        showActions: false,
+                        onOpenDetails: () =>
+                          isDelegate
+                            ? openSponsorDetailsFromRequest(row)
+                            : openDelegateDetailsFromRequest(row)
+                      })}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
+              {!mrIsLoading && pendingReceived.length === 0 && pendingSent.length === 0 ? (
+                <Text style={styles.pendingEmptyText}>No pending meeting requests for this filter.</Text>
+              ) : null}
+            </View>
+          </ScrollView>
         ) : (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No itinerary items found</Text>
+            <Text style={styles.emptyText}>No meetings found</Text>
             <Text style={styles.emptySubtext}>
-              {searchQuery ? 'Try a different search term' : 'Your itinerary will appear here'}
+              {searchQuery
+                ? 'Try a different search or filter'
+                : 'Confirmed and pending requests will show here'}
             </Text>
           </View>
         )}
@@ -1010,6 +1650,155 @@ const createStyles = (SIZES) =>
     listContent: {
       paddingBottom: 40,
       gap: 24
+    },
+    sectionBlock: {
+      gap: 8
+    },
+    sectionHeaderRow: {
+      marginTop: 4,
+      marginBottom: 4
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.text
+    },
+    sectionSubHint: {
+      fontSize: 12,
+      fontWeight: '500',
+      color: colors.textMuted,
+      marginTop: 2
+    },
+    subSection: {
+      marginBottom: 12
+    },
+    subSectionTitle: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.primary,
+      marginBottom: 8,
+      marginTop: 4
+    },
+    pendingRowLayout: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: SIZES.cardPadding,
+      borderRadius: 16
+    },
+    pendingRowMain: {
+      flex: 1,
+      minWidth: 0,
+      marginRight: 6
+    },
+    pendingMainTap: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      minWidth: 0
+    },
+    pendingMainTapFullWidth: {
+      width: '100%'
+    },
+    pendingAvatarWrap: {
+      width: 44,
+      height: 44,
+      borderRadius: 12,
+      overflow: 'hidden',
+      backgroundColor: 'rgba(138, 52, 144, 0.08)',
+      marginRight: 12
+    },
+    pendingAvatar: {
+      width: '100%',
+      height: '100%'
+    },
+    pendingTitleRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      gap: 8
+    },
+    pendingBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: radius.pill,
+      backgroundColor: 'rgba(234, 179, 8, 0.2)',
+      borderWidth: 1,
+      borderColor: 'rgba(234, 179, 8, 0.4)'
+    },
+    pendingBadgeText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: '#A16207'
+    },
+    typeMiniBadgeRow: {
+      marginTop: 2,
+      marginBottom: 2
+    },
+    typeMiniBadge: {
+      alignSelf: 'flex-start',
+      borderRadius: radius.pill,
+      paddingHorizontal: 8,
+      paddingVertical: 3
+    },
+    sponsorMiniBadge: {
+      backgroundColor: 'rgba(82, 165, 255, 0.16)'
+    },
+    delegateMiniBadge: {
+      backgroundColor: 'rgba(16, 185, 129, 0.16)'
+    },
+    typeMiniBadgeText: {
+      fontSize: 11,
+      fontWeight: '600'
+    },
+    sponsorMiniBadgeText: {
+      color: '#2563EB'
+    },
+    delegateMiniBadgeText: {
+      color: '#059669'
+    },
+    /** Fills the row in eventCard so inner `eventInfo` (flex:1) gets a real width */
+    pendingSentContentWrap: {
+      flex: 1,
+      minWidth: 0
+    },
+    pendingInboxActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      justifyContent: 'flex-end',
+      gap: 6,
+      flexShrink: 0
+    },
+    actionBtnAcceptSolid: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary
+    },
+    actionBtnAcceptText: {
+      color: colors.white
+    },
+    waitingOnOtherParty: {
+      fontSize: 12,
+      color: colors.textMuted,
+      fontStyle: 'italic',
+      marginTop: 2
+    },
+    mrLoadingBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingVertical: 8
+    },
+    mrLoadingText: {
+      fontSize: 13,
+      color: colors.textMuted
+    },
+    pendingEmptyText: {
+      fontSize: 14,
+      color: colors.textMuted,
+      fontStyle: 'italic',
+      paddingBottom: 8
     },
     daySection: {
       gap: 12
