@@ -918,6 +918,25 @@ export const api = createApi({
       keepUnusedDataFor: 0,
     }),
 
+    // 5a. Pending meeting requests the delegate *sent* to sponsors (inbox is separate)
+    getDelegatePendingSentMeetingRequests: builder.query({
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.DELEGATE_PENDING_SENT_MEETING_REQUESTS,
+          params,
+        };
+      },
+      providesTags: ['MeetingRequests'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
     // 6. Meeting Request Action (Delegate)
     delegateMeetingRequestAction: builder.mutation({
       query: ({ meeting_request_id, action }) => ({
@@ -1318,6 +1337,25 @@ export const api = createApi({
       // Force refetch on mount to avoid showing stale meeting requests
       refetchOnMountOrArgChange: true,
       // Don't keep old data around when screen unmounts
+      keepUnusedDataFor: 0,
+    }),
+
+    // 4a1. Pending meeting requests the sponsor *sent* to delegates
+    getSponsorPendingSentMeetingRequests: builder.query({
+      query: (arg) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.SPONSOR_PENDING_SENT_MEETING_REQUESTS,
+          params,
+        };
+      },
+      providesTags: ['MeetingRequests'],
+      refetchOnMountOrArgChange: true,
       keepUnusedDataFor: 0,
     }),
 
@@ -1791,6 +1829,7 @@ export const {
   useSendDelegateMeetingRequestMutation,
   useSendDelegateMeetingRequestToDelegateMutation,
   useGetDelegateMeetingRequestsQuery,
+  useGetDelegatePendingSentMeetingRequestsQuery,
   useGetDelegateMeetingRequestOutcomesQuery,
   useDelegateMeetingRequestActionMutation,
   useGetDelegateMeetingTimesQuery,
@@ -1818,6 +1857,7 @@ export const {
   useGetSponsorEventQuery,
   useGetEventSponsorQuery,
   useGetSponsorMeetingRequestsQuery,
+  useGetSponsorPendingSentMeetingRequestsQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useSponsorMeetingRequestActionMutation,
   useGetSponsorServicesQuery,

@@ -49,7 +49,7 @@ const NAV_ITEMS = [
   { label: 'Messages', route: 'messages', icon: 'message-circle' },
   { label: 'My Event', route: 'my-event', icon: 'calendar' },
   { label: 'Sponsors', route: 'sponsors', icon: 'briefcase' },
-  { label: 'Itinerary', route: 'itinerary', icon: 'map-pin' },
+  { label: 'My Meetings', route: 'itinerary', icon: 'map-pin' },
   { label: 'Contacts', route: 'contacts', icon: 'book' },
   { label: 'Profile', route: 'profile', icon: 'user' },
   { label: 'Change Password', route: 'change-password', icon: 'key' },
