@@ -109,6 +109,7 @@ export const API_ENDPOINTS = {
   /** Raffle Giveaway — booth QR scan + submit (`precision-backend` mobile/BoothRaffleController) */
   BOOTH_RAFFLE_BOOTH_DETAILS: '/booth-raffle/booth-details',
   BOOTH_RAFFLE_SUBMIT: '/booth-raffle/submit',
+  BOOTH_RAFFLE_MY_QR: '/booth-raffle/my-qr',
 
   // ============ AGENDA ============
   AGENDA_BY_ID: (id) => `/agenda/${id}`,

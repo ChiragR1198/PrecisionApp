@@ -752,6 +752,24 @@ export const api = createApi({
       }),
     }),
 
+    /** Sponsor only: My Raffle QR (booth QR image URL) */
+    boothRaffleMyQr: builder.query({
+      query: (arg) => {
+        const a = arg && typeof arg === 'object' ? arg : {};
+        const params = { _t: Date.now() };
+        if (a.event_id != null && a.event_id !== '') {
+          const n = normalizeEventIdForApi(a.event_id);
+          if (n != null) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.BOOTH_RAFFLE_MY_QR,
+          params,
+        };
+      },
+      providesTags: [],
+      refetchOnMountOrArgChange: true,
+    }),
+
     // 3. All Delegates (optional: event_id, services[] — server filters by products_services)
     getAllDelegates: builder.query({
       query: (arg) => {
@@ -1824,6 +1842,7 @@ export const {
   useGetDelegateEventSponsorLogosQuery,
   useBoothRaffleBoothDetailsMutation,
   useBoothRaffleSubmitMutation,
+  useBoothRaffleMyQrQuery,
   useGetAllDelegatesQuery,
   useGetDelegateEventServicesQuery,
   useSendDelegateMeetingRequestMutation,

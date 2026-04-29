@@ -688,14 +688,14 @@ export const EventOverviewScreen = () => {
                 onPress={() => handleQuickNavigate('myQr')}
               />
             </View>
-            {/* <View style={[styles.statsGrid, { marginTop: SIZES.cardSpacing }]}>
+            <View style={[styles.statsGrid, { marginTop: SIZES.cardSpacing }]}>
               <ControlActionCard
                 icon="gift"
                 title="Raffle Giveaway"
                 subtitle="Scan booth QR to enter"
                 onPress={() => handleQuickNavigate('raffle')}
               />
-            </View> */}
+            </View>
           </View>
 
           <View style={styles.statsSection}>

@@ -75,7 +75,7 @@ export const RaffleGiveawayScreen = () => {
   const [hasPermission, setHasPermission] = useState(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
   /** 'scanner' | 'confirm' | 'hub' — hub = at least one saved entry exists (persisted) or after first successful Yes */
-  const [screenMode, setScreenMode] = useState('scanner');
+  const [screenMode, setScreenMode] = useState('hub');
   const [entries, setEntries] = useState(/** @type {RaffleEntry[]} */ ([]));
 
   const [scanning, setScanning] = useState(false);
@@ -86,6 +86,7 @@ export const RaffleGiveawayScreen = () => {
   const [raffleSuccessVisible, setRaffleSuccessVisible] = useState(false);
   const [raffleSuccessTitle, setRaffleSuccessTitle] = useState('');
   const [raffleSuccessMessage, setRaffleSuccessMessage] = useState('');
+  const [redirectToEventOverviewOnClose, setRedirectToEventOverviewOnClose] = useState(false);
 
   const debounceRef = useRef(null);
   const bestPayloadRef = useRef(null);
@@ -118,16 +119,16 @@ export const RaffleGiveawayScreen = () => {
         const list = Array.isArray(parsed) ? parsed : [];
         if (cancelled) return;
         setEntries(list);
-        if (list.length > 0) {
-          setScreenMode('hub');
-          setScanning(false);
-        } else {
-          setScreenMode('scanner');
-        }
+        // Always start on hub so user sees both:
+        // - listing (even if empty)
+        // - scan button to open camera when needed
+        setScreenMode('hub');
+        setScanning(false);
       } catch {
         if (!cancelled) {
           setEntries([]);
-          setScreenMode('scanner');
+          setScreenMode('hub');
+          setScanning(false);
         }
       } finally {
         if (!cancelled) setStorageLoaded(true);
@@ -259,6 +260,7 @@ export const RaffleGiveawayScreen = () => {
         setRaffleSuccessMessage(
           res.message || `${label || 'This booth'} — you were already in the raffle.`
         );
+        setRedirectToEventOverviewOnClose(true);
         setRaffleSuccessVisible(true);
         return;
       }
@@ -274,6 +276,7 @@ export const RaffleGiveawayScreen = () => {
           res.message ||
             `${[name, bno].filter(Boolean).join(' — ')} — your entry has been saved.`
         );
+        setRedirectToEventOverviewOnClose(true);
         setRaffleSuccessVisible(true);
         return;
       }
@@ -335,7 +338,7 @@ export const RaffleGiveawayScreen = () => {
     );
   }
 
-  const showHubChrome = entries.length > 0 && screenMode !== 'scanner';
+  const showHubChrome = screenMode !== 'scanner';
   const showScanner = screenMode === 'scanner';
 
   return (
@@ -376,7 +379,7 @@ export const RaffleGiveawayScreen = () => {
                   <Text style={styles.desc}>{stripHtmlLite(String(booth.description))}</Text>
                 ) : null}
 
-                <Text style={styles.confirmQ}>Enter the raffle for this booth?</Text>
+                <Text style={styles.confirmQ}>Are you in this booth?</Text>
                 <View style={styles.row}>
                   <TouchableOpacity
                     style={[styles.choice, styles.choiceNo]}
@@ -465,7 +468,7 @@ export const RaffleGiveawayScreen = () => {
               <Text style={styles.desc}>{stripHtmlLite(String(booth.description))}</Text>
             ) : null}
 
-            <Text style={styles.confirmQ}>Enter the raffle for this booth?</Text>
+            <Text style={styles.confirmQ}>Are you in this booth?</Text>
             <View style={styles.row}>
               <TouchableOpacity
                 style={[styles.choice, styles.choiceNo]}
@@ -496,7 +499,16 @@ export const RaffleGiveawayScreen = () => {
         visible={raffleSuccessVisible}
         title={raffleSuccessTitle}
         message={raffleSuccessMessage}
-        onClose={() => setRaffleSuccessVisible(false)}
+        onClose={() => {
+          setRaffleSuccessVisible(false);
+          if (redirectToEventOverviewOnClose) {
+            setRedirectToEventOverviewOnClose(false);
+            router.replace({
+              pathname: '/(drawer)/my-event',
+              params: { eventId: String(eventIdNum) },
+            });
+          }
+        }}
         showViewContactsButton={false}
       />
     </SafeAreaView>
