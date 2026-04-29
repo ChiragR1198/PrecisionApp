@@ -25,7 +25,20 @@ function formatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  // Force all notification timestamps to Eastern Time.
+  // Using IANA tz handles both EST + EDT automatically.
+  try {
+    return d.toLocaleString(undefined, {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch (e) {
+    // Fallback: older Android/JS runtimes may not support timeZone option.
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
 }
 
 export function HeaderNotificationBell({ iconSize = 22 }) {

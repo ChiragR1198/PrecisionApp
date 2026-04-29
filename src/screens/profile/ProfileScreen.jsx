@@ -29,7 +29,7 @@ import { ContactSavedSuccessModal } from '../../components/common/ContactSavedSu
 import { Header } from '../../components/common/Header';
 import { Icons } from '../../constants/icons';
 import { colors, radius } from '../../constants/theme';
-import { useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSaveSponsorContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
+import { useBoothRaffleMyQrQuery, useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSaveSponsorContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { logout as logoutAction } from '../../store/slices/authSlice';
 import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
@@ -251,9 +251,11 @@ export const ProfileScreen = () => {
   const params = useLocalSearchParams();
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
+  const { selectedEventId } = useAppSelector((state) => state.event);
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+  const isSponsor = loginType === 'sponsor';
   const userId = user?.id; // Track user ID to detect user changes
   const [delegateLogout] = useDelegateLogoutMutation();
   const [sponsorLogout] = useSponsorLogoutMutation();
@@ -271,6 +273,11 @@ export const ProfileScreen = () => {
     skip: shouldSkipSponsor,
     refetchOnMountOrArgChange: true, // Force refetch when component mounts
   });
+
+  const { data: raffleQrResp } = useBoothRaffleMyQrQuery(
+    selectedEventId ? { event_id: Number(selectedEventId) } : undefined,
+    { skip: shouldSkipSponsor }
+  );
   
   // Debug logging
   React.useEffect(() => {
@@ -463,6 +470,8 @@ export const ProfileScreen = () => {
   const [profileImage, setProfileImage] = useState(null); // Can be set to image URI
   const [isQRModalVisible, setIsQRModalVisible] = useState(false);
   const [qrMode, setQrMode] = useState('code');
+  const [qrModalTitle, setQrModalTitle] = useState('QR Code');
+  const [qrModalKind, setQrModalKind] = useState('badge'); // 'badge' | 'raffle'
   const [scanResult, setScanResult] = useState(null);
   const [lastScannedText, setLastScannedText] = useState('');
   const [hasScanPermission, setHasScanPermission] = useState(null);
@@ -683,6 +692,8 @@ export const ProfileScreen = () => {
 
   const handleOpenQRModal = async (options = {}) => {
     const initialMode = options.initialMode || 'code';
+    setQrModalTitle('QR Code');
+    setQrModalKind('badge');
 
     if (initialMode === 'code') {
       const emailForQr = profile?.email || user?.email || formData.email;
@@ -756,6 +767,24 @@ export const ProfileScreen = () => {
       setQrImageLoading(false);
     }
   };
+
+  const handleOpenRaffleQRModal = React.useCallback(async () => {
+    const raffleUrl = raffleQrResp?.data?.qr_image;
+    if (!raffleUrl) return;
+
+    setQrModalTitle('My Raffle QR');
+    setQrModalKind('raffle');
+
+    setIsQRModalVisible(true);
+    setQrMode('code');
+    setScanResult(null);
+    setLastScannedText('');
+    setHasScanPermission(null);
+    setIsScanning(false);
+    setQrImageError(false);
+    setQrImageUri(String(raffleUrl));
+    setQrImageLoading(true);
+  }, [raffleQrResp?.data?.qr_image]);
 
   const openMyQrFromRouteHandledRef = React.useRef(false);
 
@@ -1526,6 +1555,18 @@ export const ProfileScreen = () => {
                 <Text style={styles.qrCodeText}>QR Code</Text>
               </TouchableOpacity>
             </View>
+            {!isDelegate && raffleQrResp?.data?.qr_image ? (
+              <View style={styles.raffleQrRow}>
+                <TouchableOpacity
+                  style={[styles.qrCodeButton, styles.raffleQrButton]}
+                  onPress={handleOpenRaffleQRModal}
+                  activeOpacity={0.8}
+                >
+                  <ScannerIcon size={SIZES.profileBannerActionIconSize} />
+                  <Text style={styles.qrCodeText}>My Raffle QR</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
           </LinearGradient>
 
           {/* My Profile Section */}
@@ -1828,31 +1869,33 @@ export const ProfileScreen = () => {
           <Pressable style={StyleSheet.absoluteFill} onPress={handleCloseQRModal} />
           <View style={styles.qrModalCard}>
             <View style={styles.qrModalHeader}>
-              <Text style={styles.qrModalTitle}>QR Code</Text>
+              <Text style={styles.qrModalTitle}>{qrModalTitle}</Text>
               <TouchableOpacity onPress={handleCloseQRModal}>
                 <Icon name="x" size={20} color={colors.textMuted} />
               </TouchableOpacity>
             </View>
-            <View style={styles.qrToggleRow}>
-              {['code', 'scan'].map((mode) => {
-                const isActive = qrMode === mode;
-                return (
-                  <TouchableOpacity
-                    key={mode}
-                    style={[styles.qrToggle, isActive && styles.qrToggleActive]}
-                    onPress={() => {
-                      setQrMode(mode);
-                      if (mode === 'code') setScanResult(null);
-                    }}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.qrToggleText, isActive && styles.qrToggleTextActive]}>
-                      {mode === 'code' ? 'QR Code' : 'Scanner'}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {qrModalKind !== 'raffle' ? (
+              <View style={styles.qrToggleRow}>
+                {['code', 'scan'].map((mode) => {
+                  const isActive = qrMode === mode;
+                  return (
+                    <TouchableOpacity
+                      key={mode}
+                      style={[styles.qrToggle, isActive && styles.qrToggleActive]}
+                      onPress={() => {
+                        setQrMode(mode);
+                        if (mode === 'code') setScanResult(null);
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.qrToggleText, isActive && styles.qrToggleTextActive]}>
+                        {mode === 'code' ? 'QR Code' : 'Scanner'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : null}
 
             <ScrollView
               style={styles.qrModalBody}
@@ -1863,12 +1906,15 @@ export const ProfileScreen = () => {
               {qrMode === 'code' ? (
                 <View style={styles.qrCodePreview}>
                   <View style={styles.qrSquare}>
-                    {(qrImageUri || profile?.qr_image || user?.qr_image) && !qrImageError ? (
+                    {(
+                      qrImageUri ||
+                      (qrModalKind !== 'raffle' ? (profile?.qr_image || user?.qr_image) : null)
+                    ) && !qrImageError ? (
                       <>
                         <Image
-                          key={`qr-${qrImageUri || profile?.qr_image || user?.qr_image}`}
+                          key={`qr-${qrImageUri || (qrModalKind !== 'raffle' ? (profile?.qr_image || user?.qr_image) : '')}`}
                           source={{
-                            uri: qrImageUri || profile?.qr_image || user?.qr_image || '',
+                            uri: qrImageUri || (qrModalKind !== 'raffle' ? (profile?.qr_image || user?.qr_image) : '') || '',
                           }}
                           style={styles.qrCodeImage}
                           resizeMode="contain"
@@ -1904,11 +1950,11 @@ export const ProfileScreen = () => {
                       </>
                     )}
                   </View>
-                  <Text style={styles.qrHint}>
+                  {/* <Text style={styles.qrHint}>
                     {isDelegate
                       ? 'Show to sponsors to share your contact'
                       : 'Show to delegates to share your contact'}
-                  </Text>
+                  </Text> */}
 
                   {/* Profile info under QR */}
                   <View style={styles.qrProfileCard}>
@@ -2319,6 +2365,19 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     marginTop: 8,
     width: '100%',
     paddingHorizontal: 20,
+  },
+  raffleQrRow: {
+    width: '100%',
+    paddingHorizontal: 20,
+    marginTop: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  raffleQrButton: {
+    flex: 0,
+    width: '60%',
+    minWidth: 170,
+    maxWidth: 260,
   },
   changePhotoButton: {
     flex: 1,
