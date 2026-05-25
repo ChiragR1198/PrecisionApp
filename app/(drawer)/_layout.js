@@ -1,18 +1,13 @@
 import { Drawer } from 'expo-router/drawer';
 import React from 'react';
-import Constants from 'expo-constants';
 import { colors } from '../../src/constants/theme';
+import { AppOpenNotificationsOverlay } from '../../src/components/notifications/AppOpenNotificationsOverlay';
 import { CustomDrawerContent } from '../../src/navigation/CustomDrawerContent';
 
 export default function DrawerLayout() {
-  const isExpoGo = Constants?.appOwnership === 'expo';
-  const PushNotificationSetup = !isExpoGo
-    ? require('../../src/components/notifications/PushNotificationSetup').PushNotificationSetup
-    : null;
-
   return (
     <>
-      {PushNotificationSetup ? <PushNotificationSetup /> : null}
+      <AppOpenNotificationsOverlay />
       <Drawer
       initialRouteName="dashboard"
       screenOptions={{
@@ -57,6 +52,10 @@ export default function DrawerLayout() {
       <Drawer.Screen name="contacts" options={{ drawerLabel: 'Contacts' }} />
       <Drawer.Screen
         name="contact-detail"
+        options={{ drawerItemStyle: { display: 'none' } }}
+      />
+      <Drawer.Screen
+        name="contact-notes"
         options={{ drawerItemStyle: { display: 'none' } }}
       />
       <Drawer.Screen name="contact-us" options={{ drawerLabel: 'Contact Us' }} />

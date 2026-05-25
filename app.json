@@ -23,7 +23,8 @@
         "NSCameraUsageDescription": "This app needs access to your camera to take photos.",
         "NSMicrophoneUsageDescription": "This app needs access to your microphone for video recording.",
         "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to select images.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["remote-notification"]
       }
     },
     "android": {

@@ -1,5 +1,4 @@
 import Icon from '@expo/vector-icons/Feather';
-import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -20,6 +19,7 @@ import {
   useMarkNotificationReadMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { navigateFromNotificationData } from '../../utils/notificationNavigation';
 
 function formatTime(iso) {
   if (!iso) return '';
@@ -100,49 +100,11 @@ export function HeaderNotificationBell({ iconSize = 22 }) {
   const navigateFromPayload = useCallback((payload, row) => {
     const type = payload?.type;
     const category = row?.category;
-    // Accept → Itinerary (scheduled meeting); request / decline → Meeting Requests inbox
-    if (type === 'meeting_approved' || category === 'meeting_accepted') {
-      router.push('/(drawer)/itinerary');
-      return;
-    }
-    if (
-      type === 'itinerary_meeting_deleted' ||
-      type === 'itinerary_meeting_updated' ||
-      category === 'itinerary_deleted' ||
-      category === 'itinerary_updated'
-    ) {
-      router.push('/(drawer)/itinerary');
-      return;
-    }
-    if (
-      type === 'meeting_request' ||
-      type === 'meeting_rejected' ||
-      category === 'meeting_request' ||
-      category === 'meeting_declined'
-    ) {
-      router.push('/(drawer)/meeting-requests');
-      return;
-    }
-    if (type === 'chat_message') {
-      const fromId = payload.from_id ?? payload.to_id;
-      const fromType = payload.from_type || 'delegate';
-      if (fromId != null) {
-        router.push({
-          pathname: '/(drawer)/message-detail',
-          params: {
-            thread: JSON.stringify({
-              id: fromId,
-              user_id: fromId,
-              user_type: fromType,
-              name: 'Chat',
-            }),
-            returnTo: 'messages',
-          },
-        });
-      } else {
-        router.push('/(drawer)/messages');
-      }
-    }
+    const merged = { ...payload, type: type || category };
+    if (category === 'meeting_accepted') merged.type = 'meeting_approved';
+    if (category === 'meeting_declined') merged.type = 'meeting_rejected';
+    if (category === 'meeting_request') merged.type = 'meeting_request';
+    navigateFromNotificationData(merged);
   }, []);
 
   const onPressItem = useCallback(

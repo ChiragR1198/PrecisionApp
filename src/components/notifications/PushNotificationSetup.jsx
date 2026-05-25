@@ -1,67 +1,97 @@
 import * as Notifications from 'expo-notifications';
-import { router } from 'expo-router';
+import { useRootNavigationState } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import { api, useRegisterPushTokenMutation } from '../../store/api';
 import { store } from '../../store';
+import { navigateFromNotificationData } from '../../utils/notificationNavigation';
 import {
   getNotificationToken,
   requestNotificationPermissions,
 } from '../../utils/notifications';
 
+function parseNotificationData(response) {
+  return response?.notification?.request?.content?.data || {};
+}
+
 /**
- * Registers push token with backend and handles notification tap navigation.
- * Render once when user is authenticated (e.g. inside drawer layout).
+ * Registers Expo push token with backend and handles OS notification taps (lock screen / banner).
+ * Requires a development or production build — not Expo Go.
  */
 export function PushNotificationSetup() {
   const [registerPushToken] = useRegisterPushTokenMutation();
-  const listenerRef = useRef(null);
+  const navigationState = useRootNavigationState();
+  const navReady = Boolean(navigationState?.key);
+  const pendingNavRef = useRef(null);
+  const handledColdStartRef = useRef(false);
 
   const registerTokenWithBackend = async () => {
     const granted = await requestNotificationPermissions();
     if (!granted) {
-      console.warn('📱 Push: Notification permission not granted – token not sent to backend.');
+      console.warn('📱 Push: Notification permission not granted — enable in device Settings.');
       return;
     }
     const token = await getNotificationToken();
     if (!token) {
-      console.warn('📱 Push: No Expo push token (simulator/device) – token not sent to backend.');
+      console.warn('📱 Push: No Expo push token — use a real device and EAS/dev build (not Expo Go).');
       return;
     }
-    console.log('📱 Push: Sending token to backend...', token.slice(0, 40) + '...');
     try {
       await registerPushToken({
         token,
         platform: Platform.OS === 'ios' ? 'ios' : 'android',
       }).unwrap();
-      console.log('✅ Push token registered with backend – tokens are stored in backend DB (mobile_device_tokens).');
+      console.log('✅ Push token registered with backend.');
     } catch (err) {
       const status = err?.status ?? err?.data?.status;
       const message = err?.data?.message ?? err?.message ?? '';
       console.warn('❌ Push token registration failed:', status, message || err?.data || err);
-      if (status === 404) {
-        console.warn('📌 Tip: Backend pe push/register-token route deploy karo. Local DB dekh rahe ho to app ko local API URL se run karo.');
-      }
     }
   };
 
-  // Register on mount and when app comes to foreground (so token is saved after backend is deployed)
+  const queueNavigation = (data) => {
+    if (!data || typeof data !== 'object') return;
+    pendingNavRef.current = data;
+  };
+
+  const flushPendingNavigation = () => {
+    if (!navReady || !pendingNavRef.current) return;
+    const data = pendingNavRef.current;
+    pendingNavRef.current = null;
+    setTimeout(() => {
+      navigateFromNotificationData(data);
+    }, 150);
+  };
+
   useEffect(() => {
-    let mounted = true;
     registerTokenWithBackend();
 
     const sub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active' && mounted) {
+      if (nextState === 'active') {
         registerTokenWithBackend();
       }
     });
-    return () => {
-      mounted = false;
-      sub?.remove();
-    };
+    return () => sub?.remove();
   }, [registerPushToken]);
 
-  // Foreground push: refresh inbox + itinerary when relevant
+  useEffect(() => {
+    flushPendingNavigation();
+  }, [navReady]);
+
+  // Cold start: user tapped notification while app was killed
+  useEffect(() => {
+    if (handledColdStartRef.current) return;
+    handledColdStartRef.current = true;
+
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (!response) return;
+        queueNavigation(parseNotificationData(response));
+        flushPendingNavigation();
+      })
+      .catch((e) => console.warn('getLastNotificationResponseAsync', e));
+  }, []);
+
   useEffect(() => {
     const receivedSub = Notifications.addNotificationReceivedListener((notification) => {
       try {
@@ -73,77 +103,31 @@ export function PushNotificationSetup() {
         ) {
           tags.push('Agenda');
         }
+        if (data.type === 'chat_message' || data.type === 'message') {
+          tags.push('Messages');
+        }
+        if (data.type === 'meeting_request') {
+          tags.push('MeetingRequests');
+        }
         store.dispatch(api.util.invalidateTags(tags));
       } catch (e) {
         console.warn('invalidate notification tags', e);
       }
     });
-    return () => {
-      receivedSub.remove();
-    };
+    return () => receivedSub.remove();
   }, []);
 
-  // Handle notification tap (user opened app from notification)
   useEffect(() => {
-    listenerRef.current = Notifications.addNotificationResponseReceivedListener(
-      (response) => {
-        const data = response?.notification?.request?.content?.data || {};
-        const type = data.type;
-        try {
-          if (type === 'meeting_approved') {
-            router.push('/(drawer)/itinerary');
-            return;
-          }
-          if (type === 'itinerary_meeting_deleted' || type === 'itinerary_meeting_updated') {
-            router.push('/(drawer)/itinerary');
-            return;
-          }
-          if (type === 'meeting_request' || type === 'meeting_rejected') {
-            router.push('/(drawer)/meeting-requests');
-            return;
-          }
-          if (type === 'chat_message' && (data.from_id != null || data.to_id != null)) {
-            const fromId = data.from_id ?? data.to_id;
-            const fromType = data.from_type || 'delegate';
-            const thread = {
-              id: fromId,
-              user_id: fromId,
-              user_type: fromType,
-              name: 'Chat',
-            };
-            router.push({
-              pathname: '/(drawer)/message-detail',
-              params: {
-                thread: JSON.stringify(thread),
-                returnTo: 'messages',
-              },
-            });
-            return;
-          }
-          if (type === 'session_reminder') {
-            router.push('/(drawer)/agenda');
-            return;
-          }
-          if (type === 'exhibition_announcement' && data.event_id) {
-            router.push('/(drawer)/dashboard');
-            return;
-          }
-          if (type === 'admin_broadcast') {
-            router.push('/(drawer)/dashboard');
-            return;
-          }
-        } catch (e) {
-          console.warn('Notification navigation error:', e);
-        }
+    const responseSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = parseNotificationData(response);
+      if (navReady) {
+        setTimeout(() => navigateFromNotificationData(data), 100);
+      } else {
+        queueNavigation(data);
       }
-    );
-
-    return () => {
-      if (listenerRef.current?.remove) {
-        listenerRef.current.remove();
-      }
-    };
-  }, []);
+    });
+    return () => responseSub.remove();
+  }, [navReady]);
 
   return null;
 }
