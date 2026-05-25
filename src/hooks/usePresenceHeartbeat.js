@@ -28,7 +28,7 @@ export function usePresenceHeartbeat() {
       ping({ event_id: resolveEventId() }).catch(() => {});
     };
 
-    send();
+    const bootTimer = setTimeout(send, 2500);
     const interval = setInterval(send, INTERVAL_MS);
     const sub = AppState.addEventListener('change', (next) => {
       if (appStateRef.current.match(/inactive|background/) && next === 'active') {
@@ -38,6 +38,7 @@ export function usePresenceHeartbeat() {
     });
 
     return () => {
+      clearTimeout(bootTimer);
       clearInterval(interval);
       sub.remove();
     };

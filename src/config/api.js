@@ -72,6 +72,9 @@ export const API_ENDPOINTS = {
   DELEGATE_CONTACTS: '/delegate/contacts',
   DELEGATE_SAVE_CONTACT: '/delegate/save-contact',
   DELEGATE_DELETE_CONTACT: '/delegate/delete-contact',
+  /** GET list / POST save (multipart: contact_id, notes?, image?) — per user, per saved contact (scanned_contacts.id) */
+  DELEGATE_CONTACT_NOTES: '/delegate/contact-notes',
+  DELEGATE_CONTACT_NOTES_DELETE: '/delegate/contact-notes/delete',
 
   // ============ SPONSOR ENDPOINTS ============
   SPONSOR_EVENTS: '/sponsor/events',
@@ -105,6 +108,8 @@ export const API_ENDPOINTS = {
   SPONSOR_CONTACTS: '/sponsor/contacts',
   SPONSOR_SAVE_CONTACT: '/sponsor/save-contact',
   SPONSOR_DELETE_CONTACT: '/sponsor/delete-contact',
+  SPONSOR_CONTACT_NOTES: '/sponsor/contact-notes',
+  SPONSOR_CONTACT_NOTES_DELETE: '/sponsor/contact-notes/delete',
 
   /** Raffle Giveaway — booth QR scan + submit (`precision-backend` mobile/BoothRaffleController) */
   BOOTH_RAFFLE_BOOTH_DETAILS: '/booth-raffle/booth-details',
@@ -116,12 +121,18 @@ export const API_ENDPOINTS = {
   AGENDA_ITEM_BY_ID: (id) => `/agenda/item/${id}`,
   AGENDA_CHECK_IN: '/agenda/check-in',
   AGENDA_CHECK_IN_STATUS: '/agenda/check-in-status',
+  /** GET list / POST save (multipart: agenda_id, notes?, image?) — per user, per agenda session */
+  AGENDA_SESSION_NOTES: '/agenda/session-notes',
+  /** POST { id } — deletes note row for current user; backend also removes the on-disk image. */
+  AGENDA_SESSION_NOTES_DELETE: '/agenda/session-notes/delete',
 
   // ============ PUSH NOTIFICATIONS ============
   PUSH_REGISTER_TOKEN: 'push/register-token',
 
   /** In-app inbox (last notifications, read/unread) — requires Bearer */
   NOTIFICATIONS_INBOX: 'notifications/inbox',
+  /** GET ?event_id= — pending meetings, new attendees today, unread messages (app-open banners) */
+  NOTIFICATIONS_APP_SUMMARY: 'notifications/app-summary',
   NOTIFICATIONS_UNREAD_COUNT: 'notifications/unread-count',
   NOTIFICATIONS_MARK_READ: 'notifications/mark-read',
   NOTIFICATIONS_DELETE: 'notifications/delete',

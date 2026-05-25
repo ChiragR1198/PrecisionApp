@@ -6,6 +6,7 @@ import { normalizeEventIdForApi } from '../utils/parseEventId';
 // Base query with token injection
 const baseQuery = fetchBaseQuery({
   baseUrl: API_BASE_URL,
+  timeout: 25000,
   prepareHeaders: async (headers) => {
     try {
       const token = await AsyncStorage.getItem('auth_token');
@@ -217,10 +218,24 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       return result;
     }
 
-    // Presence heartbeat/online APIs are best-effort.
-    // If network is flaky, don't spam scary errors after login.
+    const isEventSponsorLogosEndpoint =
+      typeof args.url === 'string' &&
+      (args.url.includes('event-sponsor-logos') ||
+        args.url === API_ENDPOINTS.DELEGATE_EVENT_SPONSOR_LOGOS ||
+        args.url === API_ENDPOINTS.SPONSOR_EVENT_SPONSOR_LOGOS);
+
+    // Presence heartbeat/online APIs are best-effort — one quiet retry, then skip.
     if (isPresenceEndpoint && (isFetchError || errorStatus === 404 || errorStatus === 'PARSING_ERROR')) {
-      console.warn('⚠️ Presence sync skipped (temporary network/backend issue).');
+      if (isFetchError) {
+        await new Promise((r) => setTimeout(r, 600));
+        const retry = await baseQuery(args, api, extraOptions);
+        if (!retry.error) {
+          return retry;
+        }
+      }
+      if (__DEV__) {
+        console.warn('⚠️ Presence sync skipped (temporary network/backend issue).');
+      }
       return result;
     }
 
@@ -237,18 +252,50 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       return result;
     }
 
+    // App-open summary: soft-fail so overlay can use client-side fallback (e.g. endpoint not deployed yet).
+    const isAppSummaryEndpoint =
+      typeof args.url === 'string' && args.url.includes('notifications/app-summary');
+    if (isAppSummaryEndpoint && result.error) {
+      if (__DEV__) {
+        console.warn('⚠️ App summary unavailable — using client fallback for in-app banners.');
+      }
+      return {
+        data: {
+          success: true,
+          data: {
+            items: [],
+            pending_meeting_requests: 0,
+            new_attendees_today: 0,
+            unread_messages: 0,
+          },
+        },
+      };
+    }
+
+    // Dashboard sponsor logos — non-critical; empty list on network failure so dashboard still loads.
+    if (isEventSponsorLogosEndpoint && isFetchError) {
+      if (__DEV__) {
+        console.warn('⚠️ Sponsor logos: network error — showing dashboard without logo carousel.');
+      }
+      return { data: { success: true, data: [] } };
+    }
+
     // PARSING_ERROR on contacts: backend sometimes returns empty/whitespace or non-JSON.
     // Treat as an empty contacts list so the Contacts screen can still render.
     const isContactsEndpoint =
       typeof args.url === 'string' &&
       (args.url === API_ENDPOINTS.DELEGATE_CONTACTS ||
         args.url === API_ENDPOINTS.DELEGATE_SAVE_CONTACT ||
+        args.url === API_ENDPOINTS.DELEGATE_CONTACT_NOTES ||
         args.url === API_ENDPOINTS.SPONSOR_CONTACTS ||
         args.url === API_ENDPOINTS.SPONSOR_SAVE_CONTACT ||
+        args.url === API_ENDPOINTS.SPONSOR_CONTACT_NOTES ||
         args.url.includes('/delegate/contacts') ||
         args.url.includes('/delegate/save-contact') ||
+        args.url.includes('/delegate/contact-notes') ||
         args.url.includes('/sponsor/contacts') ||
-        args.url.includes('/sponsor/save-contact'));
+        args.url.includes('/sponsor/save-contact') ||
+        args.url.includes('/sponsor/contact-notes'));
     if (isContactsEndpoint && errorStatus === 'PARSING_ERROR') {
       const raw = result?.error?.data;
       const text = typeof raw === 'string' ? raw : '';
@@ -267,8 +314,8 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
     }
     
     // For FETCH_ERROR, retry with exponential backoff (might be timing/network issue)
-    if (isFetchError && !isAuthEndpoint && !isPresenceEndpoint) {
-      const maxRetries = 2;
+    if (isFetchError && !isAuthEndpoint && !isPresenceEndpoint && !isEventSponsorLogosEndpoint) {
+      const maxRetries = 3;
       let retryCount = 0;
       let initialError = result.error;
       
@@ -392,7 +439,9 @@ export const api = createApi({
     'MeetingRequestOutcomes',
     'Profile',
     'Contacts',
+    'ContactNotes',
     'NotificationInbox',
+    'AgendaNotes',
   ],
   endpoints: (builder) => ({
     // ============ AUTH ============
@@ -1055,6 +1104,120 @@ export const api = createApi({
       providesTags: (result, error, agendaId) => [{ type: 'Agenda', id: `checkin-${agendaId}` }],
       refetchOnMountOrArgChange: true,
       keepUnusedDataFor: 0,
+    }),
+
+    getAgendaSessionNotes: builder.query({
+      query: (agendaId) => {
+        if (!agendaId) return null;
+        return {
+          url: API_ENDPOINTS.AGENDA_SESSION_NOTES,
+          params: { agenda_id: String(agendaId), _t: Date.now() },
+        };
+      },
+      providesTags: (result, error, agendaId) => [{ type: 'AgendaNotes', id: String(agendaId) }],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
+    saveAgendaSessionNote: builder.mutation({
+      query: ({ agendaId, notes, image }) => {
+        const form = new FormData();
+        form.append('agenda_id', String(agendaId));
+        const t = typeof notes === 'string' ? notes.trim() : '';
+        if (t) form.append('notes', t);
+        if (image?.uri) {
+          form.append('image', {
+            uri: image.uri,
+            name: image.name || 'photo.jpg',
+            type: image.mimeType || 'image/jpeg',
+          });
+        }
+        return {
+          url: API_ENDPOINTS.AGENDA_SESSION_NOTES,
+          method: 'POST',
+          body: form,
+          prepareHeaders: (headers) => {
+            headers.delete('Content-Type');
+            return headers;
+          },
+        };
+      },
+      invalidatesTags: (result, error, { agendaId }) => [{ type: 'AgendaNotes', id: String(agendaId) }],
+    }),
+
+    deleteAgendaSessionNote: builder.mutation({
+      query: ({ id }) => ({
+        url: API_ENDPOINTS.AGENDA_SESSION_NOTES_DELETE,
+        method: 'POST',
+        body: { id: Number(id) },
+      }),
+      invalidatesTags: (result, error, { agendaId }) =>
+        agendaId ? [{ type: 'AgendaNotes', id: String(agendaId) }] : ['AgendaNotes'],
+    }),
+
+    getContactNotes: builder.query({
+      query: ({ contactId, role }) => {
+        if (!contactId || !role) return null;
+        const url =
+          role === 'sponsor'
+            ? API_ENDPOINTS.SPONSOR_CONTACT_NOTES
+            : API_ENDPOINTS.DELEGATE_CONTACT_NOTES;
+        return {
+          url,
+          params: { contact_id: String(contactId), _t: Date.now() },
+        };
+      },
+      providesTags: (result, error, { contactId }) =>
+        contactId ? [{ type: 'ContactNotes', id: String(contactId) }] : ['ContactNotes'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
+    saveContactNote: builder.mutation({
+      query: ({ contactId, role, notes, image }) => {
+        const url =
+          role === 'sponsor'
+            ? API_ENDPOINTS.SPONSOR_CONTACT_NOTES
+            : API_ENDPOINTS.DELEGATE_CONTACT_NOTES;
+        const form = new FormData();
+        form.append('contact_id', String(contactId));
+        const t = typeof notes === 'string' ? notes.trim() : '';
+        if (t) form.append('notes', t);
+        if (image?.uri) {
+          form.append('image', {
+            uri: image.uri,
+            name: image.name || 'photo.jpg',
+            type: image.mimeType || 'image/jpeg',
+          });
+        }
+        return {
+          url,
+          method: 'POST',
+          body: form,
+          prepareHeaders: (headers) => {
+            headers.delete('Content-Type');
+            return headers;
+          },
+        };
+      },
+      invalidatesTags: (result, error, { contactId }) =>
+        contactId ? [{ type: 'ContactNotes', id: String(contactId) }] : ['ContactNotes'],
+    }),
+
+    deleteContactNote: builder.mutation({
+      query: ({ id, role }) => {
+        const url =
+          role === 'sponsor'
+            ? API_ENDPOINTS.SPONSOR_CONTACT_NOTES_DELETE
+            : API_ENDPOINTS.DELEGATE_CONTACT_NOTES_DELETE;
+        return {
+          url,
+          method: 'POST',
+          body: { id: Number(id) },
+        };
+      },
+      invalidatesTags: (result, error, { contactId }) =>
+        contactId ? [{ type: 'ContactNotes', id: String(contactId) }] : ['ContactNotes'],
     }),
 
     // 9. Delegate Attendees (sponsors for event — pass event_id so multi-event users get correct list)
@@ -1750,6 +1913,23 @@ export const api = createApi({
       keepUnusedDataFor: 0,
     }),
 
+    getAppOpenNotificationSummary: builder.query({
+      query: (arg = {}) => {
+        const params = { _t: Date.now() };
+        const raw = arg?.event_id ?? arg;
+        if (raw != null && raw !== '') {
+          const n = normalizeEventIdForApi(raw);
+          if (n != null) params.event_id = n;
+        }
+        return {
+          url: API_ENDPOINTS.NOTIFICATIONS_APP_SUMMARY,
+          params,
+        };
+      },
+      providesTags: ['NotificationInbox'],
+      keepUnusedDataFor: 0,
+    }),
+
     getNotificationUnreadCount: builder.query({
       query: () => ({
         url: API_ENDPOINTS.NOTIFICATIONS_UNREAD_COUNT,
@@ -1829,6 +2009,7 @@ export const {
   useSponsorChangePasswordMutation,
   useRegisterPushTokenMutation,
   useGetNotificationInboxQuery,
+  useGetAppOpenNotificationSummaryQuery,
   useGetNotificationUnreadCountQuery,
   useMarkNotificationReadMutation,
   useDeleteNotificationMutation,
@@ -1857,6 +2038,12 @@ export const {
   useGetAgendaItemQuery,
   useCheckInAgendaSessionMutation,
   useGetAgendaCheckInStatusQuery,
+  useGetAgendaSessionNotesQuery,
+  useSaveAgendaSessionNoteMutation,
+  useDeleteAgendaSessionNoteMutation,
+  useGetContactNotesQuery,
+  useSaveContactNoteMutation,
+  useDeleteContactNoteMutation,
   useGetDelegateAttendeesQuery,
   useGetDelegateItineraryQuery,
   useDelegateDeleteItineraryMeetingMutation,

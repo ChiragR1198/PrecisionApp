@@ -270,6 +270,7 @@ const hasAnyResults = useMemo(() => {
           pathname: '/(drawer)/agenda-detail',
           params: {
             agendaId: item.id.toString(),
+            eventId: eventId != null ? String(eventId) : undefined,
             // Pass initial data to show immediately
             initialTitle: item.title || '',
             initialTime: item.timeOriginal || item.time || '',

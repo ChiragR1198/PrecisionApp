@@ -292,6 +292,17 @@ export const ContactsScreen = () => {
     });
   }, []);
 
+  const openContactNotes = useCallback((item) => {
+    if (item?.id == null) return;
+    router.push({
+      pathname: '/(drawer)/contact-notes',
+      params: {
+        contactId: String(item.id),
+        contactName: getContactDisplayName(item),
+      },
+    });
+  }, []);
+
   const renderContact = ({ item }) => {
     const displayName = getContactDisplayName(item);
     const phoneLine = getContactPhoneDisplay(item);
@@ -342,14 +353,27 @@ export const ContactsScreen = () => {
           </View>
         </Pressable>
       </View>
-      <TouchableOpacity 
-        style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]} 
-        onPress={() => handleDelete(item)} 
-        activeOpacity={0.7}
-        disabled={isDeleting}
-      >
-        <DeleteIcon />
-      </TouchableOpacity>
+      <View style={styles.rowActions}>
+        {item?.id != null ? (
+          <TouchableOpacity
+            style={styles.notesButton}
+            onPress={() => openContactNotes(item)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Notes for contact"
+          >
+            <Icon name="file-text" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
+          onPress={() => handleDelete(item)}
+          activeOpacity={0.7}
+          disabled={isDeleting}
+        >
+          <DeleteIcon />
+        </TouchableOpacity>
+      </View>
     </View>
     );
   };
@@ -635,6 +659,16 @@ const createStyles = (SIZES, isTablet) =>
     contactPhone: {
       color: colors.textSecondary,
       marginTop: 2,
+    },
+    rowActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginLeft: 6,
+    },
+    notesButton: {
+      padding: 6,
+      borderRadius: radius.sm,
+      marginRight: 2,
     },
     deleteButton: {
       padding: 6,

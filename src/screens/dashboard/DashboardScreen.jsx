@@ -725,6 +725,12 @@ export const DashboardScreen = () => {
       case 'Delegate':
         router.push({ pathname: '/sponsors', params: Object.keys(params).length > 0 ? params : undefined });
         break;
+      case 'Raffle Giveaway':
+        router.push({
+          pathname: '/raffle-giveaway',
+          params: Object.keys(params).length > 0 ? params : undefined,
+        });
+        break;
       case 'Future Summits': {
         const fsParams = { ...params };
         const rawEid = selectedEvent?.id;
@@ -781,6 +787,13 @@ export const DashboardScreen = () => {
       icon: <SponsorsIcon size={SIZES.quickActionIconInner} />,
       iconColor: '#F97316',
       backgroundColor: '#FFF7ED',
+    },
+    {
+      title: 'Raffle Giveaway',
+      subtitle: 'Scan booth QR to enter',
+      icon: <Icon name="gift" size={SIZES.quickActionIconInner} color="#EC4899" />,
+      iconColor: '#EC4899',
+      backgroundColor: 'rgba(236, 72, 153, 0.08)',
     },
     {
       title: 'Future Summits',

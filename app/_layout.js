@@ -1,4 +1,5 @@
 import * as NavigationBar from 'expo-navigation-bar';
+import Constants from 'expo-constants';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
@@ -37,6 +38,11 @@ if (Text && TextInput) {
 // The app will remain responsive to different screen sizes (phones, tablets)
 // but will NOT respond to system font/display size accessibility settings
 // All dimensions are pixel-based, ensuring consistent UI across all devices
+
+const isExpoGo = Constants?.appOwnership === 'expo';
+const PushNotificationSetup = !isExpoGo
+  ? require('../src/components/notifications/PushNotificationSetup').PushNotificationSetup
+  : null;
 
 function RootLayoutNav() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -106,6 +112,7 @@ function RootLayoutNav() {
   return (
     <>
       <StatusBar style="light" translucent={false} />
+      {isAuthenticated && PushNotificationSetup ? <PushNotificationSetup /> : null}
       <Stack
         screenOptions={{
           headerShown: false,

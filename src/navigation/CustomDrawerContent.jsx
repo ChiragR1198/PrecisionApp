@@ -45,7 +45,7 @@ const NAV_ITEMS = [
   { label: 'Dashboard', route: 'dashboard', icon: 'bar-chart-2' },
   { label: 'Agenda', route: 'agenda', icon: 'list' },
   { label: 'Event Sponsors', route: 'attendees', icon: 'users' },
-  { label: 'Meeting Requests', route: 'meeting-requests', icon: 'calendar' },
+  // { label: 'Meeting Requests', route: 'meeting-requests', icon: 'calendar' },
   { label: 'Messages', route: 'messages', icon: 'message-circle' },
   { label: 'My Event', route: 'my-event', icon: 'calendar' },
   { label: 'Sponsors', route: 'sponsors', icon: 'briefcase' },

@@ -393,6 +393,46 @@ export const AgendaDetailScreen = () => {
     }
   }, [params?.agendaId, canCheckIn, checkInBlockedMessage, checkInAgendaSession]);
 
+  const openSessionNotes = useCallback(() => {
+    const aid = agendaItem.id ?? params?.agendaId;
+    if (aid == null || aid === '') return;
+    const eid = params?.eventId ?? selectedAgendaItem?.event_id;
+    const navParams = {
+      agendaId: String(aid),
+      sessionTitle: agendaItem.title || '',
+      returnTo: 'agenda-detail',
+    };
+    if (eid != null && eid !== '') {
+      navParams.eventId = String(eid);
+    }
+    for (const key of [
+      'initialTitle',
+      'initialTime',
+      'initialDescription',
+      'initialLocation',
+      'initialDate',
+    ]) {
+      if (params?.[key] != null && String(params[key]).trim() !== '') {
+        navParams[key] = String(params[key]);
+      }
+    }
+    router.push({
+      pathname: '/(drawer)/agenda-session-notes',
+      params: navParams,
+    });
+  }, [
+    agendaItem.id,
+    agendaItem.title,
+    params?.agendaId,
+    params?.eventId,
+    params?.initialTitle,
+    params?.initialTime,
+    params?.initialDescription,
+    params?.initialLocation,
+    params?.initialDate,
+    selectedAgendaItem?.event_id,
+  ]);
+
   const descriptionText = agendaItem.description || '';
 
   // Description expand state and long-desc boolean.
@@ -626,7 +666,20 @@ export const AgendaDetailScreen = () => {
             {/* Description: optional speaker (API) + body text; speaker name links to profile */}
             {(agendaItem.speaker?.name || (agendaItem.description && agendaItem.description.trim() !== '')) && (
               <View style={styles.section}>
-                <Text selectable style={styles.sectionTitle}>Description</Text>
+                <View style={styles.sectionTitleRow}>
+                  <Text selectable style={styles.sectionTitleInRow}>Description</Text>
+                  {(agendaItem.id || params?.agendaId) ? (
+                    <TouchableOpacity
+                      style={styles.notesOutlineBtn}
+                      onPress={openSessionNotes}
+                      activeOpacity={0.85}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open session notes"
+                    >
+                      <Text style={styles.notesOutlineBtnText}>Notes</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
                 {agendaItem.speaker?.name ? (
                   <View style={styles.speakerHighlightBlock}>
                     <View style={styles.speakerLabelRow}>
@@ -684,6 +737,28 @@ export const AgendaDetailScreen = () => {
                 ) : null}
               </View>
             )}
+
+            {(agendaItem.id || params?.agendaId) &&
+              !agendaItem.speaker?.name &&
+              !(agendaItem.description && agendaItem.description.trim() !== '') && (
+                <View style={styles.section}>
+                  <View style={styles.sectionTitleRow}>
+                    <Text selectable style={styles.sectionTitleInRow}>Session</Text>
+                    <TouchableOpacity
+                      style={styles.notesOutlineBtn}
+                      onPress={openSessionNotes}
+                      activeOpacity={0.85}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open session notes"
+                    >
+                      <Text style={styles.notesOutlineBtnText}>Notes</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.descriptionText}>
+                    Add private notes or photos for this session.
+                  </Text>
+                </View>
+              )}
 
             {/* Key Topics Section */}
             {/* <View style={styles.section}>
@@ -916,6 +991,34 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
     marginBottom: 16,
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  sectionTitleInRow: {
+    fontSize: SIZES.title,
+    fontWeight: '700',
+    color: colors.text,
+    flex: 1,
+    marginBottom: 0,
+  },
+  notesOutlineBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    backgroundColor: 'rgba(138, 52, 144, 0.06)',
+    marginLeft: 12,
+    flexShrink: 0,
+  },
+  notesOutlineBtnText: {
+    fontSize: SIZES.body,
+    fontWeight: '700',
+    color: colors.primary,
   },
 
   // Speakers
