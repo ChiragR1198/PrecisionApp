@@ -7,6 +7,7 @@ import { router } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Platform,
   Pressable,
@@ -28,6 +29,7 @@ import {
   useGetSponsorContactsQuery,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { exportCsvNative } from '../../utils/exportCsvNative';
 
 const DeleteIcon = ({ size = 18, color = '#EF4444' }) => <FontAwesome name="trash" size={size} color={color} />;
 
@@ -51,6 +53,13 @@ function getContactPhoneDisplay(item) {
   return p || '—';
 }
 
+function csvEscape(v) {
+  const s = v == null ? '' : String(v);
+  const mustQuote = /[",\n\r]/.test(s);
+  const safe = s.replace(/"/g, '""');
+  return mustQuote ? `"${safe}"` : safe;
+}
+
 export const ContactsScreen = () => {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const navigation = useNavigation();
@@ -60,6 +69,7 @@ export const ContactsScreen = () => {
   const [isDeleteErrorModalVisible, setIsDeleteErrorModalVisible] = useState(false);
   const [selectedContact, setSelectedContact] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [exporting, setExporting] = useState(false);
   
   const { user, isAuthenticated } = useAppSelector((state) => state.auth);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
@@ -151,6 +161,51 @@ export const ContactsScreen = () => {
     return Array.from(byEmail.values());
   }, [contactsData, localContacts]);
 
+  const exportContactsCsv = useCallback(async () => {
+    const rows = contacts;
+    if (!rows.length) {
+      Alert.alert('No contacts', 'There are no saved contacts to export.');
+      return;
+    }
+    const safeName = `contacts_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+    try {
+      setExporting(true);
+      const header = ['Name', 'Phone', 'Email', 'LinkedIn', 'Type', 'Company'];
+      const lines = [header.map(csvEscape).join(',')];
+      rows.forEach((c) => {
+        const name = getContactDisplayName(c);
+        const phone = String(c?.phone ?? c?.mobile ?? c?.tel ?? '').trim();
+        const email = String(c?.email ?? '').trim();
+        const linkedin = String(c?.linkedin_url || c?.linkedinUrl || '').trim();
+        const type = String(c?.user_type ?? c?.type ?? c?.contact_type ?? '').trim();
+        const company = String(c?.company ?? c?.company_name ?? c?.organization ?? '').trim();
+        lines.push(
+          [
+            name,
+            phone,
+            email,
+            linkedin,
+            type,
+            company,
+          ]
+            .map(csvEscape)
+            .join(',')
+        );
+      });
+      const csvBody = lines.join('\n');
+      await exportCsvNative({
+        csvBody,
+        fileName: safeName,
+        fallbackDialogTitle: 'Export contacts',
+      });
+    } catch (e) {
+      console.error('Contacts CSV export:', e);
+      Alert.alert('Export failed', e?.message || 'Could not create the CSV file.');
+    } finally {
+      setExporting(false);
+    }
+  }, [contacts]);
+
   const { SIZES, isTablet } = useMemo(() => {
     const isTabletDevice = SCREEN_WIDTH >= 768;
     const getValue = ({ tablet, default: defaultValue }) => (isTabletDevice && tablet !== undefined ? tablet : defaultValue);
@@ -169,22 +224,30 @@ export const ContactsScreen = () => {
   const styles = useMemo(() => createStyles(SIZES, isTablet), [SIZES, isTablet]);
 
   const filteredContacts = useMemo(() => {
-    if (!searchQuery.trim()) return contacts;
-    const query = searchQuery.toLowerCase();
-    return contacts.filter((contact) => {
-      const name = String(getContactDisplayName(contact) || '').toLowerCase();
-      const phone = String(contact?.phone ?? contact?.mobile ?? contact?.tel ?? '')
-        .toLowerCase()
-        .trim();
-      const email = String(contact?.email || '').toLowerCase();
-      const li = String(contact?.linkedin_url || contact?.linkedinUrl || '').toLowerCase();
-      return (
-        name.includes(query) ||
-        phone.includes(query) ||
-        email.includes(query) ||
-        li.includes(query)
-      );
-    });
+    const base = !searchQuery.trim()
+      ? contacts
+      : (() => {
+          const query = searchQuery.toLowerCase();
+          return contacts.filter((contact) => {
+            const name = String(getContactDisplayName(contact) || '').toLowerCase();
+            const phone = String(contact?.phone ?? contact?.mobile ?? contact?.tel ?? '')
+              .toLowerCase()
+              .trim();
+            const email = String(contact?.email || '').toLowerCase();
+            const li = String(contact?.linkedin_url || contact?.linkedinUrl || '').toLowerCase();
+            return (
+              name.includes(query) ||
+              phone.includes(query) ||
+              email.includes(query) ||
+              li.includes(query)
+            );
+          });
+        })();
+
+    // Always keep contacts in A–Z order for stable UI.
+    return [...base].sort((a, b) =>
+      getContactDisplayName(a).localeCompare(getContactDisplayName(b))
+    );
   }, [contacts, searchQuery]);
 
   const sections = useMemo(() => {
@@ -299,6 +362,7 @@ export const ContactsScreen = () => {
       params: {
         contactId: String(item.id),
         contactName: getContactDisplayName(item),
+        returnTo: 'contacts',
       },
     });
   }, []);
@@ -389,6 +453,22 @@ export const ContactsScreen = () => {
         leftIcon="menu"
         onLeftPress={() => navigation.openDrawer?.()}
         iconSize={SIZES.headerIconSize}
+        right={
+          <TouchableOpacity
+            style={styles.exportButton}
+            onPress={exportContactsCsv}
+            activeOpacity={0.7}
+            disabled={exporting}
+            accessibilityRole="button"
+            accessibilityLabel="Export contacts"
+          >
+            <Icon
+              name={exporting ? 'loader' : 'download'}
+              size={SIZES.headerIconSize}
+              color={colors.white}
+            />
+          </TouchableOpacity>
+        }
       />
 
       <View style={styles.body}>
@@ -578,6 +658,13 @@ const createStyles = (SIZES, isTablet) =>
     container: {
       flex: 1,
       backgroundColor: colors.background,
+    },
+    exportButton: {
+      width: 40,
+      height: 40,
+      alignItems: 'center',
+      justifyContent: 'center',
+      opacity: 1,
     },
     body: {
       flex: 1,

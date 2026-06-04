@@ -60,7 +60,7 @@ export const Header = memo(({
   const SIZES = useMemo(() => ({
     iconSize: iconSize || getValue({ android: 22, ios: 23, tablet: 25, default: 22 }),
     titleSize: getValue({ android: 18, ios: 19, tablet: 20, default: 18 }),
-    subtitleSize: getValue({ android: 10, ios: 11, tablet: 11, default: 10 }),
+    subtitleSize: getValue({ android: 11, ios: 12, tablet: 13, default: 11 }),
     minHeight: getValue({ android: 60, ios: 82, tablet: 85, default: 80 }),
     paddingHorizontal: getValue({ android: 16, ios: 18, tablet: 20, default: 16 }),
   }), [isTablet, iconSize]);
@@ -91,7 +91,14 @@ export const Header = memo(({
     return (
       <View style={styles.center}>
         {!!title && <TextComponent style={[styles.title, { fontSize: SIZES.titleSize }, titleStyle]} numberOfLines={1}>{title}</TextComponent>}
-        {!!subtitle && <TextComponent style={[styles.subtitle, { fontSize: SIZES.subtitleSize }]} numberOfLines={1}>{subtitle}</TextComponent>}
+        {!!subtitle && (
+          <TextComponent
+            style={[styles.subtitle, { fontSize: SIZES.subtitleSize }]}
+            numberOfLines={2}
+          >
+            {subtitle}
+          </TextComponent>
+        )}
       </View>
     );
   };
@@ -180,7 +187,9 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     marginTop: 2,
-    color: colors.textMuted,
+    color: 'rgba(255, 255, 255, 0.9)',
+    textAlign: 'center',
+    fontWeight: '500',
   },
 });
 

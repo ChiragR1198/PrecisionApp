@@ -2,7 +2,7 @@ import Icon from '@expo/vector-icons/Feather';
 import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -24,10 +24,11 @@ import { colors, radius } from '../../constants/theme';
 import {
   useDeleteContactNoteMutation,
   useGetContactNotesQuery,
-  useSaveContactNoteMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { normalizeChatImageAsset } from '../../utils/normalizeChatImageAsset';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
+import { saveContactNote } from '../../utils/saveContactNote';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -35,6 +36,7 @@ export const ContactNotesScreen = () => {
   const params = useLocalSearchParams();
   const contactId = params?.contactId ? String(params.contactId) : '';
   const contactName = params?.contactName ? String(params.contactName) : '';
+  const returnTo = params?.returnTo ? String(params.returnTo) : '';
 
   const { user } = useAppSelector((state) => state.auth);
   const loginType = String(user?.login_type || user?.user_type || '').toLowerCase();
@@ -53,25 +55,62 @@ export const ContactNotesScreen = () => {
   const { data, isLoading, isFetching, refetch } = useGetContactNotesQuery(queryArg, {
     skip: !contactId,
   });
-  const [saveNote, { isLoading: isSaving }] = useSaveContactNoteMutation();
+  const [isSaving, setIsSaving] = useState(false);
+  const saveInFlightRef = useRef(false);
+  const [displayItems, setDisplayItems] = useState([]);
+  const [notesReadyForContactId, setNotesReadyForContactId] = useState(null);
   const [deleteNote] = useDeleteContactNoteMutation();
   const [deletingNoteId, setDeletingNoteId] = useState(null);
   const [noteToDelete, setNoteToDelete] = useState(null);
   const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
 
-  const items = useMemo(() => {
+  useEffect(() => {
+    setDraftNotes('');
+    setPickedImage(null);
+    setDisplayItems([]);
+    setNotesReadyForContactId(null);
+    setNoteToDelete(null);
+    setIsDeleteConfirmVisible(false);
+  }, [contactId]);
+
+  useEffect(() => {
+    if (!contactId) {
+      setDisplayItems([]);
+      setNotesReadyForContactId(null);
+      return;
+    }
+    if (isFetching) {
+      return;
+    }
     const raw = data?.data;
-    if (Array.isArray(raw)) return raw;
-    return [];
-  }, [data]);
+    const list = Array.isArray(raw)
+      ? raw.filter(
+          (row) =>
+            String(row.scanned_contact_id ?? row.contact_id ?? contactId) === String(contactId)
+        )
+      : [];
+    setDisplayItems(list);
+    setNotesReadyForContactId(contactId);
+  }, [contactId, data, isFetching]);
+
+  const items = notesReadyForContactId === contactId ? displayItems : [];
+  const listLoading = Boolean(contactId) && notesReadyForContactId !== contactId;
 
   const handleBack = useCallback(() => {
+    if (returnTo === 'contacts') {
+      router.push('/(drawer)/contacts');
+      return;
+    }
     try {
-      router.back();
+      if (router.canGoBack?.()) {
+        router.back();
+      } else {
+        router.push('/(drawer)/contacts');
+      }
     } catch {
       router.push('/(drawer)/contacts');
     }
-  }, []);
+  }, [returnTo]);
 
   const openImagePickerModal = useCallback(() => {
     setIsImagePickerModalVisible(true);
@@ -114,15 +153,12 @@ export const ContactNotesScreen = () => {
         Alert.alert('File too large', 'Maximum size is 8 MB.');
         return;
       }
-      const ext = asset.mimeType?.includes('png')
-        ? 'png'
-        : asset.mimeType?.includes('webp')
-          ? 'webp'
-          : 'jpg';
+      const normalized = await normalizeChatImageAsset(asset);
+      if (!normalized) return;
       setPickedImage({
-        uri: asset.uri,
-        name: `note.${ext}`,
-        mimeType: asset.mimeType || 'image/jpeg',
+        uri: normalized.uri,
+        name: normalized.name || 'note.jpg',
+        mimeType: normalized.mimeType || 'image/jpeg',
       });
     } catch (e) {
       console.warn('ContactNotes pickImage error', e);
@@ -164,6 +200,7 @@ export const ContactNotesScreen = () => {
           Alert.alert('Could not delete', res?.message || 'Please try again.');
           return;
         }
+        setDisplayItems((prev) => prev.filter((n) => Number(n.id) !== Number(noteId)));
         refetch();
       } catch (e) {
         const msg = e?.data?.message || e?.message || 'Delete failed';
@@ -196,6 +233,8 @@ export const ContactNotesScreen = () => {
   }, [noteToDelete, performDelete]);
 
   const onSave = useCallback(async () => {
+    if (saveInFlightRef.current) return;
+
     const text = draftNotes.trim();
     if (!contactId) {
       Alert.alert('Error', 'Missing contact.');
@@ -205,25 +244,49 @@ export const ContactNotesScreen = () => {
       Alert.alert('Add something', 'Enter a note or upload an image before saving.');
       return;
     }
+
+    saveInFlightRef.current = true;
+    setIsSaving(true);
     try {
-      const res = await saveNote({
+      const res = await saveContactNote({
         contactId,
         role: notesRole,
         notes: text,
         image: pickedImage,
-      }).unwrap();
+      });
       if (res?.success === false) {
         Alert.alert('Could not save', res?.message || 'Please try again.');
         return;
+      }
+      const saved = res?.data;
+      if (saved?.id) {
+        setDisplayItems((prev) => {
+          const id = Number(saved.id);
+          if (prev.some((n) => Number(n.id) === id)) return prev;
+          return [
+            ...prev,
+            {
+              id: saved.id,
+              scanned_contact_id: Number(contactId),
+              notes: saved.notes ?? text,
+              image_url: saved.image_url ?? null,
+              created_at: saved.created_at ?? new Date().toISOString(),
+            },
+          ];
+        });
+        setNotesReadyForContactId(contactId);
       }
       setDraftNotes('');
       setPickedImage(null);
       refetch();
     } catch (e) {
-      const msg = e?.data?.message || e?.message || 'Save failed';
+      const msg = e?.message || 'Save failed';
       Alert.alert('Error', msg);
+    } finally {
+      saveInFlightRef.current = false;
+      setIsSaving(false);
     }
-  }, [contactId, draftNotes, notesRole, pickedImage, refetch, saveNote]);
+  }, [contactId, draftNotes, notesRole, pickedImage, refetch]);
 
   const listHeader = (
     <View style={styles.formBlock}>
@@ -268,7 +331,7 @@ export const ContactNotesScreen = () => {
       </TouchableOpacity>
 
       <Text style={styles.listSectionTitle}>Your saved notes</Text>
-      {isLoading && items.length === 0 ? (
+      {listLoading ? (
         <View style={styles.inlineLoader}>
           <ActivityIndicator color={colors.primary} />
         </View>
@@ -343,16 +406,17 @@ export const ContactNotesScreen = () => {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
         <FlatList
+          key={`contact-notes-${contactId}`}
           data={items}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderItem}
           ListHeaderComponent={listHeader}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.listContent}
-          refreshing={isFetching && !isLoading}
+          refreshing={isFetching && notesReadyForContactId === contactId}
           onRefresh={refetch}
           ListEmptyComponent={
-            !isLoading ? (
+            listLoading ? null : !isLoading ? (
               <Text style={styles.empty}>No notes yet. Add one above.</Text>
             ) : null
           }
