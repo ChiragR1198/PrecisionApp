@@ -1,8 +1,7 @@
 import Icon from '@expo/vector-icons/Feather';
 import { router } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  AppState,
   Pressable,
   StyleSheet,
   Text,
@@ -13,6 +12,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius } from '../../constants/theme';
 import { useAppOpenNotificationItems } from '../../hooks/useAppOpenNotificationItems';
 import { useAppSelector } from '../../store/hooks';
+import {
+  recordAppOpenUpdatesDismissed,
+  shouldShowAppOpenUpdates,
+} from '../../utils/appOpenUpdatesVisibility';
 
 const ICON_BY_TYPE = {
   meeting_requests: 'calendar',
@@ -39,48 +42,55 @@ function routeForItem(type) {
  */
 export function AppOpenNotificationsOverlay() {
   const insets = useSafeAreaInsets();
-  const { isAuthenticated } = useAppSelector((s) => s.auth);
-  const [dismissed, setDismissed] = useState(false);
-  const appStateRef = useRef(AppState.currentState);
+  const { isAuthenticated, user } = useAppSelector((s) => s.auth);
+  const userId = user?.id;
+  const [dismissed, setDismissed] = useState(true);
+  const [visibilityReady, setVisibilityReady] = useState(false);
 
-  const { items, refetch, isFetching } = useAppOpenNotificationItems();
+  const { items, isFetching } = useAppOpenNotificationItems();
+  const visibleItems = items.filter((it) => it?.type !== 'messages');
 
-  useEffect(() => {
+  const syncVisibility = useCallback(async () => {
     if (!isAuthenticated) {
-      setDismissed(false);
+      setDismissed(true);
+      setVisibilityReady(false);
+      return;
     }
-  }, [isAuthenticated]);
+    const mayShow = await shouldShowAppOpenUpdates(userId);
+    setDismissed(!mayShow);
+    setVisibilityReady(true);
+  }, [isAuthenticated, userId]);
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (nextState) => {
-      const prev = appStateRef.current;
-      appStateRef.current = nextState;
-      if (
-        isAuthenticated &&
-        (prev === 'background' || prev === 'inactive') &&
-        nextState === 'active'
-      ) {
-        setDismissed(false);
-        refetch();
-      }
-    });
-    return () => sub.remove();
-  }, [isAuthenticated, refetch]);
+    syncVisibility();
+  }, [syncVisibility]);
 
-  const onDismissAll = useCallback(() => setDismissed(true), []);
+  // Intentionally do not re-open this overlay on background -> foreground.
+  // All updates remain accessible from the Notifications / Messages screens.
+
+  const onDismissAll = useCallback(async () => {
+    await recordAppOpenUpdatesDismissed(userId);
+    setDismissed(true);
+  }, [userId]);
 
   const onPressItem = useCallback(
-    (row) => {
+    async (row) => {
       const path = routeForItem(row?.type);
+      await recordAppOpenUpdatesDismissed(userId);
       setDismissed(true);
       if (path) {
         router.push(path);
       }
     },
-    []
+    [userId]
   );
 
-  if (!isAuthenticated || dismissed || items.length === 0) {
+  if (
+    !isAuthenticated ||
+    !visibilityReady ||
+    dismissed ||
+    visibleItems.length === 0
+  ) {
     return null;
   }
 
@@ -92,15 +102,16 @@ export function AppOpenNotificationsOverlay() {
       <View style={styles.headerRow}>
         <Text style={styles.headerTitle}>Updates for you</Text>
         <TouchableOpacity
+          style={styles.closeButton}
           onPress={onDismissAll}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
-          accessibilityLabel="Dismiss all updates"
+          accessibilityLabel="Close updates"
         >
-          <Icon name="x" size={20} color={colors.textMuted} />
+          <Icon name="x" size={20} color={colors.text} />
         </TouchableOpacity>
       </View>
-      {items.map((row) => {
+      {visibleItems.map((row) => {
         const iconName = ICON_BY_TYPE[row.type] || 'bell';
         return (
           <Pressable
@@ -144,6 +155,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: colors.textSecondary,
+    flex: 1,
+  },
+  closeButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
   },
   card: {
     flexDirection: 'row',

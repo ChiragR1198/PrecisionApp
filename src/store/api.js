@@ -1,13 +1,31 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
+import { isAbortSignalCompatError } from '../utils/abortSignalPolyfill';
 import { normalizeEventIdForApi } from '../utils/parseEventId';
+
+const safeBaseQuery = async (args, api, extraOptions) => {
+  try {
+    return await baseQuery(args, api, extraOptions);
+  } catch (error) {
+    if (isAbortSignalCompatError(error)) {
+      return {
+        error: {
+          status: 'FETCH_ERROR',
+          error: String(error?.message || 'Request aborted'),
+          data: { message: 'Request aborted' },
+        },
+      };
+    }
+    throw error;
+  }
+};
 
 // Base query with token injection
 const baseQuery = fetchBaseQuery({
   baseUrl: API_BASE_URL,
   timeout: 25000,
-  prepareHeaders: async (headers) => {
+  prepareHeaders: async (headers, { arg }) => {
     try {
       const token = await AsyncStorage.getItem('auth_token');
       if (token) {
@@ -22,7 +40,9 @@ const baseQuery = fetchBaseQuery({
       console.error('❌ Error retrieving token:', error);
     }
     headers.set('Accept', 'application/json');
-    if (!headers.get('Content-Type')) {
+    const body = arg && typeof arg === 'object' ? arg.body : undefined;
+    const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+    if (!isFormData && !headers.get('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
     return headers;
@@ -168,7 +188,7 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
     };
   }
   
-  let result = await baseQuery(args, api, extraOptions);
+  let result = await safeBaseQuery(args, api, extraOptions);
 
   // Some backends return HTTP 4xx/5xx on the first meeting-request call but JSON still says success.
   // fetchBaseQuery treats any non-2xx as error → unwrap() throws even when the request actually worked.
@@ -228,7 +248,7 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
     if (isPresenceEndpoint && (isFetchError || errorStatus === 404 || errorStatus === 'PARSING_ERROR')) {
       if (isFetchError) {
         await new Promise((r) => setTimeout(r, 600));
-        const retry = await baseQuery(args, api, extraOptions);
+        const retry = await safeBaseQuery(args, api, extraOptions);
         if (!retry.error) {
           return retry;
         }
@@ -313,8 +333,20 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       return result;
     }
     
+    const isFormDataPost =
+      args.method === 'POST' &&
+      typeof FormData !== 'undefined' &&
+      args.body instanceof FormData;
+
     // For FETCH_ERROR, retry with exponential backoff (might be timing/network issue)
-    if (isFetchError && !isAuthEndpoint && !isPresenceEndpoint && !isEventSponsorLogosEndpoint) {
+    // Never retry multipart POSTs — server may have already saved; retries duplicate rows.
+    if (
+      isFetchError &&
+      !isAuthEndpoint &&
+      !isPresenceEndpoint &&
+      !isEventSponsorLogosEndpoint &&
+      !isFormDataPost
+    ) {
       const maxRetries = 3;
       let retryCount = 0;
       let initialError = result.error;
@@ -325,7 +357,7 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       while (retryCount < maxRetries && result.error && result.error.status === 'FETCH_ERROR') {
         const delay = 500 * Math.pow(2, retryCount); // 500ms, 1000ms
         await new Promise(resolve => setTimeout(resolve, delay));
-        result = await baseQuery(args, api, extraOptions);
+        result = await safeBaseQuery(args, api, extraOptions);
         retryCount++;
         
         if (!result.error) {

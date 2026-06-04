@@ -25,9 +25,10 @@ import { colors, radius } from '../../constants/theme';
 import {
   useDeleteAgendaSessionNoteMutation,
   useGetAgendaSessionNotesQuery,
-  useSaveAgendaSessionNoteMutation,
 } from '../../store/api';
+import { normalizeChatImageAsset } from '../../utils/normalizeChatImageAsset';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
+import { saveAgendaSessionNote } from '../../utils/saveAgendaSessionNote';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -45,17 +46,44 @@ export const AgendaSessionNotesScreen = () => {
   const { data, isLoading, isFetching, refetch } = useGetAgendaSessionNotesQuery(agendaId, {
     skip: !agendaId,
   });
-  const [saveNote, { isLoading: isSaving }] = useSaveAgendaSessionNoteMutation();
+  const [isSaving, setIsSaving] = useState(false);
+  const saveInFlightRef = useRef(false);
+  const [displayItems, setDisplayItems] = useState([]);
+  /** False until notes for the current agenda_id have finished loading (avoids flashing another session). */
+  const [notesReadyForAgendaId, setNotesReadyForAgendaId] = useState(null);
   const [deleteNote] = useDeleteAgendaSessionNoteMutation();
   const [deletingNoteId, setDeletingNoteId] = useState(null);
   const [noteToDelete, setNoteToDelete] = useState(null);
   const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
 
-  const items = useMemo(() => {
+  useEffect(() => {
+    setDraftNotes('');
+    setPickedImage(null);
+    setDisplayItems([]);
+    setNotesReadyForAgendaId(null);
+    setNoteToDelete(null);
+    setIsDeleteConfirmVisible(false);
+  }, [agendaId]);
+
+  useEffect(() => {
+    if (!agendaId) {
+      setDisplayItems([]);
+      setNotesReadyForAgendaId(null);
+      return;
+    }
+    if (isFetching) {
+      return;
+    }
     const raw = data?.data;
-    if (Array.isArray(raw)) return raw;
-    return [];
-  }, [data]);
+    const list = Array.isArray(raw)
+      ? raw.filter((row) => String(row.agenda_id ?? agendaId) === String(agendaId))
+      : [];
+    setDisplayItems(list);
+    setNotesReadyForAgendaId(agendaId);
+  }, [agendaId, data, isFetching]);
+
+  const items = notesReadyForAgendaId === agendaId ? displayItems : [];
+  const listLoading = Boolean(agendaId) && notesReadyForAgendaId !== agendaId;
 
   const handleBack = useCallback(() => {
     const returnTo = params?.returnTo ? String(params.returnTo) : '';
@@ -145,16 +173,12 @@ export const AgendaSessionNotesScreen = () => {
         Alert.alert('File too large', 'Maximum size is 8 MB.');
         return;
       }
-      const ext =
-        asset.mimeType?.includes('png')
-          ? 'png'
-          : asset.mimeType?.includes('webp')
-            ? 'webp'
-            : 'jpg';
+      const normalized = await normalizeChatImageAsset(asset);
+      if (!normalized) return;
       setPickedImage({
-        uri: asset.uri,
-        name: `note.${ext}`,
-        mimeType: asset.mimeType || 'image/jpeg',
+        uri: normalized.uri,
+        name: normalized.name || 'note.jpg',
+        mimeType: normalized.mimeType || 'image/jpeg',
       });
     } catch (e) {
       console.warn('AgendaSessionNotes pickImage error', e);
@@ -199,6 +223,7 @@ export const AgendaSessionNotesScreen = () => {
           Alert.alert('Could not delete', res?.message || 'Please try again.');
           return;
         }
+        setDisplayItems((prev) => prev.filter((n) => Number(n.id) !== Number(noteId)));
         refetch();
       } catch (e) {
         const msg = e?.data?.message || e?.message || 'Delete failed';
@@ -231,6 +256,8 @@ export const AgendaSessionNotesScreen = () => {
   }, [noteToDelete, performDelete]);
 
   const onSave = useCallback(async () => {
+    if (saveInFlightRef.current) return;
+
     const text = draftNotes.trim();
     if (!agendaId) {
       Alert.alert('Error', 'Missing session.');
@@ -240,24 +267,48 @@ export const AgendaSessionNotesScreen = () => {
       Alert.alert('Add something', 'Enter a note or upload an image before saving.');
       return;
     }
+
+    saveInFlightRef.current = true;
+    setIsSaving(true);
     try {
-      const res = await saveNote({
+      const res = await saveAgendaSessionNote({
         agendaId,
         notes: text,
         image: pickedImage,
-      }).unwrap();
+      });
       if (res?.success === false) {
         Alert.alert('Could not save', res?.message || 'Please try again.');
         return;
+      }
+      const saved = res?.data;
+      if (saved?.id) {
+        setDisplayItems((prev) => {
+          const id = Number(saved.id);
+          if (prev.some((n) => Number(n.id) === id)) return prev;
+          return [
+            ...prev,
+            {
+              id: saved.id,
+              agenda_id: Number(agendaId),
+              notes: saved.notes ?? text,
+              image_url: saved.image_url ?? null,
+              created_at: saved.created_at ?? new Date().toISOString(),
+            },
+          ];
+        });
+        setNotesReadyForAgendaId(agendaId);
       }
       setDraftNotes('');
       setPickedImage(null);
       refetch();
     } catch (e) {
-      const msg = e?.data?.message || e?.message || 'Save failed';
+      const msg = e?.message || 'Save failed';
       Alert.alert('Error', msg);
+    } finally {
+      saveInFlightRef.current = false;
+      setIsSaving(false);
     }
-  }, [agendaId, draftNotes, pickedImage, refetch, saveNote]);
+  }, [agendaId, draftNotes, pickedImage, refetch]);
 
   const listHeader = (
     <View style={styles.formBlock}>
@@ -302,7 +353,7 @@ export const AgendaSessionNotesScreen = () => {
       </TouchableOpacity>
 
       <Text style={styles.listSectionTitle}>Your saved notes</Text>
-      {isLoading && items.length === 0 ? (
+      {listLoading ? (
         <View style={styles.inlineLoader}>
           <ActivityIndicator color={colors.primary} />
         </View>
@@ -377,16 +428,17 @@ export const AgendaSessionNotesScreen = () => {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
         <FlatList
+          key={`agenda-notes-${agendaId}`}
           data={items}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderItem}
           ListHeaderComponent={listHeader}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.listContent}
-          refreshing={isFetching && !isLoading}
+          refreshing={isFetching && notesReadyForAgendaId === agendaId}
           onRefresh={refetch}
           ListEmptyComponent={
-            !isLoading ? (
+            listLoading ? null : !isLoading ? (
               <Text style={styles.empty}>No notes yet. Add one above.</Text>
             ) : null
           }

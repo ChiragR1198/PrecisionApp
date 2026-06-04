@@ -1,3 +1,4 @@
+import '../src/utils/abortSignalPolyfill';
 import * as NavigationBar from 'expo-navigation-bar';
 import Constants from 'expo-constants';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';

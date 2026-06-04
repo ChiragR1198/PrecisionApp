@@ -1,13 +1,11 @@
 import { Drawer } from 'expo-router/drawer';
 import React from 'react';
 import { colors } from '../../src/constants/theme';
-import { AppOpenNotificationsOverlay } from '../../src/components/notifications/AppOpenNotificationsOverlay';
 import { CustomDrawerContent } from '../../src/navigation/CustomDrawerContent';
 
 export default function DrawerLayout() {
   return (
     <>
-      <AppOpenNotificationsOverlay />
       <Drawer
       initialRouteName="dashboard"
       screenOptions={{

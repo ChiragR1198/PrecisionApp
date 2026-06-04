@@ -1,4 +1,5 @@
 import Icon from '@expo/vector-icons/Feather';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -19,7 +20,34 @@ import {
   useMarkNotificationReadMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
+import { useAppOpenNotificationItems } from '../../hooks/useAppOpenNotificationItems';
+import { router } from 'expo-router';
 import { navigateFromNotificationData } from '../../utils/notificationNavigation';
+import { APP_OPEN_UPDATES_INTERVAL_MS } from '../../utils/appOpenUpdatesVisibility';
+
+const SUMMARY_ICON_BY_TYPE = {
+  meeting_requests: 'calendar',
+  new_attendees: 'users',
+  messages: 'message-circle',
+};
+
+function routeForSummaryItem(type) {
+  switch (type) {
+    case 'meeting_requests':
+      return '/(drawer)/meeting-requests';
+    case 'new_attendees':
+      return '/(drawer)/attendees';
+    case 'messages':
+      return '/(drawer)/messages';
+    default:
+      return null;
+  }
+}
+
+function summaryDismissKey(userId) {
+  const id = userId != null && userId !== '' ? String(userId) : 'default';
+  return `notification_summary_dismissed_${id}`;
+}
 
 function formatTime(iso) {
   if (!iso) return '';
@@ -35,7 +63,7 @@ function formatTime(iso) {
       hour: '2-digit',
       minute: '2-digit',
     });
-  } catch (e) {
+  } catch (_e) {
     // Fallback: older Android/JS runtimes may not support timeZone option.
     return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
@@ -43,8 +71,12 @@ function formatTime(iso) {
 
 export function HeaderNotificationBell({ iconSize = 22 }) {
   const insets = useSafeAreaInsets();
-  const { isAuthenticated } = useAppSelector((s) => s.auth);
+  const { isAuthenticated, user } = useAppSelector((s) => s.auth);
+  const userId = user?.id;
   const [open, setOpen] = useState(false);
+
+  const { items: summaryItems } = useAppOpenNotificationItems();
+  const [dismissedSummary, setDismissedSummary] = useState({});
 
   const { data: unreadData, refetch: refetchUnread } = useGetNotificationUnreadCountQuery(undefined, {
     skip: !isAuthenticated,
@@ -79,6 +111,23 @@ export function HeaderNotificationBell({ iconSize = 22 }) {
     refetchUnread();
   }, [isAuthenticated, refetchUnread]);
 
+  useEffect(() => {
+    if (!open || !isAuthenticated) return;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(summaryDismissKey(userId));
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === 'object') {
+          setDismissedSummary(parsed);
+        } else {
+          setDismissedSummary({});
+        }
+      } catch {
+        setDismissedSummary({});
+      }
+    })();
+  }, [open, isAuthenticated, userId]);
+
   // Refetch inbox after the panel is open (subscription active). Avoids refetch in onOpen before skip flips.
   useEffect(() => {
     if (!open || !isAuthenticated) return;
@@ -86,6 +135,47 @@ export function HeaderNotificationBell({ iconSize = 22 }) {
   }, [open, isAuthenticated, refetchInbox]);
 
   const close = useCallback(() => setOpen(false), []);
+
+  const visibleSummaryItems = useMemo(() => {
+    if (!Array.isArray(summaryItems) || summaryItems.length === 0) return [];
+    const now = Date.now();
+    return summaryItems.filter((row) => {
+      const t = row?.type;
+      if (!t) return false;
+      const dismissedAt = Number(dismissedSummary?.[t]);
+      if (!Number.isFinite(dismissedAt)) return true;
+      return now - dismissedAt >= APP_OPEN_UPDATES_INTERVAL_MS;
+    });
+  }, [summaryItems, dismissedSummary]);
+
+  const onPressSummary = useCallback(
+    (row) => {
+      const path = routeForSummaryItem(row?.type);
+      close();
+      if (path) router.push(path);
+    },
+    [close]
+  );
+
+  const onDismissSummary = useCallback(
+    async (row, e) => {
+      try {
+        e?.stopPropagation?.();
+      } catch {
+        // ignore
+      }
+      const t = row?.type;
+      if (!t) return;
+      const next = { ...(dismissedSummary || {}), [t]: Date.now() };
+      setDismissedSummary(next);
+      try {
+        await AsyncStorage.setItem(summaryDismissKey(userId), JSON.stringify(next));
+      } catch (err) {
+        console.warn('dismiss summary failed', err);
+      }
+    },
+    [dismissedSummary, userId]
+  );
 
   const handleMarkAll = useCallback(async () => {
     try {
@@ -179,6 +269,40 @@ export function HeaderNotificationBell({ iconSize = 22 }) {
                 </TouchableOpacity>
               ) : null}
             </View>
+
+            {visibleSummaryItems.length > 0 ? (
+              <View style={styles.summaryWrap}>
+                {visibleSummaryItems.map((row) => {
+                  const iconName = SUMMARY_ICON_BY_TYPE[row.type] || 'bell';
+                  return (
+                    <TouchableOpacity
+                      key={row.type}
+                      style={styles.summaryRow}
+                      activeOpacity={0.85}
+                      onPress={() => onPressSummary(row)}
+                    >
+                      <View style={styles.summaryIconCircle}>
+                        <Icon name={iconName} size={16} color={colors.primary} />
+                      </View>
+                      <Text style={styles.summaryText} numberOfLines={2}>
+                        {row.message}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.summaryClose}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        onPress={(e) => onDismissSummary(row, e)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Dismiss summary"
+                      >
+                        <Icon name="x" size={18} color={colors.textMuted} />
+                      </TouchableOpacity>
+                      <Icon name="chevron-right" size={18} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : null}
+
             {isFetching && items.length === 0 ? (
               <View style={styles.loader}>
                 <ActivityIndicator color={colors.primary} />
@@ -284,6 +408,48 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: colors.text,
+  },
+  summaryWrap: {
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.white,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(138, 52, 144, 0.06)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+  },
+  summaryIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(138, 52, 144, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  summaryText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    lineHeight: 18,
+  },
+  summaryClose: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    marginLeft: 6,
+    marginRight: 2,
   },
   markAll: {
     fontSize: 13,

@@ -14,6 +14,7 @@ import {
   BackHandler,
   FlatList,
   Image,
+  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Linking,
@@ -29,6 +30,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ChatEmojiPicker } from '../../components/chat/ChatEmojiPicker';
 import { Header } from '../../components/common/Header';
 import { colors, radius } from '../../constants/theme';
 import {
@@ -39,8 +41,37 @@ import {
   useSendSponsorMessageMutation,
 } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { normalizeChatImageAsset } from '../../utils/normalizeChatImageAsset';
 import { splitMessageByUrls } from '../../utils/splitMessageByUrls';
+import { uploadChatMessageAttachment } from '../../utils/uploadChatMessageAttachment';
 import { websocketManager } from '../../utils/websocket';
+
+function getChatImagePickerOptions() {
+  const base = {
+    mediaTypes: ['images'],
+    allowsEditing: false,
+    quality: 0.85,
+    exif: false,
+  };
+  if (
+    Platform.OS === 'ios' &&
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode?.Compatible
+  ) {
+    return {
+      ...base,
+      preferredAssetRepresentationMode:
+        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+    };
+  }
+  return base;
+}
+
+/** Delay so Modal/keyboard fully dismiss before presenting camera, gallery, or document picker */
+function deferNativePicker(callback) {
+  InteractionManager.runAfterInteractions(() => {
+    setTimeout(callback, Platform.OS === 'ios' ? 400 : 280);
+  });
+}
 
 function ChatBubbleMessageText({ text, isMe, styles: styleSheet }) {
   const segments = useMemo(() => splitMessageByUrls(text), [text]);
@@ -159,6 +190,33 @@ const QUICK_MESSAGE_TEMPLATES = [
 /** Backend allows up to 8 MB (see Mobile_Model::saveChatAttachmentFile) */
 const MAX_CHAT_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
+function isPendingChatMessage(msg) {
+  return msg?.uploadStatus === 'pending' || String(msg?.id ?? '').startsWith('pending-');
+}
+
+/** Keep in-flight optimistic attachments when server list refreshes */
+function mergeMessagesKeepingPending(serverMessages, prevMessages) {
+  const pending = (prevMessages || []).filter(isPendingChatMessage);
+  if (pending.length === 0) return serverMessages;
+  return [...serverMessages, ...pending];
+}
+
+function createOptimisticAttachmentMessage({ id, caption, uri, name, mimeType }) {
+  const isPdf = mimeType === 'application/pdf' || /\.pdf$/i.test(name || '');
+  return {
+    id,
+    sender: 'me',
+    text: caption || '',
+    messageType: isPdf ? 'file' : 'image',
+    attachmentUrl: uri,
+    attachmentName: name || (isPdf ? 'document.pdf' : 'photo.jpg'),
+    time: formatMessageTime(new Date().toISOString()),
+    isRead: false,
+    readAt: null,
+    uploadStatus: 'pending',
+  };
+}
+
 function resolveChatRecipient(thread) {
   if (!thread) return null;
   const toIdValue = thread.user_id || thread.id;
@@ -193,13 +251,25 @@ export const MessageDetailScreen = () => {
   const flatListRef = useRef(null);
   const previousMessagesLengthRef = useRef(0);
 
-  const [sendDelegateMessage, { isLoading: delegateSending }] = useSendDelegateMessageMutation();
-  const [sendSponsorMessage, { isLoading: sponsorSending }] = useSendSponsorMessageMutation();
+  const [sendDelegateMessage, { isLoading: delegateSending, reset: resetDelegateSend }] =
+    useSendDelegateMessageMutation();
+  const [sendSponsorMessage, { isLoading: sponsorSending, reset: resetSponsorSend }] =
+    useSendSponsorMessageMutation();
   const isSending = delegateSending || sponsorSending;
-  const [isUploading, setIsUploading] = useState(false);
+  const isTextBusy = isSending;
   /** In-app lightbox for chat images `{ uri, name? }` */
   const [imagePreview, setImagePreview] = useState(null);
   const [isSavingImage, setIsSavingImage] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isAttachModalVisible, setIsAttachModalVisible] = useState(false);
+  const inputRef = useRef(null);
+  const pendingAttachSourceRef = useRef(null);
+
+  const scrollChatToEnd = useCallback(() => {
+    requestAnimationFrame(() => {
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
+    });
+  }, []);
 
   // Debug: Log params when they change
   useEffect(() => {
@@ -629,7 +699,7 @@ export const MessageDetailScreen = () => {
           });
           
           console.log(`💬 MessageDetailScreen: Setting ${mappedMessages.length} messages`);
-          setMessages(mappedMessages);
+          setMessages((prev) => mergeMessagesKeepingPending(mappedMessages, prev));
           lastProcessedMessagesRef.current = dataKey;
           initializedRef.current = true;
         } else {
@@ -678,128 +748,212 @@ export const MessageDetailScreen = () => {
         return;
       }
       const caption = inputValue.trim();
-      const form = new FormData();
-      form.append('to_id', String(recipient.toId));
-      form.append('to_type', recipient.finalToType);
-      if (caption) form.append('message', caption);
-      form.append('attachment', {
+      const optimisticId = `pending-${Date.now()}`;
+
+      setShowEmojiPicker(false);
+      Keyboard.dismiss();
+      setInputValue('');
+
+      const optimisticMessage = createOptimisticAttachmentMessage({
+        id: optimisticId,
+        caption,
         uri,
-        name: name || 'attachment.jpg',
-        type: mimeType || 'application/octet-stream',
+        name: name || 'photo.jpg',
+        mimeType: mimeType || 'image/jpeg',
       });
+      setMessages((prev) => [...prev, optimisticMessage]);
+      scrollChatToEnd();
 
-      setIsUploading(true);
       try {
-        const result = isDelegate
-          ? await sendDelegateMessage(form).unwrap()
-          : await sendSponsorMessage(form).unwrap();
+        const result = await uploadChatMessageAttachment({
+          isDelegate,
+          toId: recipient.toId,
+          toType: recipient.finalToType,
+          message: caption,
+          uri,
+          name: name || 'photo.jpg',
+          mimeType: mimeType || 'image/jpeg',
+        });
 
-        if (result?.success && result?.data) {
-          const d = result.data;
+        if (result?.success) {
+          const d = result.data || {};
           const sentMessage = {
-            id: String(d.id || Date.now()),
+            id: String(d.id || optimisticId),
             sender: 'me',
             text: d.message || caption || '',
-            messageType: d.message_type || (d.attachment_url ? 'image' : 'text'),
-            attachmentUrl: d.attachment_url || null,
-            attachmentName: d.attachment_name || null,
+            messageType: d.message_type || (d.attachment_url ? 'image' : optimisticMessage.messageType),
+            attachmentUrl: d.attachment_url || uri,
+            attachmentName: d.attachment_name || name || null,
             time: formatMessageTime(d.date || new Date().toISOString()),
             isRead: String(d?.is_read ?? 0) === '1',
             readAt: null,
+            uploadStatus: 'sent',
           };
-          setMessages((prev) => [...prev, sentMessage]);
-          setInputValue('');
-          setTimeout(() => refetchMessages?.(), 500);
+          setMessages((prev) =>
+            prev.map((m) => (m.id === optimisticId ? sentMessage : m))
+          );
+          dispatch(api.util.invalidateTags(['Messages']));
+          setTimeout(() => refetchMessages?.(), 800);
         } else {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === optimisticId ? { ...m, uploadStatus: 'failed' } : m
+            )
+          );
           Alert.alert('Error', result?.message || 'Upload failed');
         }
       } catch (error) {
-        if (error?.status === 'PARSING_ERROR') {
-          setInputValue('');
-          setTimeout(() => refetchMessages?.(), 500);
-          return;
-        }
-        const errMsg = error?.data?.message || error?.message || 'Upload failed';
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === optimisticId ? { ...m, uploadStatus: 'failed' } : m
+          )
+        );
+        const errMsg = error?.message || 'Upload failed. Check your connection and try again.';
         Alert.alert('Error', errMsg);
-      } finally {
-        setIsUploading(false);
+        console.warn('uploadChatAttachment failed', error);
       }
     },
-    [thread, currentUserId, loginType, inputValue, isDelegate, sendDelegateMessage, sendSponsorMessage, refetchMessages]
+    [thread, inputValue, isDelegate, dispatch, refetchMessages, scrollChatToEnd]
   );
 
-  const pickImageFromLibrary = useCallback(async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Allow photo library access to attach images.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: false,
-      quality: 0.85,
-    });
-    if (result.canceled) return;
-    const asset = result.assets?.[0];
-    if (!asset?.uri) return;
-    if (asset.fileSize && asset.fileSize > MAX_CHAT_ATTACHMENT_BYTES) {
-      Alert.alert('File too large', 'Maximum size is 8 MB.');
-      return;
-    }
-    const ext = asset.mimeType?.includes('png') ? 'png' : asset.mimeType?.includes('webp') ? 'webp' : 'jpg';
-    await uploadChatAttachment({
-      uri: asset.uri,
-      name: `photo.${ext}`,
-      mimeType: asset.mimeType || 'image/jpeg',
-    });
-  }, [uploadChatAttachment]);
+  const runAttachPicker = useCallback(
+    async (source) => {
+      try {
+        if (source === 'camera' || source === 'gallery') {
+          const perm =
+            source === 'camera'
+              ? await ImagePicker.requestCameraPermissionsAsync()
+              : await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert(
+              'Permission needed',
+              source === 'camera'
+                ? 'Allow camera access to take a photo.'
+                : 'Allow photo library access to attach images.'
+            );
+            return;
+          }
+          const pickerOptions = getChatImagePickerOptions();
+          const result =
+            source === 'camera'
+              ? await ImagePicker.launchCameraAsync(pickerOptions)
+              : await ImagePicker.launchImageLibraryAsync(pickerOptions);
+          if (!result || result.canceled) return;
+          const asset = result.assets?.[0];
+          if (!asset?.uri) return;
+          if (asset.fileSize && asset.fileSize > MAX_CHAT_ATTACHMENT_BYTES) {
+            Alert.alert('File too large', 'Maximum size is 8 MB.');
+            return;
+          }
+          const normalized = await normalizeChatImageAsset(asset);
+          if (!normalized) return;
+          await uploadChatAttachment(normalized);
+          return;
+        }
 
-  const pickImageFromCamera = useCallback(async () => {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Allow camera access to take a photo.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.85 });
-    if (result.canceled) return;
-    const asset = result.assets?.[0];
-    if (!asset?.uri) return;
-    await uploadChatAttachment({
-      uri: asset.uri,
-      name: 'photo.jpg',
-      mimeType: asset.mimeType || 'image/jpeg',
-    });
-  }, [uploadChatAttachment]);
+        if (source === 'pdf') {
+          const result = await DocumentPicker.getDocumentAsync({
+            type: 'application/pdf',
+            copyToCacheDirectory: true,
+          });
+          if (!result || result.canceled) return;
+          const asset = result.assets?.[0];
+          const uri = asset?.uri ?? result.uri;
+          if (!uri) return;
+          const size = asset?.size ?? result.size;
+          if (size && size > MAX_CHAT_ATTACHMENT_BYTES) {
+            Alert.alert('File too large', 'Maximum size is 8 MB.');
+            return;
+          }
+          await uploadChatAttachment({
+            uri,
+            name: asset?.name || result.name || 'document.pdf',
+            mimeType: asset?.mimeType || 'application/pdf',
+          });
+        }
+      } catch (e) {
+        console.warn('runAttachPicker failed', source, e);
+        Alert.alert('Error', e?.message || 'Could not open attachment. Please try again.');
+      }
+    },
+    [uploadChatAttachment]
+  );
 
-  const pickPdf = useCallback(async () => {
-    const result = await DocumentPicker.getDocumentAsync({
-      type: 'application/pdf',
-      copyToCacheDirectory: true,
-    });
-    if (result.canceled) return;
-    const asset = result.assets?.[0];
-    const uri = asset?.uri ?? result.uri;
-    if (!uri) return;
-    const size = asset?.size ?? result.size;
-    if (size && size > MAX_CHAT_ATTACHMENT_BYTES) {
-      Alert.alert('File too large', 'Maximum size is 8 MB.');
-      return;
+  const flushPendingAttachPicker = useCallback(() => {
+    const source = pendingAttachSourceRef.current;
+    pendingAttachSourceRef.current = null;
+    if (source) {
+      deferNativePicker(() => runAttachPicker(source));
     }
-    await uploadChatAttachment({
-      uri,
-      name: asset?.name || result.name || 'document.pdf',
-      mimeType: asset?.mimeType || 'application/pdf',
-    });
-  }, [uploadChatAttachment]);
+  }, [runAttachPicker]);
 
-  const handleAttachPress = useCallback(() => {
-    Alert.alert('Attach', 'Send a photo or PDF (max 8 MB)', [
-      { text: 'Photo library', onPress: () => pickImageFromLibrary() },
-      { text: 'Camera', onPress: () => pickImageFromCamera() },
-      { text: 'PDF', onPress: () => pickPdf() },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }, [pickImageFromLibrary, pickImageFromCamera, pickPdf]);
+  const requestAttachPicker = useCallback(
+    (source) => {
+      setShowEmojiPicker(false);
+      Keyboard.dismiss();
+
+      const launch = () => deferNativePicker(() => runAttachPicker(source));
+
+      if (isAttachModalVisible) {
+        pendingAttachSourceRef.current = source;
+        setIsAttachModalVisible(false);
+        if (Platform.OS !== 'ios') {
+          setTimeout(flushPendingAttachPicker, 320);
+        }
+      } else {
+        pendingAttachSourceRef.current = null;
+        launch();
+      }
+    },
+    [isAttachModalVisible, runAttachPicker, flushPendingAttachPicker]
+  );
+
+  const openAttachModal = useCallback(() => {
+    Keyboard.dismiss();
+    setShowEmojiPicker(false);
+    setIsAttachModalVisible(true);
+  }, []);
+
+  const closeAttachModal = useCallback(() => {
+    pendingAttachSourceRef.current = null;
+    setIsAttachModalVisible(false);
+  }, []);
+
+  const handleAttachModalDismissed = useCallback(() => {
+    flushPendingAttachPicker();
+  }, [flushPendingAttachPicker]);
+
+  const toggleEmojiPicker = useCallback(() => {
+    if (showEmojiPicker) {
+      setShowEmojiPicker(false);
+      inputRef.current?.focus();
+    } else {
+      Keyboard.dismiss();
+      setShowEmojiPicker(true);
+    }
+  }, [showEmojiPicker]);
+
+  const handleEmojiSelect = useCallback((emoji) => {
+    setInputValue((prev) => prev + emoji);
+  }, []);
+
+  const handleEmojiBackspace = useCallback(() => {
+    setInputValue((prev) => {
+      if (!prev) return prev;
+      if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+        const segmenter = new Intl.Segmenter();
+        const segments = [...segmenter.segment(prev)];
+        if (segments.length <= 1) return '';
+        return segments
+          .slice(0, -1)
+          .map((s) => s.segment)
+          .join('');
+      }
+      return [...prev].slice(0, -1).join('');
+    });
+  }, []);
+
+  const hasTypedMessage = Boolean(inputValue.trim());
 
   const closeImagePreview = useCallback(() => setImagePreview(null), []);
 
@@ -1053,22 +1207,51 @@ export const MessageDetailScreen = () => {
           >
             {item.messageType === 'image' && item.attachmentUrl ? (
               <TouchableOpacity
-                onPress={() => openChatImagePreview(item.attachmentUrl, item.attachmentName)}
+                onPress={() => {
+                  if (item.uploadStatus !== 'pending') {
+                    openChatImagePreview(item.attachmentUrl, item.attachmentName);
+                  }
+                }}
                 activeOpacity={0.9}
               >
-                <Image
-                  source={{ uri: item.attachmentUrl }}
-                  style={styles.bubbleImage}
-                  resizeMode="cover"
-                />
+                <View style={styles.bubbleImageWrap}>
+                  <Image
+                    source={{ uri: item.attachmentUrl }}
+                    style={[
+                      styles.bubbleImage,
+                      item.uploadStatus === 'pending' && styles.bubbleImagePending,
+                    ]}
+                    resizeMode="cover"
+                  />
+                  {item.uploadStatus === 'pending' ? (
+                    <View style={styles.uploadOverlay}>
+                      <ActivityIndicator size="small" color={colors.white} />
+                    </View>
+                  ) : null}
+                  {item.uploadStatus === 'failed' ? (
+                    <View style={[styles.uploadOverlay, styles.uploadOverlayFailed]}>
+                      <Text style={styles.uploadFailedText}>Failed to send</Text>
+                    </View>
+                  ) : null}
+                </View>
               </TouchableOpacity>
             ) : null}
             {item.messageType === 'file' && item.attachmentUrl ? (
-              <TouchableOpacity onPress={openPdfExternal} activeOpacity={0.85}>
+              <TouchableOpacity
+                onPress={item.uploadStatus === 'pending' ? undefined : openPdfExternal}
+                activeOpacity={0.85}
+                disabled={item.uploadStatus === 'pending'}
+              >
                 <Text style={[styles.bubbleFileLabel, isMe && styles.bubbleFileLabelMe]}>
                   📎 {item.attachmentName || 'PDF'}
                 </Text>
-                <Text style={[styles.bubbleFileHint, isMe && styles.bubbleFileHintMe]}>Tap to open</Text>
+                <Text style={[styles.bubbleFileHint, isMe && styles.bubbleFileHintMe]}>
+                  {item.uploadStatus === 'pending'
+                    ? 'Sending…'
+                    : item.uploadStatus === 'failed'
+                      ? 'Failed to send'
+                      : 'Tap to open'}
+                </Text>
               </TouchableOpacity>
             ) : null}
             {(item.text || '').trim().length > 0 ? (
@@ -1077,7 +1260,9 @@ export const MessageDetailScreen = () => {
               </Pressable>
             ) : null}
           </View>
-          <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>{item.time}</Text>
+          <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>
+            {item.uploadStatus === 'pending' ? 'Sending…' : item.time}
+          </Text>
           {isMe && item.id === lastSeenOutgoingMessageId && item.isRead ? (
             <Text style={styles.seenText}>{formatSeenTimeAgo(item.readAt)}</Text>
           ) : null}
@@ -1373,6 +1558,10 @@ export const MessageDetailScreen = () => {
           </View>
         )}
 
+        {showEmojiPicker && (
+          <ChatEmojiPicker onSelect={handleEmojiSelect} onBackspace={handleEmojiBackspace} />
+        )}
+
         <View
           style={[
             styles.inputBar,
@@ -1384,35 +1573,118 @@ export const MessageDetailScreen = () => {
         >
           <TouchableOpacity
             activeOpacity={0.7}
-            style={[styles.attachButton, (isSending || isUploading) && styles.attachButtonDisabled]}
-            onPress={handleAttachPress}
-            disabled={isSending || isUploading}
+            style={styles.inputIconButton}
+            onPress={toggleEmojiPicker}
+            accessibilityLabel="Emoji"
           >
-            <Text style={styles.attachText}>＋</Text>
+            <Icon
+              name="smile"
+              size={22}
+              color={showEmojiPicker ? colors.primary : colors.textMuted}
+            />
           </TouchableOpacity>
           <TextInput
+            ref={inputRef}
             style={styles.input}
             placeholder="Message"
             placeholderTextColor={colors.textMuted}
             value={inputValue}
             onChangeText={setInputValue}
-            editable={!isSending && !isUploading}
+            editable={!isTextBusy}
             onSubmitEditing={handleSendMessage}
+            onFocus={() => setShowEmojiPicker(false)}
           />
-          <TouchableOpacity
-            activeOpacity={0.8}
-            style={[styles.sendButton, (isSending || isUploading || !inputValue.trim()) && styles.sendButtonDisabled]}
-            onPress={handleSendMessage}
-            disabled={isSending || isUploading || !inputValue.trim()}
-          >
-            {isSending || isUploading ? (
-              <ActivityIndicator size="small" color={colors.white} />
-            ) : (
-              <Text style={styles.sendIcon}>➤</Text>
-            )}
-          </TouchableOpacity>
+          {hasTypedMessage ? (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={[styles.sendButton, isTextBusy && styles.sendButtonDisabled]}
+              onPress={handleSendMessage}
+              disabled={isTextBusy}
+              accessibilityLabel="Send message"
+            >
+              {isTextBusy ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <Icon name="send" size={18} color={colors.white} />
+              )}
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.inputIconButton}
+                onPress={() => requestAttachPicker('camera')}
+                accessibilityLabel="Camera"
+              >
+                <Icon name="camera" size={22} color={colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.inputIconButton}
+                onPress={() => requestAttachPicker('gallery')}
+                accessibilityLabel="Photos"
+              >
+                <Icon name="image" size={22} color={colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.inputIconButton}
+                onPress={openAttachModal}
+                accessibilityLabel="More attachments"
+              >
+                <Icon name="paperclip" size={22} color={colors.textMuted} />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        transparent
+        animationType="slide"
+        visible={isAttachModalVisible}
+        onRequestClose={closeAttachModal}
+        onDismiss={handleAttachModalDismissed}
+      >
+        <Pressable style={styles.attachModalBackdrop} onPress={closeAttachModal}>
+          <View style={styles.attachModalContainer} pointerEvents="box-none">
+            <Pressable onPress={(e) => e.stopPropagation()}>
+              <View style={styles.attachModalCard}>
+                <Text style={styles.attachModalTitle}>Attach</Text>
+                <TouchableOpacity
+                  style={styles.attachModalOption}
+                  onPress={() => requestAttachPicker('camera')}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="camera" size={22} color={colors.primary} />
+                  <Text style={styles.attachModalOptionText}>Camera</Text>
+                </TouchableOpacity>
+                <View style={styles.attachModalDivider} />
+                <TouchableOpacity
+                  style={styles.attachModalOption}
+                  onPress={() => requestAttachPicker('gallery')}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="image" size={22} color={colors.primary} />
+                  <Text style={styles.attachModalOptionText}>Photo library</Text>
+                </TouchableOpacity>
+                <View style={styles.attachModalDivider} />
+                <TouchableOpacity
+                  style={styles.attachModalOption}
+                  onPress={() => requestAttachPicker('pdf')}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="file-text" size={22} color={colors.primary} />
+                  <Text style={styles.attachModalOptionText}>PDF document</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.attachModalCancel} onPress={closeAttachModal} activeOpacity={0.7}>
+                  <Text style={styles.attachModalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       <Modal
         visible={!!imagePreview}
@@ -1589,12 +1861,35 @@ const createStyles = (SIZES) =>
       fontSize: 15,
       lineHeight: 22,
     },
+    bubbleImageWrap: {
+      position: 'relative',
+      marginBottom: 8,
+      borderRadius: 12,
+      overflow: 'hidden',
+    },
     bubbleImage: {
       width: 220,
       height: 180,
       borderRadius: 12,
-      marginBottom: 8,
       backgroundColor: colors.gray200,
+    },
+    bubbleImagePending: {
+      opacity: 0.92,
+    },
+    uploadOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: 'rgba(0,0,0,0.35)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 12,
+    },
+    uploadOverlayFailed: {
+      backgroundColor: 'rgba(0,0,0,0.55)',
+    },
+    uploadFailedText: {
+      color: colors.white,
+      fontSize: 12,
+      fontWeight: '600',
     },
     bubbleFileLabel: {
       fontSize: 15,
@@ -1631,27 +1926,71 @@ const createStyles = (SIZES) =>
       flexDirection: 'row',
       alignItems: 'center',
       paddingTop: 12,
-      gap: 10,
+      gap: 6,
       borderTopWidth: 1,
       borderTopColor: colors.border,
       backgroundColor: colors.white,
     },
-    attachButton: {
-      width: 34,
-      height: 34,
-      borderRadius: 17,
-      borderWidth: 1,
-      borderColor: colors.border,
+    inputIconButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    attachText: {
-      color: colors.textMuted,
-      fontSize: 18,
-      marginTop: -4,
-    },
-    attachButtonDisabled: {
+    inputIconButtonDisabled: {
       opacity: 0.45,
+    },
+    attachModalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      justifyContent: 'flex-end',
+    },
+    attachModalContainer: {
+      width: '100%',
+    },
+    attachModalCard: {
+      backgroundColor: colors.white,
+      borderTopLeftRadius: 20,
+      borderTopRightRadius: 20,
+      paddingTop: 20,
+      paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+      paddingHorizontal: 20,
+    },
+    attachModalTitle: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: colors.text,
+      textAlign: 'center',
+      marginBottom: 12,
+    },
+    attachModalOption: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 14,
+      paddingHorizontal: 8,
+    },
+    attachModalOptionText: {
+      fontSize: 16,
+      fontWeight: '500',
+      color: colors.text,
+      marginLeft: 14,
+    },
+    attachModalDivider: {
+      height: 1,
+      backgroundColor: colors.border,
+    },
+    attachModalCancel: {
+      marginTop: 8,
+      paddingVertical: 16,
+      alignItems: 'center',
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+    },
+    attachModalCancelText: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: colors.textMuted,
     },
     imagePreviewRoot: {
       flex: 1,
@@ -1700,10 +2039,6 @@ const createStyles = (SIZES) =>
       backgroundColor: colors.primary,
       alignItems: 'center',
       justifyContent: 'center',
-    },
-    sendIcon: {
-      color: colors.white,
-      fontSize: 18,
     },
     sendButtonDisabled: {
       opacity: 0.6,
