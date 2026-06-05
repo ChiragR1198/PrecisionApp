@@ -343,6 +343,10 @@ export const SponsorDetailsScreen = () => {
   const { selectedEventDateFrom, selectedEventDateTo, selectedEventId } = useAppSelector((state) => state.event);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
+  const currentUserNumericId = useMemo(() => {
+    const n = Number(user?.id ?? user?.user_id ?? user?.sponsor_id);
+    return Number.isFinite(n) ? n : null;
+  }, [user]);
   /** Agenda speaker link sets `returnTo: agenda-detail`; show sponsor-speaker email for delegates too. */
   const openedFromAgendaSpeaker = params?.returnTo === 'agenda-detail';
   const [priority, setPriority] = useState('1st');
@@ -1049,14 +1053,20 @@ export const SponsorDetailsScreen = () => {
     sponsor?.meeting_is_accepted,
   ]);
 
+  const isViewingOwnProfile = useMemo(() => {
+    if (currentUserNumericId == null) return false;
+    const profileId = Number(sponsor?.id ?? sponsor?.raw?.id);
+    return Number.isFinite(profileId) && profileId === currentUserNumericId;
+  }, [currentUserNumericId, sponsor?.id, sponsor?.raw?.id]);
+
   const canBookMeeting = useMemo(
     // SponsorDetailsScreen is reused for both sponsor profiles and delegate profiles.
     // When current user is a delegate, we allow booking for both:
     // - delegate -> sponsor
     // - delegate -> delegate
     // When current user is a sponsor, we allow booking only for delegate profiles.
-    () => true,
-    [isDelegate, isDelegateProfile]
+    () => !isViewingOwnProfile,
+    [isViewingOwnProfile]
   );
 
   const meetingRequestLabel = useMemo(() => {
@@ -1929,7 +1939,7 @@ export const SponsorDetailsScreen = () => {
         </View>
       </ScrollView>
 
-      {!!sponsor?.name && (
+      {!!sponsor?.name && !isViewingOwnProfile && (
         <View
           style={[
             styles.bottomButtonContainer,
