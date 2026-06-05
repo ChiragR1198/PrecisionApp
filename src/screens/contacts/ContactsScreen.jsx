@@ -462,11 +462,13 @@ export const ContactsScreen = () => {
             accessibilityRole="button"
             accessibilityLabel="Export contacts"
           >
-            <Icon
-              name={exporting ? 'loader' : 'download'}
-              size={SIZES.headerIconSize}
-              color={colors.white}
-            />
+            {exporting ? (
+              <ActivityIndicator size="small" color={colors.white} />
+            ) : (
+              <Text style={styles.exportButtonText} allowFontScaling={false}>
+                Export
+              </Text>
+            )}
           </TouchableOpacity>
         }
       />
@@ -660,11 +662,17 @@ const createStyles = (SIZES, isTablet) =>
       backgroundColor: colors.background,
     },
     exportButton: {
-      width: 40,
+      minWidth: 52,
       height: 40,
+      paddingHorizontal: 8,
       alignItems: 'center',
       justifyContent: 'center',
       opacity: 1,
+    },
+    exportButtonText: {
+      fontSize: isTablet ? 15 : 14,
+      fontWeight: '700',
+      color: colors.white,
     },
     body: {
       flex: 1,

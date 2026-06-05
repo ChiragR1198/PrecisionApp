@@ -261,29 +261,33 @@ const SponsorListRow = React.memo(function SponsorListRow({
           </Text>
         </View>
       </View>
-      {/*
-      <TouchableOpacity
-        style={requestBtnStyle}
-        activeOpacity={0.85}
-        onPress={(e) => {
-          e.stopPropagation();
-          if (!requestDisabled) onOpenRequest(item);
-        }}
-        disabled={requestDisabled}
-      >
-        <Text style={requestTextStyle}>{requestLabel}</Text>
-      </TouchableOpacity>
-      */}
-      <TouchableOpacity
-        style={styles.chatButton}
-        activeOpacity={0.7}
-        onPress={(e) => {
-          e.stopPropagation();
-          onStartChat(item);
-        }}
-      >
-        <ChatIcon color={colors.primary} />
-      </TouchableOpacity>
+      {!item.isCurrentUser ? (
+        <>
+          {/*
+          <TouchableOpacity
+            style={requestBtnStyle}
+            activeOpacity={0.85}
+            onPress={(e) => {
+              e.stopPropagation();
+              if (!requestDisabled) onOpenRequest(item);
+            }}
+            disabled={requestDisabled}
+          >
+            <Text style={requestTextStyle}>{requestLabel}</Text>
+          </TouchableOpacity>
+          */}
+          <TouchableOpacity
+            style={styles.chatButton}
+            activeOpacity={0.7}
+            onPress={(e) => {
+              e.stopPropagation();
+              onStartChat(item);
+            }}
+          >
+            <ChatIcon color={colors.primary} />
+          </TouchableOpacity>
+        </>
+      ) : null}
     </TouchableOpacity>
   );
 });
@@ -847,11 +851,11 @@ export const SponsorsScreen = () => {
     [draftSelectedServiceSet, styles, toggleDraftService]
   );
 
-  // Map API delegates to the sponsor card shape
+  // Map API delegates to list cards (include logged-in delegate; API excludes self)
   const delegates = useMemo(() => {
     if (!isDelegate || !delegatesData) return [];
     const list = Array.isArray(delegatesData?.data) ? delegatesData.data : Array.isArray(delegatesData) ? delegatesData : [];
-    return list.map((d) => {
+    const mapped = list.map((d) => {
       const fullName =
         d.full_name ||
         `${d.fname || ''} ${d.lname || ''}`.trim() ||
@@ -867,10 +871,19 @@ export const SponsorsScreen = () => {
           .join('') || 'DL';
       const companyInitials = getCompanyInitials(d.company || name);
       const delegateId = String(d.id);
+      const numericId = Number(d.id);
+      const isCurrentUser =
+        (currentUserNumericId != null &&
+          Number.isFinite(numericId) &&
+          numericId === currentUserNumericId) ||
+        d?.is_current_user === true ||
+        d?.is_current_user === 1 ||
+        d?.is_current_user === '1';
       const logoBg = getColorFromString(delegateId, LOGO_COLORS);
       const badgeColor = getColorFromString(delegateId + name, BADGE_COLORS);
       return {
         id: delegateId,
+        isCurrentUser,
         name,
         tier: 'Delegate',
         logoBg,
@@ -892,9 +905,61 @@ export const SponsorsScreen = () => {
         raw: d,
       };
     });
-  }, [isDelegate, delegatesData]);
 
-  // Map API sponsors to the sponsor card shape
+    if (
+      currentUserNumericId != null &&
+      !mapped.some((row) => Number(row.id) === currentUserNumericId)
+    ) {
+      const selfName =
+        user?.full_name ||
+        user?.name ||
+        `${user?.fname || ''} ${user?.lname || ''}`.trim() ||
+        'You';
+      const selfId = String(currentUserNumericId);
+      const personInitials =
+        selfName
+          .split(' ')
+          .filter(Boolean)
+          .map((part) => part[0]?.toUpperCase())
+          .slice(0, 2)
+          .join('') || 'DL';
+      mapped.push({
+        id: selfId,
+        isCurrentUser: true,
+        name: selfName,
+        tier: 'Delegate',
+        logoBg: getColorFromString(selfId, LOGO_COLORS),
+        companyLogo: null,
+        logoText: personInitials,
+        image: resolveMediaUrl(
+          user?.image || user?.user_image || user?.avatar || user?.profile_image || null
+        ),
+        partnerType: user?.job_title || '',
+        email: user?.email || '',
+        phone: user?.mobile || user?.tel || user?.phone || '',
+        website:
+          (user?.linkedin_url ||
+            user?.company_website_url ||
+            user?.companyWebsiteUrl ||
+            user?.website ||
+            '').trim() || '',
+        location: csvLocationFromRow({
+          raw: user,
+          address: user?.address,
+          state: user?.state,
+          country: user?.country,
+        }),
+        about: user?.bio || user?.biography || '',
+        company: user?.company || '',
+        badgeColor: getColorFromString(selfId + selfName, BADGE_COLORS),
+        raw: { ...user, id: currentUserNumericId, is_current_user: true },
+      });
+    }
+
+    return mapped;
+  }, [isDelegate, delegatesData, currentUserNumericId, user]);
+
+  // Map API sponsors to the sponsor card shape (include logged-in sponsor in list)
   const sponsors = useMemo(() => {
     if (!isSponsor || !sponsorsData) return [];
     const list = Array.isArray(sponsorsData?.data)
@@ -904,16 +969,8 @@ export const SponsorsScreen = () => {
         : Array.isArray(sponsorsData)
           ? sponsorsData
           : [];
-    const filtered = currentUserNumericId != null
-      ? list.filter((s) => {
-          const id = Number(s?.id);
-          if (Number.isFinite(id) && id === currentUserNumericId) return false;
-          if (s?.is_current_user === true || s?.is_current_user === 1 || s?.is_current_user === '1') return false;
-          return true;
-        })
-      : list;
 
-    return filtered.map((s) => {
+    const mapped = list.map((s) => {
       const name = s.name || s.full_name || 'Unknown';
       const personInitials =
         name
@@ -924,6 +981,14 @@ export const SponsorsScreen = () => {
           .join('') || 'SP';
       const companyInitials = getCompanyInitials(s.company || name);
       const sponsorId = String(s.id);
+      const numericId = Number(s.id);
+      const isCurrentUser =
+        (currentUserNumericId != null &&
+          Number.isFinite(numericId) &&
+          numericId === currentUserNumericId) ||
+        s?.is_current_user === true ||
+        s?.is_current_user === 1 ||
+        s?.is_current_user === '1';
       const logoBg = getColorFromString(sponsorId, LOGO_COLORS);
       const badgeColor = getColorFromString(sponsorId + name, BADGE_COLORS);
       
@@ -937,6 +1002,7 @@ export const SponsorsScreen = () => {
 
       return {
         id: sponsorId,
+        isCurrentUser,
         name,
         tier,
         logoBg,
@@ -963,7 +1029,58 @@ export const SponsorsScreen = () => {
         raw: s,
       };
     });
-  }, [isSponsor, sponsorsData, currentUserNumericId]);
+
+    if (
+      currentUserNumericId != null &&
+      !mapped.some((row) => Number(row.id) === currentUserNumericId)
+    ) {
+      const selfName =
+        user?.full_name ||
+        user?.name ||
+        `${user?.fname || ''} ${user?.lname || ''}`.trim() ||
+        'You';
+      const selfId = String(currentUserNumericId);
+      const personInitials =
+        selfName
+          .split(' ')
+          .filter(Boolean)
+          .map((part) => part[0]?.toUpperCase())
+          .slice(0, 2)
+          .join('') || 'SP';
+      mapped.push({
+        id: selfId,
+        isCurrentUser: true,
+        name: selfName,
+        tier: user?.company ? 'Sponsor' : 'Event Sponsor',
+        logoBg: getColorFromString(selfId, LOGO_COLORS),
+        companyLogo: resolveMediaUrl(user?.company_logo || user?.companyLogo || null),
+        logoText: personInitials,
+        image: resolveMediaUrl(
+          user?.image || user?.user_image || user?.avatar || user?.profile_image || null
+        ),
+        partnerType: user?.job_title || '',
+        email: user?.email || '',
+        phone: user?.mobile || user?.tel || user?.phone || '',
+        address: (user?.address || '').trim(),
+        state: user?.state || '',
+        country: user?.country || '',
+        website: (user?.website || user?.linkedin_url || '').trim() || '',
+        location: csvLocationFromRow({
+          address: user?.address,
+          state: user?.state,
+          country: user?.country,
+          raw: user,
+        }),
+        about: user?.biography || user?.bio || '',
+        company: user?.company || '',
+        company_website_url: user?.company_website_url || user?.companyWebsiteUrl || '',
+        badgeColor: getColorFromString(selfId + selfName, BADGE_COLORS),
+        raw: { ...user, id: currentUserNumericId, is_current_user: true },
+      });
+    }
+
+    return mapped;
+  }, [isSponsor, sponsorsData, currentUserNumericId, user]);
 
   const SORT_OPTIONS = useMemo(
     () => [
