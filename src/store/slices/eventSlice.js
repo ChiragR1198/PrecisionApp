@@ -1,13 +1,16 @@
 import { createSlice } from '@reduxjs/toolkit';
+import { clearAuth } from './authSlice';
+
+const initialState = {
+  selectedEventId: null,
+  selectedEventIndex: 0,
+  selectedEventDateFrom: null,
+  selectedEventDateTo: null,
+};
 
 const eventSlice = createSlice({
   name: 'event',
-  initialState: {
-    selectedEventId: null,
-    selectedEventIndex: 0,
-    selectedEventDateFrom: null,
-    selectedEventDateTo: null,
-  },
+  initialState,
   reducers: {
     setSelectedEvent: (state, action) => {
       state.selectedEventId = action.payload.eventId;
@@ -15,12 +18,10 @@ const eventSlice = createSlice({
       state.selectedEventDateFrom = action.payload.dateFrom ?? null;
       state.selectedEventDateTo = action.payload.dateTo ?? null;
     },
-    clearSelectedEvent: (state) => {
-      state.selectedEventId = null;
-      state.selectedEventIndex = 0;
-      state.selectedEventDateFrom = null;
-      state.selectedEventDateTo = null;
-    },
+    clearSelectedEvent: () => initialState,
+  },
+  extraReducers: (builder) => {
+    builder.addMatcher(clearAuth.match, () => initialState);
   },
 });
 

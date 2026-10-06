@@ -25,6 +25,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '../../components/common/Header';
+import { MatchScoreRing } from '../../components/matches/MatchScoreRing';
 import { colors, radius } from '../../constants/theme';
 import {
   useGetAllDelegatesQuery,
@@ -36,12 +37,14 @@ import {
   useGetSponsorMeetingLocationsQuery,
   useGetSponsorMeetingRequestOutcomesQuery,
   useGetSponsorMeetingTimesQuery,
+  usePostMatchFeedbackMutation,
   useSendDelegateMeetingRequestMutation,
   useSendDelegateMeetingRequestToDelegateMutation,
   useSendSponsorMeetingRequestMutation,
 } from '../../store/api';
 import { useAppSelector } from '../../store/hooks';
 import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
+import { stripHtml } from '../../utils/stripHtml';
 import { normalizeEventIdForApi } from '../../utils/parseEventId';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 
@@ -533,6 +536,28 @@ export const DelegateDetailsScreen = () => {
     return t === 'sponsor' ? 'sponsor' : 'delegate';
   }, [params?.profileType]);
   const isSponsorProfile = profileType === 'sponsor';
+  const fromMatches = params?.fromMatches === '1' || params?.fromMatches === 'true';
+  const [matchSaved, setMatchSaved] = useState(params?.matchSaved === '1' || params?.matchSaved === 'true');
+  const [matchFeedbackBusy, setMatchFeedbackBusy] = useState(false);
+  const [postMatchFeedback] = usePostMatchFeedbackMutation();
+  const matchScore = useMemo(() => {
+    const n = Number(params?.matchScore);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [params?.matchScore]);
+  const matchLabel = useMemo(() => {
+    const s = String(params?.matchLabel ?? '').trim();
+    return s || (matchScore != null ? 'Good match — worth connecting' : '');
+  }, [params?.matchLabel, matchScore]);
+  const matchRelatedInterests = useMemo(() => {
+    const raw = params?.relatedInterests;
+    if (!raw) return [];
+    const s = Array.isArray(raw) ? raw.join('|') : String(raw);
+    return s
+      .split('|')
+      .map((x) => stripHtml(x).trim())
+      .filter((x) => x && !/[<>]/.test(x) && !/<!doctype|<html|<body/i.test(x));
+  }, [params?.relatedInterests]);
+  const matchIsOnline = params?.isOnline === '1' || params?.isOnline === 'true';
 
   // Match AttendeesScreen cache key when opening from list (same services filter → same payload as list).
   const sponsorServicesQueryArg = useMemo(
@@ -564,6 +589,17 @@ export const DelegateDetailsScreen = () => {
   // Get delegate data from params (also used for sponsor profiles coming from Attendees list)
   const delegate = useMemo(() => {
     if (!params?.delegate) {
+      if (params?.id) {
+        return {
+          id: String(params.id),
+          name: params?.name || 'No Data',
+          role: params?.role || params?.job_title || '',
+          company: params?.company || '',
+          bio: params?.bio || '',
+          image: params?.image || null,
+          address: params?.location || '',
+        };
+      }
       return {
         id: '',
         name: 'No Data',
@@ -586,6 +622,61 @@ export const DelegateDetailsScreen = () => {
   const numericProfileId = useMemo(
     () => Number(delegate?.id ?? delegate?.user_id ?? delegate?.sponsor_id ?? delegate?.delegate_id) || null,
     [delegate]
+  );
+
+  const submitMatchFeedback = useCallback(
+    async (action) => {
+      if (!fromMatches || matchFeedbackBusy) return;
+      const targetId = Number(delegate?.id ?? numericProfileId);
+      if (!Number.isFinite(targetId) || targetId <= 0) {
+        Alert.alert('Unable to submit', 'Missing profile id.');
+        return;
+      }
+      setMatchFeedbackBusy(true);
+      try {
+        const res = await postMatchFeedback({
+          event_id: eventId,
+          type: isSponsorProfile ? 'exhibitor' : 'delegate',
+          target_type: isSponsorProfile ? 'sponsor' : 'delegate',
+          target_id: targetId,
+          action,
+        }).unwrap();
+        const savedFlag = res?.data?.saved;
+        if (typeof savedFlag === 'boolean') {
+          setMatchSaved(savedFlag);
+        } else if (action === 'save') {
+          setMatchSaved(true);
+        } else if (action === 'unsave') {
+          setMatchSaved(false);
+        }
+        if (action === 'not_relevant' || action === 'dismiss') {
+          Alert.alert('Removed', 'This match was marked not relevant and will be hidden from your list.', [
+            {
+              text: 'OK',
+              onPress: () => {
+                if (router.canGoBack?.()) router.back();
+                else router.replace('/matches');
+              },
+            },
+          ]);
+        } else if (action === 'helpful') {
+          Alert.alert('Thanks', 'Thanks for the feedback.');
+        }
+      } catch (e) {
+        Alert.alert('Error', e?.data?.message || e?.error || 'Could not save feedback.');
+      } finally {
+        setMatchFeedbackBusy(false);
+      }
+    },
+    [
+      fromMatches,
+      matchFeedbackBusy,
+      delegate?.id,
+      numericProfileId,
+      postMatchFeedback,
+      eventId,
+      isSponsorProfile,
+    ]
   );
 
   const resolvedFromDirectory = useMemo(() => {
@@ -614,20 +705,19 @@ export const DelegateDetailsScreen = () => {
           delegate?.raw?.company_website_url ??
           '',
         role: match?.job_title || match?.title || delegate?.role || '',
-        email: match?.email || delegate?.email || '',
-        // DelegateDetailsScreen hides phone numbers by design; keep but won't display
-        phone: match?.mobile || match?.phone || delegate?.phone || '',
+        email: fromMatches ? '' : (match?.email || delegate?.email || ''),
+        phone: fromMatches ? '' : (match?.mobile || match?.phone || delegate?.phone || ''),
         linkedin: match?.linkedin_url || match?.linkedin || delegate?.linkedin || '',
         address: match?.address || match?.location || delegate?.address || '',
         bio: match?.bio || match?.biography || match?.company_information || delegate?.bio || '',
         state: match?.state ?? delegate?.state ?? '',
         country: match?.country ?? delegate?.country ?? '',
         company_size: match?.company_size ?? delegate?.company_size ?? '',
-        budget: match?.budget ?? delegate?.budget ?? '',
+        budget: fromMatches ? '' : (match?.budget ?? delegate?.budget ?? ''),
         key_priority1: match?.key_priority1 ?? '',
         key_priority2: match?.key_priority2 ?? '',
         key_priority3: match?.key_priority3 ?? '',
-        next_due_to_start: match?.next_due_to_start ?? delegate?.next_due_to_start ?? '',
+        next_due_to_start: fromMatches ? '' : (match?.next_due_to_start ?? delegate?.next_due_to_start ?? ''),
         purchasing_role: match?.purchasing_role ?? delegate?.purchasing_role ?? '',
         purchasing_role_input: match?.purchasing_role_input ?? delegate?.purchasing_role_input ?? '',
         products_services: match?.products_services ?? delegate?.products_services ?? '',
@@ -667,19 +757,19 @@ export const DelegateDetailsScreen = () => {
         delegate?.raw?.company_website_url ??
         '',
       role: match?.job_title || match?.title || delegate?.role || '',
-      email: match?.email || delegate?.email || '',
-      phone: match?.mobile || match?.phone || delegate?.phone || '',
+      email: fromMatches ? '' : (match?.email || delegate?.email || ''),
+      phone: fromMatches ? '' : (match?.mobile || match?.phone || delegate?.phone || ''),
       linkedin: match?.linkedin_url || match?.linkedin || delegate?.linkedin || '',
       address: match?.address || match?.location || delegate?.address || '',
       bio: match?.bio || match?.biography || match?.company_information || delegate?.bio || '',
       state: match?.state ?? delegate?.state ?? '',
       country: match?.country ?? delegate?.country ?? '',
       company_size: match?.company_size ?? delegate?.company_size ?? '',
-      budget: match?.budget ?? delegate?.budget ?? '',
+      budget: fromMatches ? '' : (match?.budget ?? delegate?.budget ?? ''),
       key_priority1: match?.key_priority1 ?? '',
       key_priority2: match?.key_priority2 ?? '',
       key_priority3: match?.key_priority3 ?? '',
-      next_due_to_start: match?.next_due_to_start ?? delegate?.next_due_to_start ?? '',
+      next_due_to_start: fromMatches ? '' : (match?.next_due_to_start ?? delegate?.next_due_to_start ?? ''),
       purchasing_role: match?.purchasing_role ?? delegate?.purchasing_role ?? '',
       purchasing_role_input: match?.purchasing_role_input ?? delegate?.purchasing_role_input ?? '',
       products_services: match?.products_services ?? delegate?.products_services ?? '',
@@ -697,6 +787,7 @@ export const DelegateDetailsScreen = () => {
     numericProfileId,
     isSponsorProfile,
     isDelegate,
+    fromMatches,
     delegateAttendeesData,
     sponsorAllAttendeesData,
     allDelegatesData,
@@ -718,13 +809,24 @@ export const DelegateDetailsScreen = () => {
     // Navigation often passes `{ ...apiRow, ...displayFields }`; keep `raw` from list for full API row (esp. sponsor → delegate).
     const fromNavRaw = delegate?.raw && typeof delegate.raw === 'object' ? delegate.raw : {};
     const base = { ...fromNavRaw, ...delegate };
-    if (!resolvedFromDirectory) return base;
+    const merged = !resolvedFromDirectory
+      ? base
+      : {
+          ...base,
+          ...resolvedFromDirectory,
+          raw: resolvedFromDirectory.raw ?? base.raw,
+        };
+    if (!fromMatches) return merged;
     return {
-      ...base,
-      ...resolvedFromDirectory,
-      raw: resolvedFromDirectory.raw ?? base.raw,
+      ...merged,
+      budget: '',
+      email: '',
+      phone: '',
+      mobile: '',
+      next_due_to_start: '',
+      office_number: '',
     };
-  }, [delegate, resolvedFromDirectory]);
+  }, [delegate, resolvedFromDirectory, fromMatches]);
 
   const cleanedBio = useMemo(() => {
     if (!mergedDelegate?.bio) return '';
@@ -790,6 +892,17 @@ export const DelegateDetailsScreen = () => {
 
   const hasProfileDetails = useMemo(() => {
     if (!mergedDelegate || mergedDelegate.name === 'No Data') return false;
+    // From AI Matches: never force Budget section — private fields stay hidden.
+    if (fromMatches) {
+      return (
+        profileFieldVisible(mergedDelegate.state) ||
+        profileFieldVisible(mergedDelegate.country) ||
+        profileFieldVisible(mergedDelegate.company_size) ||
+        Boolean(keyPrioritiesDisplay) ||
+        profileFieldVisible(purchasingRoleDisplay) ||
+        (!isSponsorProfile && profileFieldVisible(purchasingPlansDisplay))
+      );
+    }
     // Delegate target (not sponsor profile): always show Profile so Budget & Purchasing plans are visible.
     if (!isSponsorProfile) return true;
     return (
@@ -805,6 +918,7 @@ export const DelegateDetailsScreen = () => {
   }, [
     mergedDelegate,
     isSponsorProfile,
+    fromMatches,
     keyPrioritiesDisplay,
     purchasingRoleDisplay,
     purchasingPlansDisplay,
@@ -1305,9 +1419,9 @@ export const DelegateDetailsScreen = () => {
   /** Agenda speaker link sets `returnTo: agenda-detail`; hide delegate-speaker email there for all login types. */
   const openedFromAgendaSpeaker = params?.returnTo === 'agenda-detail';
   const showDelegateEmailInContact =
-    isDelegate && !!mergedDelegate.email && !openedFromAgendaSpeaker;
+    isDelegate && !!mergedDelegate.email && !openedFromAgendaSpeaker && !fromMatches;
   const showDelegateContactSectionTitle =
-    isDelegate && (showDelegateEmailInContact || !!mergedDelegate.linkedin);
+    (isDelegate || fromMatches) && (showDelegateEmailInContact || !!mergedDelegate.linkedin);
 
   const sponsorCompanyLogoMark = (
     <View style={styles.companyInlineLogoOuter} pointerEvents="none">
@@ -1339,7 +1453,7 @@ export const DelegateDetailsScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Header 
-        title={isSponsorProfile ? 'Sponsor Details' : 'Delegate Details'} 
+        title={fromMatches ? 'Profile' : (isSponsorProfile ? 'Sponsor Details' : 'Delegate Details')} 
         leftIcon="arrow-left" 
         onLeftPress={handleBack}
         iconSize={SIZES.headerIconSize} 
@@ -1400,6 +1514,71 @@ export const DelegateDetailsScreen = () => {
             ) : (
               <Text style={styles.delegateCompany}>{mergedDelegate.company}</Text>
             )}
+
+            {fromMatches && matchScore != null ? (
+              <View style={styles.matchScoreCard}>
+                <MatchScoreRing score={matchScore} size={72} stroke={5} />
+                <View style={styles.matchScoreBody}>
+                  <Text style={styles.matchScoreTitle}>Match Score</Text>
+                  <Text style={styles.matchScoreLabel}>{matchLabel}</Text>
+                  {matchRelatedInterests.length > 0 ? (
+                    <View style={styles.matchRelatedRow}>
+                      <MaterialCommunityIcons name="star-four-points" size={13} color={colors.primary} />
+                      <Text style={styles.matchRelatedText} numberOfLines={2}>
+                        Related interests: {matchRelatedInterests.join(', ')}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {matchIsOnline ? (
+                    <View style={styles.matchOnlineRow}>
+                      <View style={styles.matchOnlineDot} />
+                      <Text style={styles.matchOnlineText}>
+                        Available now — reach out while they&apos;re online
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
+
+            {fromMatches ? (
+              <View style={styles.matchFeedbackRow}>
+                <TouchableOpacity
+                  style={[styles.matchFeedbackBtn, matchSaved && styles.matchFeedbackBtnActive]}
+                  onPress={() => submitMatchFeedback(matchSaved ? 'unsave' : 'save')}
+                  disabled={matchFeedbackBusy}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="bookmark" size={15} color={matchSaved ? colors.white : colors.primary} />
+                  <Text style={[styles.matchFeedbackText, matchSaved && styles.matchFeedbackTextActive]}>
+                    {matchSaved ? 'Saved' : 'Save'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.matchFeedbackBtn}
+                  onPress={() => submitMatchFeedback('helpful')}
+                  disabled={matchFeedbackBusy}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="thumbs-up" size={15} color={colors.primary} />
+                  <Text style={styles.matchFeedbackText}>Helpful</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.matchFeedbackBtn}
+                  onPress={() =>
+                    Alert.alert('Not relevant?', 'Hide this match from your recommendations?', [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Hide', style: 'destructive', onPress: () => submitMatchFeedback('not_relevant') },
+                    ])
+                  }
+                  disabled={matchFeedbackBusy}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="x-circle" size={15} color={colors.primary} />
+                  <Text style={styles.matchFeedbackText}>Not relevant</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             {/* Action row: Book a meeting (left) + Start chat icon (right) - synced with AttendeesScreen */}
             <View style={styles.actionRow}>
@@ -1486,15 +1665,15 @@ export const DelegateDetailsScreen = () => {
                 {profileFieldVisible(mergedDelegate.company_size) ? (
                   <DetailRow label="Company size" value={String(mergedDelegate.company_size).trim()} />
                 ) : null}
-                {!isSponsorProfile ? (
+                {!fromMatches && !isSponsorProfile ? (
                   <DetailRow label="Budget" value={profileDisplayOrDash(mergedDelegate.budget)} />
-                ) : profileFieldVisible(mergedDelegate.budget) ? (
+                ) : !fromMatches && profileFieldVisible(mergedDelegate.budget) ? (
                   <DetailRow label="Budget" value={String(mergedDelegate.budget).trim()} />
                 ) : null}
                 {keyPrioritiesDisplay ? (
                   <DetailRow label="Key priorities" value={keyPrioritiesDisplay} multiline />
                 ) : null}
-                {profileFieldVisible(mergedDelegate.next_due_to_start) ? (
+                {!fromMatches && profileFieldVisible(mergedDelegate.next_due_to_start) ? (
                   <DetailRow label="Next project due" value={String(mergedDelegate.next_due_to_start).trim()} />
                 ) : null}
                 {profileFieldVisible(purchasingRoleDisplay) ? (
@@ -1964,6 +2143,93 @@ const createStyles = (SIZES, isTablet) => StyleSheet.create({
     color: colors.primary,
     marginBottom: 10,
     textAlign: 'center',
+  },
+  matchScoreCard: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: colors.white,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 16,
+    marginBottom: 16,
+  },
+  matchScoreBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  matchScoreTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  matchScoreLabel: {
+    fontSize: 13,
+    color: colors.textMuted,
+    marginBottom: 8,
+    lineHeight: 18,
+  },
+  matchFeedbackRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  matchFeedbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(138, 52, 144, 0.25)',
+    backgroundColor: 'rgba(138, 52, 144, 0.06)',
+  },
+  matchFeedbackBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  matchFeedbackText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  matchFeedbackTextActive: {
+    color: colors.white,
+  },
+  matchRelatedRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 4,
+    marginBottom: 6,
+  },
+  matchRelatedText: {
+    flex: 1,
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 17,
+  },
+  matchOnlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  matchOnlineDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+  },
+  matchOnlineText: {
+    flex: 1,
+    fontSize: 11,
+    color: colors.primary,
+    fontWeight: '500',
   },
   delegateCompanyInRow: {
     marginBottom: 0,

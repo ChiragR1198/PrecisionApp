@@ -43,6 +43,7 @@ function sumServerUnreadCount(messagesData) {
 // Engagement-first order: Dashboard, Agenda, Attendees, Meeting Requests, Messages, then rest
 const NAV_ITEMS = [
   { label: 'Dashboard', route: 'dashboard', icon: 'bar-chart-2' },
+  { label: 'AI Matches', route: 'matches', icon: 'star' },
   { label: 'Agenda', route: 'agenda', icon: 'list' },
   { label: 'Event Sponsors', route: 'attendees', icon: 'users' },
   // { label: 'Meeting Requests', route: 'meeting-requests', icon: 'calendar' },
@@ -91,8 +92,8 @@ export const CustomDrawerContent = (props) => {
     try {
       await logoutMutation().unwrap();
     } catch (error) {
-      console.error('Logout error:', error);
-      // Even if API call fails, clear auth and navigate to login
+      // Network/API failure is fine — local session is cleared in finally
+      console.warn('⚠️ Logout API failed (cleared local session anyway):', error?.message || error);
     } finally {
       setIsLoggingOut(false);
       setIsLogoutConfirmModalVisible(false);
