@@ -1,4 +1,5 @@
 import Icon from '@expo/vector-icons/Feather';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useNavigation } from '@react-navigation/native';
 import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -25,6 +26,7 @@ import { colors, radius } from '../../constants/theme';
 import {
   useGetDelegateEventSponsorLogosQuery,
   useGetDelegateEventsQuery,
+  useGetMatchesSummaryQuery,
   useGetSponsorEventSponsorLogosQuery,
   useGetSponsorEventsQuery,
 } from '../../store/api';
@@ -32,6 +34,7 @@ import { useAppDispatch, useAppSelector } from '../../store/hooks';
 import { clearAuth } from '../../store/slices/authSlice';
 import { setSelectedEvent } from '../../store/slices/eventSlice';
 import { normalizeWebcoverSlideUris } from '../../utils/eventWebcoverSlides';
+import { normalizeEventIdForApi } from '../../utils/parseEventId';
 import { normalizeWebsiteUrl } from '../../utils/normalizeWebsiteUrl';
 import { resolveMediaUrl } from '../../utils/resolveMediaUrl';
 import { stripHtml } from '../../utils/stripHtml';
@@ -399,6 +402,7 @@ const QuickActionCard = ({
   icon, 
   iconColor, 
   backgroundColor, 
+  badge,
   styles, 
   SIZES,
   onPress 
@@ -407,6 +411,13 @@ const QuickActionCard = ({
     <View style={styles.quickActionContent}>
       <View style={[styles.quickActionIcon, { backgroundColor }]}> 
         {icon}
+        {badge != null && Number(badge) > 0 ? (
+          <View style={styles.quickActionBadge}>
+            <Text style={styles.quickActionBadgeText}>
+              {Number(badge) > 99 ? '99+' : String(badge)}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <Text style={styles.quickActionTitle}>{title}</Text>
       <Text style={styles.quickActionSubtitle}>{subtitle}</Text>
@@ -562,6 +573,17 @@ export const DashboardScreen = () => {
     skip: logosQuerySkip || isDelegate,
   });
 
+  const { data: matchesSummaryPayload } = useGetMatchesSummaryQuery(
+    eventIdForLogos != null ? { event_id: eventIdForLogos } : undefined,
+    { skip: logosQuerySkip, refetchOnMountOrArgChange: true }
+  );
+
+  const matchesBadgeCount = useMemo(() => {
+    const d = matchesSummaryPayload?.data ?? matchesSummaryPayload;
+    const n = Number(d?.recommended_count ?? d?.delegates_count ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [matchesSummaryPayload]);
+
   const sponsorLogosList = useMemo(() => {
     const payload = isDelegate ? delegateLogoPayload : sponsorLogoPayload;
     return extractEventSponsorLogosList(payload);
@@ -705,6 +727,9 @@ export const DashboardScreen = () => {
     }
     
     switch(action) {
+      case 'AI Matches':
+        router.push({ pathname: '/matches', params: Object.keys(params).length > 0 ? params : undefined });
+        break;
       case 'Scan Attendees':
         router.push({
           pathname: '/profile',
@@ -754,6 +779,14 @@ export const DashboardScreen = () => {
 
   const quickActions = useMemo(() => [
     {
+      title: 'AI Matches',
+      subtitle: 'Smart recommendations',
+      icon: <MaterialCommunityIcons name="star-four-points" size={SIZES.quickActionIconInner} color={colors.primary} />,
+      iconColor: colors.primary,
+      backgroundColor: 'rgba(138, 52, 144, 0.1)',
+      badge: matchesBadgeCount,
+    },
+    {
       title: 'Scan Attendees',
       subtitle: 'QR code → save contact',
       icon: <Icon name="maximize" size={SIZES.quickActionIconInner} color={colors.primary} />,
@@ -802,7 +835,7 @@ export const DashboardScreen = () => {
       iconColor: colors.primary,
       backgroundColor: 'rgba(138, 52, 144, 0.07)',
     },
-  ], [SIZES.quickActionIconInner, isDelegate]);
+  ], [SIZES.quickActionIconInner, isDelegate, matchesBadgeCount]);
 
   // Show loading state
   if (isLoading) {
@@ -965,6 +998,7 @@ export const DashboardScreen = () => {
                   icon={action.icon}
                   iconColor={action.iconColor}
                   backgroundColor={action.backgroundColor}
+                  badge={action.badge}
                   styles={styles}
                   SIZES={SIZES}
                   onPress={() => handleQuickAction(action.title)}
@@ -1522,6 +1556,26 @@ const createStyles = (SIZES, isTablet, SCREEN_HEIGHT) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
+    position: 'relative',
+  },
+  quickActionBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+    borderWidth: 2,
+    borderColor: colors.white,
+  },
+  quickActionBadgeText: {
+    color: colors.white,
+    fontSize: 10,
+    fontWeight: '700',
   },
   quickActionTitle: {
     fontSize: SIZES.headerTitleSize - 1,

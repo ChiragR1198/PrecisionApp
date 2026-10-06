@@ -1,0 +1,556 @@
+import Icon from '@expo/vector-icons/Feather';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { colors, radius } from '../constants/theme';
+import { useAppOpenNotificationItems } from '../hooks/useAppOpenNotificationItems';
+import {
+  useDeleteNotificationMutation,
+  useGetNotificationInboxQuery,
+  useGetNotificationUnreadCountQuery,
+  useMarkNotificationReadMutation,
+} from '../store/api';
+import { useAppSelector } from '../store/hooks';
+import { APP_OPEN_UPDATES_INTERVAL_MS } from '../utils/appOpenUpdatesVisibility';
+import { navigateFromNotificationData } from '../utils/notificationNavigation';
+
+const NotificationPanelContext = createContext(null);
+
+const SUMMARY_ICON_BY_TYPE = {
+  meeting_requests: 'calendar',
+  new_attendees: 'users',
+  messages: 'message-circle',
+};
+
+function routeForSummaryItem(type) {
+  switch (type) {
+    case 'meeting_requests':
+      return '/(drawer)/meeting-requests';
+    case 'new_attendees':
+      return '/(drawer)/attendees';
+    case 'messages':
+      return '/(drawer)/messages';
+    default:
+      return null;
+  }
+}
+
+function summaryDismissKey(userId) {
+  const id = userId != null && userId !== '' ? String(userId) : 'default';
+  return `notification_summary_dismissed_${id}`;
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  try {
+    return d.toLocaleString(undefined, {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch (_e) {
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+}
+
+export function NotificationPanelProvider({ children }) {
+  const insets = useSafeAreaInsets();
+  const { isAuthenticated, user } = useAppSelector((s) => s.auth);
+  const userId = user?.id;
+  const [open, setOpen] = useState(false);
+
+  const { items: summaryItems } = useAppOpenNotificationItems();
+  const [dismissedSummary, setDismissedSummary] = useState({});
+
+  const { data: unreadData, refetch: refetchUnread } = useGetNotificationUnreadCountQuery(undefined, {
+    skip: !isAuthenticated,
+    pollingInterval: isAuthenticated ? 25000 : 0,
+  });
+
+  const { data: inboxResp, isFetching, refetch: refetchInbox } = useGetNotificationInboxQuery(
+    { limit: 10 },
+    {
+      skip: !isAuthenticated || !open,
+    }
+  );
+
+  const [markRead] = useMarkNotificationReadMutation();
+  const [deleteNotification] = useDeleteNotificationMutation();
+
+  const unread =
+    unreadData?.data?.unread_count ??
+    inboxResp?.data?.unread_count ??
+    0;
+  const items = inboxResp?.data?.items ?? [];
+
+  const badgeText = useMemo(() => {
+    if (!unread || unread <= 0) return '';
+    if (unread > 99) return '99+';
+    return String(unread);
+  }, [unread]);
+
+  const openPanel = useCallback(() => {
+    if (!isAuthenticated) return;
+    setOpen(true);
+    refetchUnread();
+  }, [isAuthenticated, refetchUnread]);
+
+  const closePanel = useCallback(() => setOpen(false), []);
+
+  const togglePanel = useCallback(() => {
+    if (open) {
+      closePanel();
+    } else {
+      openPanel();
+    }
+  }, [open, closePanel, openPanel]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setOpen(false);
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!open || !isAuthenticated) return;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(summaryDismissKey(userId));
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === 'object') {
+          setDismissedSummary(parsed);
+        } else {
+          setDismissedSummary({});
+        }
+      } catch {
+        setDismissedSummary({});
+      }
+    })();
+  }, [open, isAuthenticated, userId]);
+
+  useEffect(() => {
+    if (!open || !isAuthenticated) return;
+    refetchInbox();
+  }, [open, isAuthenticated, refetchInbox]);
+
+  const visibleSummaryItems = useMemo(() => {
+    if (!Array.isArray(summaryItems) || summaryItems.length === 0) return [];
+    const now = Date.now();
+    return summaryItems.filter((row) => {
+      const t = row?.type;
+      if (!t) return false;
+      const dismissedAt = Number(dismissedSummary?.[t]);
+      if (!Number.isFinite(dismissedAt)) return true;
+      return now - dismissedAt >= APP_OPEN_UPDATES_INTERVAL_MS;
+    });
+  }, [summaryItems, dismissedSummary]);
+
+  const onPressSummary = useCallback(
+    (row) => {
+      const path = routeForSummaryItem(row?.type);
+      closePanel();
+      if (path) router.push(path);
+    },
+    [closePanel]
+  );
+
+  const onDismissSummary = useCallback(
+    async (row, e) => {
+      try {
+        e?.stopPropagation?.();
+      } catch {
+        // ignore
+      }
+      const t = row?.type;
+      if (!t) return;
+      const next = { ...(dismissedSummary || {}), [t]: Date.now() };
+      setDismissedSummary(next);
+      try {
+        await AsyncStorage.setItem(summaryDismissKey(userId), JSON.stringify(next));
+      } catch (err) {
+        console.warn('dismiss summary failed', err);
+      }
+    },
+    [dismissedSummary, userId]
+  );
+
+  const handleMarkAll = useCallback(async () => {
+    try {
+      await markRead({ mark_all: true }).unwrap();
+      refetchUnread();
+      refetchInbox();
+    } catch (e) {
+      console.warn('mark all read', e);
+    }
+  }, [markRead, refetchUnread, refetchInbox]);
+
+  const navigateFromPayload = useCallback((payload, row) => {
+    const type = payload?.type;
+    const category = row?.category;
+    const merged = { ...payload, type: type || category };
+    if (category === 'meeting_accepted') merged.type = 'meeting_approved';
+    if (category === 'meeting_declined') merged.type = 'meeting_rejected';
+    if (category === 'meeting_request') merged.type = 'meeting_request';
+    navigateFromNotificationData(merged);
+  }, []);
+
+  const onPressItem = useCallback(
+    async (row) => {
+      try {
+        if (row?.id && !row.is_read) {
+          await markRead({ id: row.id }).unwrap();
+        }
+        refetchUnread();
+        refetchInbox();
+        closePanel();
+        if (row?.payload && typeof row.payload === 'object') {
+          navigateFromPayload(row.payload, row);
+        } else if (row?.category) {
+          navigateFromPayload({}, row);
+        }
+      } catch (e) {
+        console.warn('notification item', e);
+      }
+    },
+    [markRead, refetchUnread, refetchInbox, closePanel, navigateFromPayload]
+  );
+
+  const onDismissItem = useCallback(
+    async (row) => {
+      if (!row?.id) return;
+      try {
+        await deleteNotification({ id: row.id }).unwrap();
+        refetchUnread();
+        refetchInbox();
+      } catch (e) {
+        console.warn('dismiss notification', e);
+      }
+    },
+    [deleteNotification, refetchUnread, refetchInbox]
+  );
+
+  const panelTop = Math.max(insets.top, 8) + 52;
+
+  const value = useMemo(
+    () => ({
+      open: openPanel,
+      close: closePanel,
+      toggle: togglePanel,
+      isOpen: open,
+      unread,
+      badgeText,
+    }),
+    [openPanel, closePanel, togglePanel, open, unread, badgeText]
+  );
+
+  return (
+    <NotificationPanelContext.Provider value={value}>
+      {children}
+      {isAuthenticated ? (
+        <Modal
+          visible={open}
+          transparent
+          animationType="fade"
+          onRequestClose={closePanel}
+          statusBarTranslucent
+          presentationStyle="overFullScreen"
+        >
+          <View style={styles.modalRoot}>
+            <Pressable
+              style={styles.modalBackdrop}
+              onPress={closePanel}
+              accessibilityRole="button"
+              accessibilityLabel="Close notifications"
+            />
+            <View style={[styles.panel, { marginTop: panelTop }]}>
+              <View style={styles.panelHeader}>
+                <Text style={styles.panelTitle}>Notifications</Text>
+                {unread > 0 ? (
+                  <TouchableOpacity onPress={handleMarkAll} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={styles.markAll}>Mark all read</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {visibleSummaryItems.length > 0 ? (
+                <View style={styles.summaryWrap}>
+                  {visibleSummaryItems.map((row) => {
+                    const iconName = SUMMARY_ICON_BY_TYPE[row.type] || 'bell';
+                    return (
+                      <TouchableOpacity
+                        key={row.type}
+                        style={styles.summaryRow}
+                        activeOpacity={0.85}
+                        onPress={() => onPressSummary(row)}
+                      >
+                        <View style={styles.summaryIconCircle}>
+                          <Icon name={iconName} size={16} color={colors.primary} />
+                        </View>
+                        <Text style={styles.summaryText} numberOfLines={2}>
+                          {row.message}
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.summaryClose}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                          onPress={(e) => onDismissSummary(row, e)}
+                          accessibilityRole="button"
+                          accessibilityLabel="Dismiss summary"
+                        >
+                          <Icon name="x" size={18} color={colors.textMuted} />
+                        </TouchableOpacity>
+                        <Icon name="chevron-right" size={18} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : null}
+
+              {isFetching && items.length === 0 ? (
+                <View style={styles.loader}>
+                  <ActivityIndicator color={colors.primary} />
+                </View>
+              ) : items.length === 0 ? (
+                <Text style={styles.empty}>No notifications yet</Text>
+              ) : (
+                <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
+                  {items.map((row) => (
+                    <View
+                      key={String(row.id)}
+                      style={[styles.rowWrap, row.is_read ? styles.rowRead : styles.rowUnread]}
+                    >
+                      <TouchableOpacity
+                        style={styles.rowMain}
+                        activeOpacity={0.85}
+                        onPress={() => onPressItem(row)}
+                      >
+                        <View style={styles.rowTop}>
+                          <Text style={styles.rowTitle} numberOfLines={2}>
+                            {row.title}
+                          </Text>
+                          {!row.is_read ? <View style={styles.dot} /> : null}
+                        </View>
+                        {row.body ? (
+                          <Text style={styles.rowBody} numberOfLines={3}>
+                            {row.body}
+                          </Text>
+                        ) : null}
+                        <Text style={styles.rowTime}>{formatTime(row.created_at)}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.rowDismiss}
+                        onPress={() => onDismissItem(row)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove notification"
+                      >
+                        <Icon name="x" size={20} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+    </NotificationPanelContext.Provider>
+  );
+}
+
+export function useNotificationPanel() {
+  const ctx = useContext(NotificationPanelContext);
+  if (!ctx) {
+    throw new Error('useNotificationPanel must be used within NotificationPanelProvider');
+  }
+  return ctx;
+}
+
+const styles = StyleSheet.create({
+  modalRoot: {
+    flex: 1,
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  panel: {
+    marginHorizontal: 12,
+    maxWidth: 400,
+    width: '100%',
+    alignSelf: 'center',
+    maxHeight: '70%',
+    backgroundColor: colors.white,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+    zIndex: 2,
+    ...Platform.select({
+      android: { elevation: 8 },
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+      },
+    }),
+  },
+  panelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  panelTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  summaryWrap: {
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.white,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(138, 52, 144, 0.06)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+  },
+  summaryIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(138, 52, 144, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  summaryText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    lineHeight: 18,
+  },
+  summaryClose: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    marginLeft: 6,
+    marginRight: 2,
+  },
+  markAll: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  list: {
+    maxHeight: 420,
+  },
+  loader: {
+    paddingVertical: 28,
+    alignItems: 'center',
+  },
+  empty: {
+    padding: 20,
+    textAlign: 'center',
+    color: colors.textMuted,
+    fontSize: 14,
+  },
+  rowWrap: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingLeft: 14,
+    paddingRight: 4,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  rowMain: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  rowDismiss: {
+    padding: 8,
+    marginTop: 2,
+  },
+  rowUnread: {
+    backgroundColor: 'rgba(138, 52, 144, 0.06)',
+  },
+  rowRead: {
+    backgroundColor: colors.white,
+  },
+  rowTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  rowTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+    marginTop: 4,
+  },
+  rowBody: {
+    marginTop: 4,
+    fontSize: 13,
+    color: colors.textMuted,
+    lineHeight: 18,
+  },
+  rowTime: {
+    marginTop: 6,
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+});
+
+export default NotificationPanelProvider;

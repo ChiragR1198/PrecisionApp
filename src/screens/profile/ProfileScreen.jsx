@@ -27,7 +27,9 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ContactSavedSuccessModal } from '../../components/common/ContactSavedSuccessModal';
 import { Header } from '../../components/common/Header';
+import { MatchmakingProfileSection } from '../../components/profile/MatchmakingProfileSection';
 import { Icons } from '../../constants/icons';
+import { normalizeTagList } from '../../constants/matchOptions';
 import { colors, radius } from '../../constants/theme';
 import { useBoothRaffleMyQrQuery, useDelegateLogoutMutation, useGetDelegateProfileQuery, useGetSponsorProfileQuery, useSaveDelegateContactMutation, useSaveSponsorContactMutation, useSponsorLogoutMutation, useUpdateDelegateProfileMutation, useUpdateSponsorProfileMutation } from '../../store/api';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
@@ -387,6 +389,21 @@ export const ProfileScreen = () => {
     tel: '', // Sponsor only
     fax: '', // Sponsor only
   });
+
+  const [matchmaking, setMatchmaking] = useState({
+    companyType: '',
+    seniority: '',
+    meetingAvailability: '',
+    matchVisibility: 'everyone',
+    matchConsent: false,
+    jobFunction: [],
+    eventGoals: [],
+    topicsOfInterest: [],
+    topicsCapabilities: [],
+    idealCustomerTypes: [],
+    targetFunctions: [],
+  });
+  const [matchOptions, setMatchOptions] = useState(null);
   
   // Update form data when profile loads - only if profile matches current user
   React.useEffect(() => {
@@ -414,6 +431,22 @@ export const ProfileScreen = () => {
         // Set notification preferences (delegate only)
         setSmsNotification(profile.sms_notification === 1 || profile.sms_notification === true);
         setEmailNotification(profile.email_notification === 1 || profile.email_notification === true);
+        const topics = normalizeTagList(profile.topics_of_interest);
+        const needs = normalizeTagList(profile.main_needs);
+        setMatchmaking({
+          companyType: profile.company_type || '',
+          seniority: profile.seniority || '',
+          meetingAvailability: profile.meeting_availability || '',
+          matchVisibility: profile.match_visibility || 'everyone',
+          matchConsent: profile.match_consent === 1 || profile.match_consent === true,
+          jobFunction: normalizeTagList(profile.job_function),
+          eventGoals: normalizeTagList(profile.event_goals),
+          topicsOfInterest: [...new Set([...topics, ...needs])],
+          topicsCapabilities: [],
+          idealCustomerTypes: [],
+          targetFunctions: [],
+        });
+        setMatchOptions(profile.match_options || null);
       } else {
         // Sponsor profile structure
         setFormData({
@@ -435,6 +468,20 @@ export const ProfileScreen = () => {
         // Sponsors don't have notification preferences in API response
         setSmsNotification(true);
         setEmailNotification(true);
+        setMatchmaking({
+          companyType: profile.company_type || '',
+          seniority: '',
+          meetingAvailability: '',
+          matchVisibility: profile.match_visibility || 'everyone',
+          matchConsent: profile.match_consent === 1 || profile.match_consent === true,
+          jobFunction: [],
+          eventGoals: [],
+          topicsOfInterest: [],
+          topicsCapabilities: normalizeTagList(profile.topics_capabilities),
+          idealCustomerTypes: normalizeTagList(profile.ideal_customer_types),
+          targetFunctions: normalizeTagList(profile.target_functions),
+        });
+        setMatchOptions(profile.match_options || null);
       }
       
       if (profile.image) {
@@ -461,6 +508,20 @@ export const ProfileScreen = () => {
         tel: '',
         fax: '',
       });
+      setMatchmaking({
+        companyType: '',
+        seniority: '',
+        meetingAvailability: '',
+        matchVisibility: 'everyone',
+        matchConsent: false,
+        jobFunction: [],
+        eventGoals: [],
+        topicsOfInterest: [],
+        topicsCapabilities: [],
+        idealCustomerTypes: [],
+        targetFunctions: [],
+      });
+      setMatchOptions(null);
       setProfileImage(null);
     }
   }, [profile, userId, isDelegate]);
@@ -582,6 +643,16 @@ export const ProfileScreen = () => {
         formDataToSend.append('company_information', formData.companyInformation || '');
         formDataToSend.append('sms_notification', smsNotification ? '1' : '0');
         formDataToSend.append('email_notification', emailNotification ? '1' : '0');
+
+        formDataToSend.append('company_type', matchmaking.companyType || '');
+        formDataToSend.append('seniority', matchmaking.seniority || '');
+        formDataToSend.append('meeting_availability', matchmaking.meetingAvailability || '');
+        formDataToSend.append('match_visibility', matchmaking.matchVisibility || 'everyone');
+        formDataToSend.append('match_consent', matchmaking.matchConsent ? '1' : '0');
+        formDataToSend.append('job_function', (matchmaking.jobFunction || []).join(','));
+        formDataToSend.append('event_goals', (matchmaking.eventGoals || []).join(','));
+        formDataToSend.append('topics_of_interest', (matchmaking.topicsOfInterest || []).join(','));
+        formDataToSend.append('main_needs', (matchmaking.topicsOfInterest || []).join(','));
         
         // Add image if selected
         if (profileImage && profileImage.startsWith('file://')) {
@@ -610,6 +681,13 @@ export const ProfileScreen = () => {
         formDataToSend.append('company_information', formData.companyInformation || '');
         formDataToSend.append('sms_notification', '0');
         formDataToSend.append('email_notification', '0');
+
+        formDataToSend.append('company_type', matchmaking.companyType || '');
+        formDataToSend.append('match_visibility', matchmaking.matchVisibility || 'everyone');
+        formDataToSend.append('match_consent', matchmaking.matchConsent ? '1' : '0');
+        formDataToSend.append('topics_capabilities', (matchmaking.topicsCapabilities || []).join(','));
+        formDataToSend.append('ideal_customer_types', (matchmaking.idealCustomerTypes || []).join(','));
+        formDataToSend.append('target_functions', (matchmaking.targetFunctions || []).join(','));
         
         // Add image if selected
         if (profileImage && profileImage.startsWith('file://')) {
@@ -1440,8 +1518,7 @@ export const ProfileScreen = () => {
     try {
       await logoutMutation().unwrap();
     } catch (error) {
-      console.error('Logout error:', error);
-      // Even if API call fails, clear auth and navigate to login
+      console.warn('⚠️ Logout API failed (cleared local session anyway):', error?.message || error);
     } finally {
       setIsLoggingOut(false);
       setIsLogoutConfirmModalVisible(false);
@@ -1759,6 +1836,13 @@ export const ProfileScreen = () => {
                 numberOfLines={4}
               />
             </View>
+
+            <MatchmakingProfileSection
+              isDelegate={isDelegate}
+              value={matchmaking}
+              onChange={setMatchmaking}
+              matchOptions={matchOptions}
+            />
 
             {/* Settings Section - Delegate only */}
             {/* {isDelegate && ( */}

@@ -7,6 +7,7 @@ import {
   useGetSponsorMessagesQuery,
 } from '../store/api';
 import { useAppSelector } from '../store/hooks';
+import { normalizeEventIdForApi } from '../utils/parseEventId';
 
 function getThreadsListFromMessagesResponse(messagesData) {
   if (!messagesData) return [];
@@ -87,15 +88,17 @@ export function useAppOpenNotificationItems() {
   const selectedEventId = useAppSelector((s) => s.event.selectedEventId);
   const loginType = (user?.login_type || user?.user_type || '').toLowerCase();
   const isDelegate = loginType === 'delegate';
-  const eventArg =
-    selectedEventId != null && selectedEventId !== '' ? { event_id: selectedEventId } : undefined;
+  const eventId = normalizeEventIdForApi(
+    selectedEventId ?? user?.event_id ?? user?.events?.[0]?.id
+  );
+  const eventArg = eventId != null ? { event_id: eventId } : undefined;
 
   const {
     data: summaryData,
     refetch: refetchSummary,
     isFetching: summaryFetching,
   } = useGetAppOpenNotificationSummaryQuery(eventArg, {
-    skip: !isAuthenticated,
+    skip: !isAuthenticated || eventId == null,
     refetchOnMountOrArgChange: true,
     keepUnusedDataFor: 0,
   });
@@ -108,7 +111,7 @@ export function useAppOpenNotificationItems() {
       Number(summaryData?.data?.new_attendees_today) > 0 ||
       Number(summaryData?.data?.unread_messages) > 0);
 
-  const skipFallback = !isAuthenticated || hasSummaryItems;
+  const skipFallback = !isAuthenticated || eventId == null || hasSummaryItems;
 
   const { data: delegateMeetings } = useGetDelegateMeetingRequestsQuery(eventArg, {
     skip: skipFallback || !isDelegate,

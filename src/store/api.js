@@ -32,12 +32,10 @@ const baseQuery = fetchBaseQuery({
         // Remove any extra whitespace or quotes from token
         const cleanToken = token.trim().replace(/^["']|["']$/g, '');
         headers.set('Authorization', `Bearer ${cleanToken}`);
-        console.log('✅ Token added to request headers');
-      } else {
-        console.warn('⚠️ No auth token found in AsyncStorage');
       }
+      // Missing token after logout is expected — avoid spam while in-flight queries settle
     } catch (error) {
-      console.error('❌ Error retrieving token:', error);
+      console.warn('⚠️ Error retrieving token:', error);
     }
     headers.set('Accept', 'application/json');
     const body = arg && typeof arg === 'object' ? arg.body : undefined;
@@ -173,12 +171,13 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
   
   // Check token before making request (contact form works without login)
   const tokenBeforeRequest = await AsyncStorage.getItem('auth_token');
-  console.log('🌐 API Request:', args.url || args, 'Token present:', tokenBeforeRequest ? 'Yes' : 'No');
+  if (__DEV__ && tokenBeforeRequest) {
+    console.log('🌐 API Request:', args.url || args, 'Token present: Yes');
+  }
   
   // For authenticated endpoints (not login/logout/contact), ensure token is available
   if (!isPublicEndpoint && !tokenBeforeRequest) {
     // Silently skip if no token (user might have logged out)
-    // Don't log error as this is expected behavior after logout
     return {
       error: {
         status: 'NO_TOKEN',
@@ -272,6 +271,38 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       return result;
     }
 
+    // Logout: always succeed locally even if network/API fails
+    const isLogoutEndpoint =
+      typeof args.url === 'string' &&
+      (args.url.includes('/logout') || args.url.includes('delegate-logout') || args.url.includes('sponsor-logout'));
+    if (isLogoutEndpoint && (isFetchError || errorStatus === 401 || errorStatus === 500)) {
+      if (__DEV__) {
+        console.warn('⚠️ Logout API unreachable — clearing local session anyway.');
+      }
+      return { data: { success: true, message: 'Logged out locally' } };
+    }
+
+    // Matches summary is non-critical for dashboard; soft-fail on network
+    const isMatchesSummary =
+      typeof args.url === 'string' &&
+      (args.url.includes('matches/summary') || args.url.includes('/matches/summary'));
+    if (isMatchesSummary && isFetchError) {
+      if (__DEV__) {
+        console.warn('⚠️ Matches summary unavailable (network) — using empty counts.');
+      }
+      return {
+        data: {
+          success: true,
+          data: {
+            recommended_count: 0,
+            delegates_count: 0,
+            exhibitors_count: 0,
+            matching_enabled: true,
+          },
+        },
+      };
+    }
+
     // App-open summary: soft-fail so overlay can use client-side fallback (e.g. endpoint not deployed yet).
     const isAppSummaryEndpoint =
       typeof args.url === 'string' && args.url.includes('notifications/app-summary');
@@ -332,6 +363,15 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       console.warn('Meeting request: ', result.error.data?.message || 'Duplicate or conflict.');
       return result;
     }
+
+    const forbiddenEvent =
+      errorStatus === 403 &&
+      (result.error?.data?.error_code === 'FORBIDDEN_EVENT' ||
+        String(result.error?.data?.message || '').toLowerCase().includes('do not have access to this event'));
+    if (forbiddenEvent) {
+      console.warn('⚠️ Event access skipped:', result.error.data?.message || 'FORBIDDEN_EVENT');
+      return result;
+    }
     
     const isFormDataPost =
       args.method === 'POST' &&
@@ -355,6 +395,17 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       console.warn(`⚠️ Network error on ${args.url || args} - retrying (${retryCount + 1}/${maxRetries})...`);
       
       while (retryCount < maxRetries && result.error && result.error.status === 'FETCH_ERROR') {
+        // Stop retrying if user logged out mid-flight
+        const tokenStillThere = await AsyncStorage.getItem('auth_token');
+        if (!isPublicEndpoint && !tokenStillThere) {
+          return {
+            error: {
+              status: 'NO_TOKEN',
+              data: { message: 'Authentication token is required' },
+              message: 'Authentication token is required',
+            },
+          };
+        }
         const delay = 500 * Math.pow(2, retryCount); // 500ms, 1000ms
         await new Promise(resolve => setTimeout(resolve, delay));
         result = await safeBaseQuery(args, api, extraOptions);
@@ -388,6 +439,9 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       };
       if (isFetchError) {
         console.warn('⚠️ API network warning:', logPayload);
+      } else if (errorStatus === 401) {
+        // Expected when session expired — don't use console.error (Expo red overlay)
+        console.warn('⚠️ API auth warning (401):', logPayload);
       } else {
         console.error('❌ API Error:', logPayload);
       }
@@ -410,7 +464,7 @@ const baseQueryWithErrorHandling = async (args, api, extraOptions) => {
       await AsyncStorage.removeItem('token_expires_at');
       await AsyncStorage.removeItem('token_created_at');
     } catch (e) {
-      console.error('❌ Error clearing auth data:', e);
+      console.warn('⚠️ Error clearing auth data:', e);
     }
     
     // Return error that will trigger redirect in component
@@ -474,6 +528,7 @@ export const api = createApi({
     'ContactNotes',
     'NotificationInbox',
     'AgendaNotes',
+    'Matches',
   ],
   endpoints: (builder) => ({
     // ============ AUTH ============
@@ -2021,6 +2076,64 @@ export const api = createApi({
       },
       keepUnusedDataFor: 0,
     }),
+
+    /** AI Matchmaking list — type: delegate | exhibitor */
+    getMatches: builder.query({
+      query: (arg) => {
+        const a = arg && typeof arg === 'object' ? arg : {};
+        const eid = normalizeEventIdForApi(a.event_id);
+        if (eid == null) return null;
+        const type = a.type === 'exhibitor' ? 'exhibitor' : 'delegate';
+        return {
+          url: API_ENDPOINTS.MATCHES,
+          params: { event_id: eid, type, _t: Date.now() },
+        };
+      },
+      providesTags: ['Matches'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
+    getMatchesSummary: builder.query({
+      query: (arg) => {
+        const a = arg && typeof arg === 'object' ? arg : {};
+        const eid = normalizeEventIdForApi(a.event_id ?? arg);
+        if (eid == null) return null;
+        return {
+          url: API_ENDPOINTS.MATCHES_SUMMARY,
+          params: { event_id: eid, _t: Date.now() },
+        };
+      },
+      providesTags: ['Matches'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
+    getMatchDetail: builder.query({
+      query: (arg) => {
+        const a = arg && typeof arg === 'object' ? arg : {};
+        const eid = normalizeEventIdForApi(a.event_id);
+        const targetId = Number(a.target_id);
+        if (eid == null || !Number.isFinite(targetId) || targetId <= 0) return null;
+        const type = a.type === 'exhibitor' ? 'exhibitor' : 'delegate';
+        return {
+          url: API_ENDPOINTS.MATCHES_DETAIL,
+          params: { event_id: eid, type, target_id: targetId, _t: Date.now() },
+        };
+      },
+      providesTags: ['Matches'],
+      refetchOnMountOrArgChange: true,
+      keepUnusedDataFor: 0,
+    }),
+
+    postMatchFeedback: builder.mutation({
+      query: (body) => ({
+        url: API_ENDPOINTS.MATCHES_FEEDBACK,
+        method: 'POST',
+        body: body || {},
+      }),
+      invalidatesTags: ['Matches'],
+    }),
   }),
 });
 
@@ -2048,6 +2161,10 @@ export const {
   useSubmitContactFormMutation,
   usePresencePingMutation,
   useGetPresenceOnlineQuery,
+  useGetMatchesQuery,
+  useGetMatchesSummaryQuery,
+  useGetMatchDetailQuery,
+  usePostMatchFeedbackMutation,
 
   // Delegate Endpoints
   useGetDelegateEventsQuery,

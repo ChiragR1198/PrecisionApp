@@ -1,11 +1,12 @@
 import { Drawer } from 'expo-router/drawer';
 import React from 'react';
 import { colors } from '../../src/constants/theme';
+import { NotificationPanelProvider } from '../../src/contexts/NotificationPanelContext';
 import { CustomDrawerContent } from '../../src/navigation/CustomDrawerContent';
 
 export default function DrawerLayout() {
   return (
-    <>
+    <NotificationPanelProvider>
       <Drawer
       initialRouteName="dashboard"
       screenOptions={{
@@ -17,6 +18,7 @@ export default function DrawerLayout() {
       drawerContent={(props) => <CustomDrawerContent {...props} />}
     >
       <Drawer.Screen name="dashboard" options={{ drawerLabel: 'Dashboard' }} />
+      <Drawer.Screen name="matches" options={{ drawerLabel: 'AI Matches' }} />
       <Drawer.Screen name="my-event" options={{ drawerLabel: 'My Event' }} />
       <Drawer.Screen name="agenda" options={{ drawerLabel: 'Agenda' }} />
       <Drawer.Screen
@@ -67,7 +69,7 @@ export default function DrawerLayout() {
         options={{ drawerLabel: 'Change Password' }}
       />
     </Drawer>
-    </>
+    </NotificationPanelProvider>
   );
 }
 

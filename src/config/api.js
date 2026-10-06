@@ -144,6 +144,12 @@ export const API_ENDPOINTS = {
   PRESENCE_PING: '/presence/ping',
   PRESENCE_ONLINE: '/presence/online',
 
+  /** AI Matchmaking — delegate or sponsor JWT (`mobile/MatchesController`) */
+  MATCHES: '/matches',
+  MATCHES_SUMMARY: '/matches/summary',
+  MATCHES_DETAIL: '/matches/detail',
+  MATCHES_FEEDBACK: '/matches/feedback',
+
   /** Public GET — no auth. Used by ForceUpdateGate (min version / store URLs). */
   APP_VERSION: 'app-version',
 };
